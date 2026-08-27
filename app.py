@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import html
+import os
 import pandas as pd
 import streamlit as st
 
 from database import Database
 from logic import BASE_TEAMS, SEVEN_TEAMS, FORMAT_LABELS
-from ui import hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text
+from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
+                render_double5_mid_draw, render_double7_lb_bye, render_playoff_reveal)
 
 st.set_page_config(page_title="FIFA Night Flex",page_icon="⚽",layout="wide",initial_sidebar_state="collapsed")
 inject_css(); db=Database()
@@ -18,10 +20,65 @@ def esc(x):return html.escape(str(x or ""))
 def rr():st.rerun()
 def rf():st.rerun(scope="fragment")
 
+def admin_password():
+    value=os.getenv("ADMIN_PASSWORD")
+    if value:return value
+    try:return str(st.secrets.get("ADMIN_PASSWORD") or "")
+    except Exception:return ""
+
+def admin_ok(value):
+    secret=admin_password()
+    return bool(secret) and str(value)==secret
+
+def render_history_admin():
+    st.markdown("### 🔐 Historia i baza")
+    locked=db.history_locked(); secret_ready=bool(admin_password())
+    if locked: st.success("🔒 Historia jest zablokowana przed usuwaniem.")
+    else: st.warning("🔓 Historia jest odblokowana.")
+    if not secret_ready:
+        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Operacje administracyjne są wyłączone.")
+        return
+    if locked:
+        with st.form("unlock_history"):
+            pwd=st.text_input("Hasło administratora",type="password",key="unlock_pwd")
+            go=st.form_submit_button("🔓 ODBLOKUJ HISTORIĘ",use_container_width=True)
+        if go:
+            if admin_ok(pwd): db.set_history_locked(False);st.success("Historia odblokowana.");rr()
+            else: st.error("Nieprawidłowe hasło.")
+        return
+    with st.form("lock_history"):
+        pwd=st.text_input("Hasło administratora",type="password",key="lock_pwd")
+        go=st.form_submit_button("🔒 ZABLOKUJ HISTORIĘ",use_container_width=True)
+    if go:
+        if admin_ok(pwd): db.set_history_locked(True);st.success("Historia zablokowana.");rr()
+        else: st.error("Nieprawidłowe hasło.")
+    last=db.last_completed_tournament()
+    if last:
+        fmt=FORMAT_LABELS.get(last.get("format_key"),"Klasyczny turniej 6-osobowy")
+        st.caption(f"Ostatni turniej: {last.get('player_count','?')} graczy • {fmt} • mistrz: {last.get('champion_name') or '?'}")
+        with st.form("delete_last_history"):
+            pwd=st.text_input("Hasło administratora",type="password",key="del_last_pwd")
+            yes=st.checkbox("Tak, usuń ostatni zakończony turniej nietestowy")
+            go=st.form_submit_button("🗑️ USUŃ OSTATNI TURNIEJ",use_container_width=True)
+        if go:
+            if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
+            elif not yes: st.error("Zaznacz potwierdzenie.")
+            else:
+                deleted=db.delete_last_completed_tournament();st.success("Ostatni turniej został usunięty." if deleted else "Brak turnieju do usunięcia.");rr()
+    else: st.caption("Brak zakończonych turniejów nietestowych do usunięcia.")
+    with st.form("clear_all_history"):
+        pwd=st.text_input("Hasło administratora",type="password",key="clear_all_pwd")
+        confirm=st.text_input("Wpisz USUŃ HISTORIĘ")
+        go=st.form_submit_button("💣 WYCZYŚĆ CAŁĄ HISTORIĘ",use_container_width=True)
+    if go:
+        if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
+        elif confirm!="USUŃ HISTORIĘ": st.error("Wpisz dokładnie: USUŃ HISTORIĘ")
+        else: db.clear_all_history();st.success("Historia wszystkich turniejów została wyczyszczona. Zapamiętane nicki zostały zachowane.");rr()
+
 def format_for(count:int)->str:
     if count==4:return "league4_final"
-    if count==5:return "double5"
-    if count==6:return "groups6"
+    if count==5:return st.session_state.get("format5","double5")
+    if count==6:return st.session_state.get("format6","groups6")
     return st.session_state.get("format7","double7")
 
 def start_defaults(count:int):
@@ -33,13 +90,17 @@ def start_defaults(count:int):
 
 
 def render_start():
-    hero("Wybierz liczbę graczy i format. Statystyki są wspólne ze starą apką.")
-    if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud użyj tego samego DATABASE_URL co w starej aplikacji.")
+    hero("Wybierz liczbę graczy i format turnieju.")
+    if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud podłącz DATABASE_URL z Neon.")
     default=db.last_player_count() if "player_count" not in st.session_state else st.session_state.player_count
     if default not in (4,5,6,7):default=6
     count=st.segmented_control("Liczba graczy",[4,5,6,7],default=default,key="player_count") or default
     start_defaults(count)
-    if count==7:
+    if count==5:
+        st.session_state.format5=st.radio("Format dla 5 graczy",["double5","league5_final"],format_func=lambda x:FORMAT_LABELS[x],horizontal=True,key="format5_radio")
+    elif count==6:
+        st.session_state.format6=st.radio("Format dla 6 graczy",["groups6","groups6_full"],format_func=lambda x:FORMAT_LABELS[x],horizontal=True,key="format6_radio")
+    elif count==7:
         st.session_state.format7=st.radio("Format dla 7 graczy",["double7","groups7"],format_func=lambda x:FORMAT_LABELS[x],horizontal=True,key="format7_radio")
     fmt=format_for(count)
     st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}")
@@ -60,15 +121,8 @@ def render_start():
     if go:
         try:db.create_tournament(names,count,fmt,teams,test);st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
-    with st.expander("⚙️ Dane i testy"):
-        st.caption("Statystyki są wspólne z drugą aplikacją. Poniższy przycisk usuwa tylko turnieje utworzone w FIFA Night Flex.")
-        with st.form("clear_flex"):
-            confirm=st.text_input("Wpisz USUŃ FLEX")
-            clear=st.form_submit_button("🗑️ Usuń historię tylko tej aplikacji",use_container_width=True)
-        if clear:
-            if confirm=="USUŃ FLEX":db.clear_flex_history();st.success("Historia FIFA Night Flex usunięta. Stara aplikacja została nietknięta.");rr()
-            else:st.error("Wpisz dokładnie: USUŃ FLEX")
-
+    with st.expander("⚙️ Historia i baza"):
+        render_history_admin()
 
 @st.fragment
 def draft_order(tid:str):
@@ -168,7 +222,7 @@ def structure_draw(tid:str):
 
 
 def render_structure(t):
-    title={"league4_final":"losowanie par otwarcia","double5":"losowanie drabinki","groups6":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup"}[t["format_key"]]
+    title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup"}[t["format_key"]]
     step="Etap 3/3" if int(t["player_count"]) in (4,5) else "Etap 2/2"
     hero(f"{step} • {title}");structure_draw(t["id"]);reset_controls(t,"structure")
 
@@ -178,15 +232,17 @@ def stage_name(m):
     if s=="GROUP":return f"GRUPA {m['group_name']}"
     return {"LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}.get(s,s)
 
-def max_matches(fmt):return {"league4_final":7,"double5":9,"groups6":9,"double7":13,"groups7":14}[fmt]
+def max_matches(fmt):return {"league4_final":7,"double5":9,"league5_final":11,"groups6":9,"groups6_full":11,"double7":13,"groups7":14}[fmt]
 
 def source_placeholder(fmt,no):
     maps={
       "league4_final":{7:"1. miejsce ligi — 2. miejsce ligi"},
-      "double5":{3:"Wolny los — zwycięzca rundy wstępnej",4:"Przegrany M1 — Przegrany M2",5:"Szczęśliwy zwycięzca — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners — Mistrz losers",9:"Reset finału (jeśli potrzebny)"},
-      "groups6":{7:"1A — 2B",8:"1B — 2A",9:"Zwycięzca SF1 — Zwycięzca SF2"},
-      "double7":{4:"W3 — Wolny los",5:"Przegrany M1 — Przegrany M2",6:"W1 — W2",7:"Przegrany M3 — Przegrany M4",8:"Zwycięzca M5 — Przegrany M6",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners — Mistrz losers",13:"Reset finału (jeśli potrzebny)"},
-      "groups7":{10:"2A — 3B",11:"2B — 3A",12:"1B — Zwycięzca QF1",13:"1A — Zwycięzca QF2",14:"Zwycięzca SF1 — Zwycięzca SF2"},
+      "double5":{3:"Wolny los — wylosowany zwycięzca M1/M2",4:"Przegrany M1 — Przegrany M2",5:"Drugi zwycięzca M1/M2 — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners — Mistrz losers",9:"Reset finału (jeśli potrzebny)"},
+      "league5_final":{11:"1. miejsce ligi — 2. miejsce ligi"},
+      "groups6":{7:"1A — 2B / 1B — 2A",8:"Drugi półfinał",9:"Zwycięzca SF1 — Zwycięzca SF2"},
+      "groups6_full":{7:"2A — 3B / 2B — 3A",8:"Drugi ćwierćfinał",9:"Zwycięzca grupy — Zwycięzca QF",10:"Zwycięzca grupy — Zwycięzca QF",11:"Zwycięzca SF1 — Zwycięzca SF2"},
+      "double7":{4:"W1 — W2",5:"W3 — Wolny los",6:"Dwóch przegranych bez BYE",7:"Wylosowany BYE LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners — Mistrz losers",13:"Reset finału (jeśli potrzebny)"},
+      "groups7":{10:"2A — 3B / 2B — 3A",11:"Drugi ćwierćfinał",12:"Zwycięzca grupy — Zwycięzca QF",13:"Zwycięzca grupy — Zwycięzca QF",14:"Zwycięzca SF1 — Zwycięzca SF2"},
     }
     return maps.get(fmt,{}).get(no,"Do ustalenia")
 
@@ -217,6 +273,44 @@ def score_form(tid,m):
         else:db.save_result(tid,no,int(hs),int(ass));rf()
 
 
+def render_special_event(tid:str, b:dict) -> bool:
+    fmt=b["meta"]["format_key"]
+    if fmt=="double5":
+        state=db.double5_draw_state(tid)
+        if state and not state.get("ack"):
+            st.markdown("### 🎱 Losowanie przeciwnika dla wolnego losu")
+            if not state.get("selected"):
+                names=" • ".join(c["name"] for c in state.get("candidates",[]))
+                st.markdown(f"**{esc(state['player_name'])}** czeka. W puli: **{esc(names)}**")
+                if st.button("🎰 LOSUJ PRZECIWNIKA",type="primary",use_container_width=True,key=f"d5_mid_{tid}"):
+                    db.reveal_double5_opponent(tid);rf()
+            else:
+                render_double5_mid_draw(state["player_name"],state.get("candidates",[]),state["selected"])
+                if st.button("➡️ GRAMY DALEJ",type="primary",use_container_width=True,key=f"d5_mid_ack_{tid}"):
+                    db.ack_double5_draw(tid);rf()
+            return True
+    if fmt=="double7":
+        state=db.double7_lb_draw_state(tid)
+        if state and not state.get("ack"):
+            st.markdown("### 💀 Losowanie pierwszego BYE w Losers Bracket")
+            if not state.get("selected"):
+                if st.button("🎱 LOSUJ SZCZĘŚCIE W NIESZCZĘŚCIU",type="primary",use_container_width=True,key=f"d7_lb_{tid}"):
+                    db.reveal_double7_lb_bye(tid);rf()
+            else:
+                render_double7_lb_bye(state.get("candidates",[]),state["selected"])
+                if st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"d7_lb_ack_{tid}"):
+                    db.ack_double7_lb_draw(tid);rf()
+            return True
+    if fmt in ("groups6","groups6_full","groups7"):
+        state=db.group_playoff_reveal_state(tid)
+        if state:
+            render_playoff_reveal(fmt,state.get("pairs",[]),state.get("direct",[]))
+            if st.button("🔥 ZACZYNAMY FAZĘ PUCHAROWĄ",type="primary",use_container_width=True,key=f"po_ack_{tid}"):
+                db.ack_group_playoffs(tid);rf()
+            return True
+    return False
+
+
 @st.fragment
 def live(tid:str):
     b=db.bundle(tid);t=b["tournament"];meta=b["meta"]
@@ -227,6 +321,8 @@ def live(tid:str):
         if t["is_test"]:st.info("Turniej testowy — nie liczy się do statystyk wszech czasów.")
         if st.button("➕ NOWY TURNIEJ",type="primary",use_container_width=True,key=f"new_{tid}"):db.start_new();rr()
         return
+    if render_special_event(tid,b): return
+    b=db.bundle(tid)
     cur=db.current_match_from(b["matches"])
     if not cur:st.info("Czekam na rozstrzygnięcie poprzedniego etapu…");return
     total=max_matches(meta["format_key"]);suffix="" if cur["stage"]!="RESET_FINAL" else " • JEŚLI POTRZEBNY"
@@ -259,7 +355,7 @@ def render_schedule(t):
 
 def render_stats(t):
     st.subheader("📊 Statystyki wszech czasów")
-    st.caption("Wspólne dla FIFA Night Flex i klasycznej aplikacji 6-osobowej.")
+    st.caption("Wszystkie zakończone turnieje nietestowe zapisane w bazie.")
     stats=db.all_time_stats()
     if not stats:st.info("Brak zakończonych turniejów nietestowych.")
     else:
@@ -268,6 +364,7 @@ def render_stats(t):
 
 
 def reset_controls(t,loc):
+    if t.get("status")=="completed": return
     st.divider()
     with st.expander("🔄 Reset bieżącego turnieju"):
         with st.form(f"reset_{loc}_{t['id']}"):

@@ -76,10 +76,11 @@ def render_draft_order(players,redraws=0):
 
 def _draw_layout(format_key,draw):
     s=draw["slots"]
-    if format_key=="groups6": return [("GRUPA A",[("A1",s["A1"]),("A2",s["A2"]),("A3",s["A3"])]),("GRUPA B",[("B1",s["B1"]),("B2",s["B2"]),("B3",s["B3"])])], ["A1","B1","A2","B2","A3","B3"]
+    if format_key in ("groups6", "groups6_full"): return [("GRUPA A",[("A1",s["A1"]),("A2",s["A2"]),("A3",s["A3"])]),("GRUPA B",[("B1",s["B1"]),("B2",s["B2"]),("B3",s["B3"])])], ["A1","B1","A2","B2","A3","B3"]
     if format_key=="groups7": return [("GRUPA A",[(f"A{i}",s[f"A{i}"]) for i in range(1,5)]),("GRUPA B",[(f"B{i}",s[f"B{i}"]) for i in range(1,4)])], ["A1","B1","A2","B2","A3","B3","A4"]
     if format_key=="league4_final": return [("MECZ OTWARCIA 1",[("1",s["A"]),("2",s["B"])]),("MECZ OTWARCIA 2",[("3",s["C"]),("4",s["D"])])], ["A","B","C","D"]
     if format_key=="double5": return [("MECZ 1",[("A",s["A"]),("B",s["B"])]),("MECZ 2",[("C",s["C"]),("D",s["D"])]),("WOLNY LOS",[("E",s["E"])])], ["A","B","C","D","E"]
+    if format_key=="league5_final": return [("KOLEJNOŚĆ LIGI",[("A",s["A"]),("B",s["B"]),("C",s["C"]),("D",s["D"]),("E",s["E"])])], ["A","B","C","D","E"]
     if format_key=="double7": return [("MECZ 1",[("A",s["A"]),("B",s["B"])]),("MECZ 2",[("C",s["C"]),("D",s["D"])]),("MECZ 3",[("E",s["E"]),("F",s["F"])]),("WOLNY LOS",[("G",s["G"])])], ["A","B","C","D","E","F","G"]
     return [],[]
 
@@ -110,3 +111,34 @@ def result_text(m):
     s=f'{m["home_score"]}:{m["away_score"]}'
     if m.get("home_penalties") is not None:s+=f' (k. {m["home_penalties"]}:{m["away_penalties"]})'
     return s
+
+
+def render_double5_mid_draw(player_name: str, candidates: list[dict], selected: dict):
+    names=[html.escape(str(c.get("name") or "?")) for c in candidates]
+    sel=html.escape(str((selected or {}).get("name") or "?"))
+    cand_html="".join(f"<div class='cand' style='--d:{0.7+i*.45:.2f}s'>{n}</div>" for i,n in enumerate(names))
+    components.html(f"""<div class='mid'><div class='eye'>NADZWYCZAJNE LOSOWANIE</div><div class='title'>Koniec wakacji dla <b>{html.escape(player_name)}</b></div><div class='sub'>Losujemy zwycięzcę, z którym zagra wolny los.</div><div class='cands'>{cand_html}</div><div class='arrow'>↓</div><div class='selected'><span>PRZECIWNIK</span><b>{sel}</b></div><div class='j'>Wolny los dobiegł końca. Prosimy zejść z leżaka.</div></div>
+    <style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.mid{{max-width:720px;margin:auto;padding:24px;border-radius:24px;background:radial-gradient(circle at 50% 0,#233b63,#111c30 44%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center}}.eye{{font-size:11px;font-weight:950;letter-spacing:.18em;color:#7dd3fc}}.title{{font-size:23px;font-weight:950;margin:5px 0}}.sub{{color:#94a3b8;font-size:14px}}.cands{{display:grid;grid-template-columns:repeat({max(1,len(names))},1fr);gap:10px;margin:18px auto 8px;max-width:560px}}.cand{{padding:15px 8px;border-radius:15px;background:#17233a;border:1px solid #334155;font-weight:900;opacity:.45;animation:pulse .65s ease var(--d) 2 alternate}}@keyframes pulse{{to{{opacity:1;transform:scale(1.05);border-color:#7dd3fc}}}}.arrow{{font-size:25px;color:#64748b}}.selected{{display:inline-flex;flex-direction:column;gap:2px;min-width:260px;padding:14px 24px;border-radius:18px;background:#052e2b;border:1px solid #34d399;opacity:0;animation:show .35s ease 2.25s forwards}}.selected span{{font-size:10px;letter-spacing:.15em;color:#6ee7b7;font-weight:950}}.selected b{{font-size:25px}}.j{{margin-top:14px;color:#cbd5e1;opacity:0;animation:show .35s ease 2.55s forwards}}@keyframes show{{to{{opacity:1}}}}@media(max-width:560px){{.mid{{padding:18px 10px}}.cands{{grid-template-columns:1fr}}}}</style>""",height=410,scrolling=False)
+
+
+def render_double7_lb_bye(candidates: list[dict], selected: dict):
+    sel_id=(selected or {}).get("player_id")
+    cards=[]
+    for i,c in enumerate(candidates):
+        chosen=str(c.get("player_id"))==str(sel_id)
+        cards.append(f"<div class='loser {'win' if chosen else ''}' style='--d:{0.7+i*.5:.2f}s'><span>PRZEGRANY M{int(c.get('match_no') or 0)}</span><b>{html.escape(str(c.get('name') or '?'))}</b><em>{'🍀 BYE' if chosen else '💀 GRA DALEJ'}</em></div>")
+    components.html(f"""<div class='mid'><div class='eye'>LOSERS BRACKET LOTTERY</div><div class='title'>Trzy porażki. Tylko jedna nagroda.</div><div class='sub'>Losujemy szczęście w nieszczęściu.</div><div class='grid'>{''.join(cards)}</div><div class='j'>Przegrał mecz, wygrał losowanie. Bilans się zgadza.</div></div><style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.mid{{max-width:820px;margin:auto;padding:24px;border-radius:24px;background:radial-gradient(circle at 50% 0,#3b1d48,#151326 44%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center}}.eye{{font-size:11px;font-weight:950;letter-spacing:.18em;color:#f0abfc}}.title{{font-size:23px;font-weight:950;margin:5px 0}}.sub{{color:#94a3b8}}.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:20px}}.loser{{display:flex;flex-direction:column;gap:5px;padding:18px 10px;border-radius:18px;background:#171827;border:1px solid #334155;opacity:0;transform:translateY(8px);animation:reveal .4s ease var(--d) forwards}}.loser span{{font-size:10px;letter-spacing:.11em;color:#94a3b8;font-weight:900}}.loser b{{font-size:20px}}.loser em{{font-style:normal;font-size:12px;color:#fda4af;font-weight:900;opacity:0;animation:show .25s ease 2.45s forwards}}.loser.win{{border-color:#fbbf24;box-shadow:0 0 0 1px rgba(251,191,36,.25);animation:reveal .4s ease var(--d) forwards, winner .45s ease 2.35s forwards}}.loser.win em{{color:#fde68a}}@keyframes reveal{{to{{opacity:1;transform:none}}}}@keyframes winner{{to{{background:#422006;transform:scale(1.04)}}}}@keyframes show{{to{{opacity:1}}}}.j{{margin-top:15px;color:#cbd5e1;opacity:0;animation:show .3s ease 2.75s forwards}}@media(max-width:620px){{.mid{{padding:18px 10px}}.grid{{grid-template-columns:1fr}}}}</style>""",height=410,scrolling=False)
+
+
+def render_playoff_reveal(format_key: str, pairs: list[dict], direct: list[dict] | None = None):
+    direct=direct or []
+    direct_html=""
+    if direct:
+        d="".join(f"<div class='bye'><span>GRUPA {html.escape(str(x.get('group')))}</span><b>{html.escape(str(x.get('name') or '?'))}</b><em>🎟️ PROSTO DO PÓŁFINAŁU</em></div>" for x in direct)
+        direct_html=f"<div class='direct'>{d}</div>"
+    cards=[]
+    for i,p in enumerate(pairs):
+        stage="PÓŁFINAŁ" if p.get("stage")=="SF" else "ĆWIERĆFINAŁ"
+        cards.append(f"<div class='pair' style='--d:{1.0+i*.75:.2f}s'><span>{stage} • M{int(p.get('match_no') or 0)}</span><b>{html.escape(str(p.get('home_name') or '?'))}</b><i>VS</i><b>{html.escape(str(p.get('away_name') or '?'))}</b></div>")
+    headline="FAZA PUCHAROWA" if format_key!="groups6" else "PÓŁFINAŁY"
+    components.html(f"""<div class='po'><div class='eye'>FAZA GRUPOWA ZAKOŃCZONA</div><div class='title'>{headline}</div>{direct_html}<div class='pairs'>{''.join(cards)}</div><div class='foot'>VAR przeliczył tabelę. Reklamacji brak.</div></div><style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.po{{max-width:850px;margin:auto;padding:24px;border-radius:24px;background:radial-gradient(circle at 50% 0,#163b46,#101d32 45%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center}}.eye{{font-size:11px;font-weight:950;letter-spacing:.18em;color:#67e8f9}}.title{{font-size:27px;font-weight:1000;margin:5px 0 16px}}.direct{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}}.bye{{padding:14px;border-radius:16px;background:#052e2b;border:1px solid #10b981;display:flex;flex-direction:column}}.bye span{{font-size:10px;color:#6ee7b7;font-weight:900}}.bye b{{font-size:18px}}.bye em{{font-style:normal;font-size:10px;color:#a7f3d0;font-weight:900}}.pairs{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.pair{{padding:17px 12px;border-radius:18px;background:#111c31;border:1px solid #334155;display:grid;gap:4px;opacity:0;transform:translateY(8px);animation:reveal .42s ease var(--d) forwards}}.pair span{{font-size:10px;letter-spacing:.1em;color:#94a3b8;font-weight:900}}.pair b{{font-size:18px}}.pair i{{font-style:normal;color:#64748b;font-size:11px;font-weight:900}}.foot{{margin-top:14px;color:#86efac;opacity:0;animation:reveal .35s ease 2.5s forwards}}@keyframes reveal{{to{{opacity:1;transform:none}}}}@media(max-width:620px){{.po{{padding:18px 10px}}.direct,.pairs{{grid-template-columns:1fr}}}}</style>""",height=430 if direct else 330,scrolling=False)
