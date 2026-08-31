@@ -19,7 +19,7 @@ from logic import (
     schedule_for_format, shuffled_assignments, winner_from_result,
 )
 
-DB_API_VERSION = 130
+DB_API_VERSION = 140
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -134,7 +134,7 @@ class Database:
             return {"d5_opponent_match": None, "d5_draw_ack": False}
         if format_key == "double7":
             return {"d7_lb_bye_match": None, "d7_lb_draw_ack": False, "d7_pairing": None}
-        if format_key in ("groups6", "groups6_full", "groups7"):
+        if format_key in ("groups6", "groups6_full", "groups7", "groups7_sf"):
             return {"playoff_reveal_ack": False, "playoff_order": None}
         return {}
 
@@ -151,7 +151,7 @@ class Database:
         if player_count == 4 and format_key != "league4_final": raise ValueError("Nieprawidłowy format dla 4 graczy.")
         if player_count == 5 and format_key not in ("double5", "league5_final"): raise ValueError("Nieprawidłowy format dla 5 graczy.")
         if player_count == 6 and format_key not in ("groups6", "groups6_full"): raise ValueError("Nieprawidłowy format dla 6 graczy.")
-        if player_count == 7 and format_key not in ("double7", "groups7"): raise ValueError("Wybierz format turnieju 7-osobowego.")
+        if player_count == 7 and format_key not in ("double7", "groups7", "groups7_sf"): raise ValueError("Wybierz format turnieju 7-osobowego.")
 
         tid = str(uuid.uuid4()); rng = random.SystemRandom()
         with self.connect() as conn:
@@ -304,7 +304,7 @@ class Database:
     def _apply_draw_groups_conn(self, conn, tid: str, format_key: str, draw: dict) -> None:
         # Reset group metadata first.
         conn.execute(self._sql("UPDATE tournament_players SET group_name='', tie_order=team_reveal_order WHERE tournament_id=?"), (tid,))
-        if format_key in ("groups6", "groups6_full", "groups7"):
+        if format_key in ("groups6", "groups6_full", "groups7", "groups7_sf"):
             for g in ("A","B"):
                 members = group_members(draw, g)
                 for i,pid in enumerate(members,1):
@@ -412,7 +412,7 @@ class Database:
             if key=="PAIR_W6":
                 no=pairing.get("w6_vs_sf")
                 return self._loser_of(match_map.get(int(no))) if no else None
-        if kind in ("G6","G6F","G7"):
+        if kind in ("G6","G6F","G7","G7S"):
             _,extra=self._meta_extra_conn(conn,tid); mapped=(extra.get("playoff_sources") or {}).get(source)
             return self._resolve_source_conn(conn,tid,mapped,match_map) if mapped else None
         return None
@@ -542,34 +542,44 @@ class Database:
 
     def _prepare_group_playoffs_conn(self, conn, tid: str) -> dict | None:
         meta,extra=self._meta_extra_conn(conn,tid); fmt=meta["format_key"]
-        if fmt not in ("groups6","groups6_full","groups7"): return None
+        if fmt not in ("groups6","groups6_full","groups7","groups7_sf"): return None
         if extra.get("playoff_sources"): return extra
         rows=self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,)); mm={int(m["match_no"]):m for m in rows}
         group_end=6 if fmt in ("groups6","groups6_full") else 9
         if not all(self._match_played(mm.get(i)) for i in range(1,group_end+1)): return None
         ta=self._table_from_conn(conn,tid,"A"); tb=self._table_from_conn(conn,tid,"B")
+
         def last_play(pid):
             nums=[i for i in range(1,group_end+1) if pid in (mm[i].get("home_player_id"),mm[i].get("away_player_id"))]
             return max(nums) if nums else 0
+
         last_group={mm[group_end].get("home_player_id"),mm[group_end].get("away_player_id")}
         orders=[[0,1],[1,0]]
-        if fmt=="groups6":
+
+        if fmt in ("groups6","groups7_sf"):
             pairings=[("POS:A:1","POS:B:2"),("POS:B:1","POS:A:2")]
             ids=[(ta[0]["player_id"],tb[1]["player_id"]),(tb[0]["player_id"],ta[1]["player_id"])]
+            start_no=7 if fmt=="groups6" else 10
+
             def cost(order):
                 waits=[]
                 for slot,i in enumerate(order):
-                    mno=7+slot
+                    mno=start_no+slot
                     waits += [mno-last_play(pid)-1 for pid in ids[i]]
                 b2b=sum(pid in last_group for pid in ids[order[0]])
                 return (max(waits),b2b,sum(waits))
-            order=min(orders,key=cost); p7,p8=[pairings[i] for i in order]
-            src={"G6:SF7H":p7[0],"G6:SF7A":p7[1],"G6:SF8H":p8[0],"G6:SF8A":p8[1]}
-            display=[p7,p8]
+
+            order=min(orders,key=cost); p1,p2=[pairings[i] for i in order]
+            if fmt=="groups6":
+                src={"G6:SF7H":p1[0],"G6:SF7A":p1[1],"G6:SF8H":p2[0],"G6:SF8A":p2[1]}
+            else:
+                src={"G7S:SF10H":p1[0],"G7S:SF10A":p1[1],"G7S:SF11H":p2[0],"G7S:SF11A":p2[1]}
+            display=[p1,p2]
         else:
             pairings=[("POS:A:2","POS:B:3","POS:B:1"),("POS:B:2","POS:A:3","POS:A:1")]
             ids=[(ta[1]["player_id"],tb[2]["player_id"],tb[0]["player_id"]),(tb[1]["player_id"],ta[2]["player_id"],ta[0]["player_id"])]
             qbase,sfbase=(7,9) if fmt=="groups6_full" else (10,12)
+
             def cost(order):
                 waits=[]
                 for slot,i in enumerate(order):
@@ -577,12 +587,14 @@ class Database:
                     waits += [qno-last_play(qh)-1,qno-last_play(qa)-1,sfno-last_play(direct)-1]
                 b2b=sum(pid in last_group for pid in ids[order[0]][:2])
                 return (max(waits),b2b,sum(waits))
+
             order=min(orders,key=cost); q1,q2=[pairings[i] for i in order]
             if fmt=="groups6_full":
                 src={"G6F:QF7H":q1[0],"G6F:QF7A":q1[1],"G6F:QF8H":q2[0],"G6F:QF8A":q2[1],"G6F:SF9H":q1[2],"G6F:SF10H":q2[2]}
             else:
                 src={"G7:QF10H":q1[0],"G7:QF10A":q1[1],"G7:QF11H":q2[0],"G7:QF11A":q2[1],"G7:SF12H":q1[2],"G7:SF13H":q2[2]}
             display=[q1[:2],q2[:2]]
+
         extra["playoff_sources"]=src; extra["playoff_display_sources"]=display
         conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
         self._resolve_all_conn(conn,tid,fmt)
@@ -595,9 +607,8 @@ class Database:
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
             rows=self._matches_conn(conn,tid); mm={int(m["match_no"]):m for m in rows}
             start=7 if fmt in ("groups6","groups6_full") else 10
-            pair_count=2
             pairs=[]
-            for no in range(start,start+pair_count):
+            for no in range(start,start+2):
                 m=mm[no]
                 if m.get("home_player_id") and m.get("away_player_id"):
                     pairs.append({"match_no":no,"stage":m["stage"],"home_name":m.get("home_name"),"away_name":m.get("away_name")})
@@ -630,7 +641,7 @@ class Database:
             conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=? WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
-            if fmt in ("groups6","groups6_full","groups7"): self._prepare_group_playoffs_conn(conn,tid)
+            if fmt in ("groups6","groups6_full","groups7","groups7_sf"): self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
             self._maybe_finish_conn(conn,tid,fmt)
 
@@ -642,6 +653,7 @@ class Database:
         elif fmt=="groups6": champion=mm[9].get("winner_player_id")
         elif fmt=="groups6_full": champion=mm[11].get("winner_player_id")
         elif fmt=="groups7": champion=mm[14].get("winner_player_id")
+        elif fmt=="groups7_sf": champion=mm[12].get("winner_player_id")
         elif fmt=="double5":
             final=mm[8]
             if final.get("winner_player_id"):
@@ -674,12 +686,12 @@ class Database:
                     extra["d7_lb_bye_match"]=None; extra["d7_lb_draw_ack"]=False; extra["d7_pairing"]=None
                 elif no<=6:
                     extra["d7_pairing"]=None
-            group_end=6 if fmt in ("groups6","groups6_full") else (9 if fmt=="groups7" else 0)
+            group_end=6 if fmt in ("groups6","groups6_full") else (9 if fmt in ("groups7","groups7_sf") else 0)
             if group_end and no<=group_end:
                 extra.pop("playoff_sources",None); extra.pop("playoff_display_sources",None); extra["playoff_reveal_ack"]=False
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
-            if fmt in ("groups6","groups6_full","groups7"): self._prepare_group_playoffs_conn(conn,tid)
+            if fmt in ("groups6","groups6_full","groups7","groups7_sf"): self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
             return no
 
@@ -687,7 +699,7 @@ class Database:
         with self.connect() as conn:
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
             if fmt in ("league4_final", "league5_final"): return {"L":self._table_from_conn(conn,tid,"L")}
-            if fmt in ("groups6", "groups6_full", "groups7"): return {"A":self._table_from_conn(conn,tid,"A"),"B":self._table_from_conn(conn,tid,"B")}
+            if fmt in ("groups6", "groups6_full", "groups7", "groups7_sf"): return {"A":self._table_from_conn(conn,tid,"A"),"B":self._table_from_conn(conn,tid,"B")}
             return {}
 
     def reset_current(self, tid: str) -> None:

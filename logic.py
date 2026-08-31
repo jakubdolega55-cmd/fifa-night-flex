@@ -31,6 +31,18 @@ FORMAT_LABELS = {
     "groups6_full": "Rozszerzony: 2 grupy po 3 + ćwierćfinały + półfinały + finał",
     "double7": "Double elimination",
     "groups7": "Grupy 4+3 + ćwierćfinały + półfinały + finał",
+    "groups7_sf": "Grupy 4+3 + półfinały + finał",
+}
+
+FORMAT_MATCH_COUNTS = {
+    "league4_final": "7 meczów",
+    "double5": "8–9 meczów",
+    "league5_final": "11 meczów",
+    "groups6": "9 meczów",
+    "groups6_full": "11 meczów",
+    "double7": "12–13 meczów",
+    "groups7": "14 meczów",
+    "groups7_sf": "12 meczów",
 }
 
 
@@ -56,7 +68,7 @@ def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> di
         return {"slots": dict(zip(seq, ids, strict=True))}
     if format_key == "double7":
         return {"slots": dict(zip(["A", "B", "C", "D", "E", "F", "G"], ids, strict=True))}
-    if format_key == "groups7":
+    if format_key in ("groups7", "groups7_sf"):
         seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4"]
         return {"slots": dict(zip(seq, ids, strict=True))}
     raise ValueError(f"Nieznany format: {format_key}")
@@ -174,6 +186,24 @@ def schedule_groups7(draw: dict, rng: random.Random) -> list[dict]:
     return out
 
 
+
+def schedule_groups7_sf(draw: dict, rng: random.Random) -> list[dict]:
+    """7 graczy: grupy 4+3, następnie półfinały i finał."""
+    a=group_members(draw,"A"); b=group_members(draw,"B")
+    ar=_round_robin_pairs(a); br=_round_robin_pairs(b)
+    ordered=[("A",ar[0][0]),("B",br[0][0]),("A",ar[1][0]),("A",ar[1][1]),("B",br[1][0]),("A",ar[0][1]),("A",ar[2][0]),("B",br[2][0]),("A",ar[2][1])]
+    out=[]
+    for no,(group,pair) in enumerate(ordered,1):
+        h,aw=pair
+        if rng.choice([True,False]): h,aw=aw,h
+        out.append({"match_no":no,"stage":"GROUP","group_name":group,"home":f"P:{h}","away":f"P:{aw}"})
+    out += [
+        {"match_no":10,"stage":"SF","group_name":None,"home":"G7S:SF10H","away":"G7S:SF10A"},
+        {"match_no":11,"stage":"SF","group_name":None,"home":"G7S:SF11H","away":"G7S:SF11A"},
+        {"match_no":12,"stage":"FINAL","group_name":None,"home":"W:10","away":"W:11"},
+    ]
+    return out
+
 def schedule_double5(draw: dict, extra: dict) -> list[dict]:
     s=draw["slots"]
     # The opponent for E is a real mid-tournament draw after M1 and M2.
@@ -219,6 +249,7 @@ def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Ra
     if format_key=="groups6_full": return schedule_groups6_full(draw,rng)
     if format_key=="double7": return schedule_double7(draw,extra)
     if format_key=="groups7": return schedule_groups7(draw,rng)
+    if format_key=="groups7_sf": return schedule_groups7_sf(draw,rng)
     raise ValueError(format_key)
 
 

@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from database import Database
-from logic import BASE_TEAMS, SEVEN_TEAMS, FORMAT_LABELS
+from logic import BASE_TEAMS, SEVEN_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_lb_bye, render_playoff_reveal)
 
@@ -17,6 +17,7 @@ if not st.session_state.get("_flex_schema_ready"):
 
 
 def esc(x):return html.escape(str(x or ""))
+def format_option(x):return f"{FORMAT_LABELS[x]} • {FORMAT_MATCH_COUNTS[x]}"
 def rr():st.rerun()
 def rf():st.rerun(scope="fragment")
 
@@ -97,13 +98,13 @@ def render_start():
     count=st.segmented_control("Liczba graczy",[4,5,6,7],default=default,key="player_count") or default
     start_defaults(count)
     if count==5:
-        st.session_state.format5=st.radio("Format dla 5 graczy",["double5","league5_final"],format_func=lambda x:FORMAT_LABELS[x],horizontal=True,key="format5_radio")
+        st.session_state.format5=st.radio("Format dla 5 graczy",["double5","league5_final"],format_func=format_option,horizontal=False,key="format5_radio")
     elif count==6:
-        st.session_state.format6=st.radio("Format dla 6 graczy",["groups6","groups6_full"],format_func=lambda x:FORMAT_LABELS[x],horizontal=True,key="format6_radio")
+        st.session_state.format6=st.radio("Format dla 6 graczy",["groups6","groups6_full"],format_func=format_option,horizontal=False,key="format6_radio")
     elif count==7:
-        st.session_state.format7=st.radio("Format dla 7 graczy",["double7","groups7"],format_func=lambda x:FORMAT_LABELS[x],horizontal=True,key="format7_radio")
+        st.session_state.format7=st.radio("Format dla 7 graczy",["double7","groups7","groups7_sf"],format_func=format_option,horizontal=False,key="format7_radio")
     fmt=format_for(count)
-    st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}")
+    st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}  \n**Łącznie:** {FORMAT_MATCH_COUNTS[fmt]}")
     with st.form(f"create_{count}_{fmt}"):
         cols=st.columns(2); names=[]
         for i in range(count):
@@ -222,7 +223,7 @@ def structure_draw(tid:str):
 
 
 def render_structure(t):
-    title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup"}[t["format_key"]]
+    title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup"}[t["format_key"]]
     step="Etap 3/3" if int(t["player_count"]) in (4,5) else "Etap 2/2"
     hero(f"{step} • {title}");structure_draw(t["id"]);reset_controls(t,"structure")
 
@@ -232,7 +233,7 @@ def stage_name(m):
     if s=="GROUP":return f"GRUPA {m['group_name']}"
     return {"LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}.get(s,s)
 
-def max_matches(fmt):return {"league4_final":7,"double5":9,"league5_final":11,"groups6":9,"groups6_full":11,"double7":13,"groups7":14}[fmt]
+def max_matches(fmt):return {"league4_final":7,"double5":9,"league5_final":11,"groups6":9,"groups6_full":11,"double7":13,"groups7":14,"groups7_sf":12}[fmt]
 
 def source_placeholder(fmt,no):
     maps={
@@ -243,6 +244,7 @@ def source_placeholder(fmt,no):
       "groups6_full":{7:"2A — 3B / 2B — 3A",8:"Drugi ćwierćfinał",9:"Zwycięzca grupy — Zwycięzca QF",10:"Zwycięzca grupy — Zwycięzca QF",11:"Zwycięzca SF1 — Zwycięzca SF2"},
       "double7":{4:"W1 — W2",5:"W3 — Wolny los",6:"Dwóch przegranych bez BYE",7:"Wylosowany BYE LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners — Mistrz losers",13:"Reset finału (jeśli potrzebny)"},
       "groups7":{10:"2A — 3B / 2B — 3A",11:"Drugi ćwierćfinał",12:"Zwycięzca grupy — Zwycięzca QF",13:"Zwycięzca grupy — Zwycięzca QF",14:"Zwycięzca SF1 — Zwycięzca SF2"},
+      "groups7_sf":{10:"1A — 2B / 1B — 2A",11:"Drugi półfinał",12:"Zwycięzca SF1 — Zwycięzca SF2"},
     }
     return maps.get(fmt,{}).get(no,"Do ustalenia")
 
@@ -301,7 +303,7 @@ def render_special_event(tid:str, b:dict) -> bool:
                 if st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"d7_lb_ack_{tid}"):
                     db.ack_double7_lb_draw(tid);rf()
             return True
-    if fmt in ("groups6","groups6_full","groups7"):
+    if fmt in ("groups6","groups6_full","groups7","groups7_sf"):
         state=db.group_playoff_reveal_state(tid)
         if state:
             render_playoff_reveal(fmt,state.get("pairs",[]),state.get("direct",[]))
