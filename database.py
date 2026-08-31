@@ -20,7 +20,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 161
+DB_API_VERSION = 163
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -110,6 +110,26 @@ class Database:
         with self.connect() as conn:
             for s in stmts: conn.execute(s)
             self._seed_scorers_conn(conn)
+            self._migrate_double_elim_single_final_conn(conn)
+
+    def _migrate_double_elim_single_final_conn(self, conn) -> None:
+        """Migruje tylko aktywne stare DE do jednego finału; historii nie zmienia."""
+        rows=self._fetchall(conn,"""
+            SELECT t.id,m.format_key
+            FROM tournaments t JOIN flex_tournament_meta m ON m.tournament_id=t.id
+            WHERE t.status='active' AND m.format_key IN ('double5','double7','double8')
+        """)
+        finals={"double5":8,"double7":12,"double8":14}
+        resets={"double5":9,"double7":13,"double8":15}
+        for row in rows:
+            tid=row["id"]; fmt=row["format_key"]; final_no=finals[fmt]; reset_no=resets[fmt]
+            final=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,final_no))
+            conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
+            conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
+            conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
+            if final and final.get("winner_player_id"):
+                conn.execute(self._sql("UPDATE tournaments SET status='completed',phase='completed',champion_player_id=?,completed_at=COALESCE(completed_at,?) WHERE id=?"),
+                             (final["winner_player_id"],final.get("played_at") or now_iso(),tid))
 
     @staticmethod
     def _norm_scorer_name(value: str) -> str:
@@ -1039,12 +1059,14 @@ class Database:
             m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,match_no))
             if not m or not m.get("home_player_id") or not m.get("away_player_id"): raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
             if hs<0 or ass<0: raise ValueError("Wynik nie może być ujemny.")
+            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
+            if fmt in ("double5","double7","double8") and m["stage"]=="FINAL" and hs<1:
+                raise ValueError("Zwycięzca Winners Bracket zaczyna finał od 1:0.")
             knockout = m["stage"] not in ("GROUP","LEAGUE")
             if knockout and hs==ass and (hp is None or ap is None or hp==ap): raise ValueError("W fazie pucharowej remis wymaga karnych.")
             winner=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"],hp,ap)
             self._save_scorers_conn(conn,tid,match_no,hs,ass,scorers)
             conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=? WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
-            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
             if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"): self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
@@ -1061,21 +1083,9 @@ class Database:
         elif fmt=="groups7_sf": champion=mm[12].get("winner_player_id")
         elif fmt=="groups8_sf": champion=mm[15].get("winner_player_id")
         elif fmt=="groups8_barrage": champion=mm[17].get("winner_player_id")
-        elif fmt=="double5":
-            final=mm[8]
-            if final.get("winner_player_id"):
-                if final["winner_player_id"]==final["home_player_id"]: champion=final["winner_player_id"]
-                elif mm[9].get("winner_player_id"): champion=mm[9]["winner_player_id"]
-        elif fmt=="double7":
-            final=mm[12]
-            if final.get("winner_player_id"):
-                if final["winner_player_id"]==final["home_player_id"]: champion=final["winner_player_id"]
-                elif mm[13].get("winner_player_id"): champion=mm[13]["winner_player_id"]
-        elif fmt=="double8":
-            final=mm[14]
-            if final.get("winner_player_id"):
-                if final["winner_player_id"]==final["home_player_id"]: champion=final["winner_player_id"]
-                elif mm[15].get("winner_player_id"): champion=mm[15]["winner_player_id"]
+        elif fmt=="double5": champion=mm[8].get("winner_player_id")
+        elif fmt=="double7": champion=mm[12].get("winner_player_id")
+        elif fmt=="double8": champion=mm[14].get("winner_player_id")
         if champion:
             conn.execute(self._sql("UPDATE tournaments SET status='completed',phase='completed',champion_player_id=?,completed_at=? WHERE id=?"),(champion,now_iso(),tid))
 

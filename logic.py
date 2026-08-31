@@ -63,15 +63,15 @@ FORMAT_LABELS = {
 
 FORMAT_MATCH_COUNTS = {
     "league4_final": "7 meczów",
-    "double5": "8–9 meczów",
+    "double5": "8 meczów",
     "league5_final": "11 meczów",
     "groups6": "9 meczów",
     "groups6_full": "11 meczów",
-    "double7": "12–13 meczów",
+    "double7": "12 meczów",
     "groups7": "14 meczów",
     "groups7_sf": "12 meczów",
     "groups8_sf": "15 meczów",
-    "double8": "14–15 meczów",
+    "double8": "14 meczów",
     "groups8_barrage": "17 meczów",
 }
 
@@ -300,7 +300,6 @@ def schedule_double8(draw: dict, extra: dict) -> list[dict]:
         {"match_no":12,"stage":"LB","group_name":None,"home":"W:9","away":"W:10"},
         {"match_no":13,"stage":"LB_FINAL","group_name":None,"home":"W:12","away":"L:11"},
         {"match_no":14,"stage":"FINAL","group_name":None,"home":"W:11","away":"W:13"},
-        {"match_no":15,"stage":"RESET_FINAL","group_name":None,"home":"W:11","away":"W:13"},
     ]
 
 def schedule_double5(draw: dict, extra: dict) -> list[dict]:
@@ -315,7 +314,6 @@ def schedule_double5(draw: dict, extra: dict) -> list[dict]:
         {"match_no":6,"stage":"LB","group_name":None,"home":"W:4","away":"L:3"},
         {"match_no":7,"stage":"LB_FINAL","group_name":None,"home":"W:6","away":"L:5"},
         {"match_no":8,"stage":"FINAL","group_name":None,"home":"W:5","away":"W:7"},
-        {"match_no":9,"stage":"RESET_FINAL","group_name":None,"home":"W:5","away":"W:7"},
     ]
 
 
@@ -336,7 +334,6 @@ def schedule_double7(draw: dict, extra: dict) -> list[dict]:
         {"match_no":10,"stage":"LB","group_name":None,"home":"W:7","away":"W:8"},
         {"match_no":11,"stage":"LB_FINAL","group_name":None,"home":"W:10","away":"L:9"},
         {"match_no":12,"stage":"FINAL","group_name":None,"home":"W:9","away":"W:11"},
-        {"match_no":13,"stage":"RESET_FINAL","group_name":None,"home":"W:9","away":"W:11"},
     ]
 
 

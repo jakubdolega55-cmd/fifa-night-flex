@@ -285,20 +285,20 @@ def stage_name(m):
     if s=="GROUP":return f"GRUPA {m['group_name']}"
     return {"LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}.get(s,s)
 
-def max_matches(fmt):return {"league4_final":7,"double5":9,"league5_final":11,"groups6":9,"groups6_full":11,"double7":13,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":15,"groups8_barrage":17}[fmt]
+def max_matches(fmt):return {"league4_final":7,"double5":8,"league5_final":11,"groups6":9,"groups6_full":11,"double7":12,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":14,"groups8_barrage":17}[fmt]
 
 def source_placeholder(fmt,no):
     maps={
       "league4_final":{7:"1. miejsce ligi — 2. miejsce ligi"},
-      "double5":{3:"Wolny los — wylosowany zwycięzca M1/M2",4:"Przegrany M1 — Przegrany M2",5:"Drugi zwycięzca M1/M2 — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners — Mistrz losers",9:"Reset finału (jeśli potrzebny)"},
+      "double5":{3:"Wolny los — wylosowany zwycięzca M1/M2",4:"Przegrany M1 — Przegrany M2",5:"Drugi zwycięzca M1/M2 — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners (start 1:0) — Mistrz losers"},
       "league5_final":{11:"1. miejsce ligi — 2. miejsce ligi"},
       "groups6":{7:"1A — 2B / 1B — 2A",8:"Drugi półfinał",9:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups6_full":{7:"2A — 3B / 2B — 3A",8:"Drugi ćwierćfinał",9:"Zwycięzca grupy — Zwycięzca QF",10:"Zwycięzca grupy — Zwycięzca QF",11:"Zwycięzca SF1 — Zwycięzca SF2"},
-      "double7":{4:"W1 — W2",5:"W3 — Wolny los",6:"Dwóch przegranych bez BYE",7:"Wylosowany BYE LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners — Mistrz losers",13:"Reset finału (jeśli potrzebny)"},
+      "double7":{4:"W1 — W2",5:"W3 — Wolny los",6:"Dwóch przegranych bez BYE",7:"Wylosowany BYE LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners (start 1:0) — Mistrz losers"},
       "groups7":{10:"2A — 3B / 2B — 3A",11:"Drugi ćwierćfinał",12:"Zwycięzca grupy — Zwycięzca QF",13:"Zwycięzca grupy — Zwycięzca QF",14:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups7_sf":{10:"1A — 2B / 1B — 2A",11:"Drugi półfinał",12:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups8_sf":{13:"1A — 2B / 1B — 2A",14:"Drugi półfinał",15:"Zwycięzca SF1 — Zwycięzca SF2"},
-      "double8":{5:"W1 — W2",6:"W3 — W4",7:"L1 — L2",8:"L3 — L4",9:"Zwycięzca LB M7 — przegrany WB M6",10:"Zwycięzca LB M8 — przegrany WB M5",11:"Finał winners",12:"Zwycięzcy M9 — M10",13:"Finał losers",14:"Mistrz winners — Mistrz losers",15:"Reset finału (jeśli potrzebny)"},
+      "double8":{5:"W1 — W2",6:"W3 — W4",7:"L1 — L2",8:"L3 — L4",9:"Zwycięzca LB M7 — przegrany WB M6",10:"Zwycięzca LB M8 — przegrany WB M5",11:"Finał winners",12:"Zwycięzcy M9 — M10",13:"Finał losers",14:"Mistrz winners (start 1:0) — Mistrz losers"},
       "groups8_barrage":{13:"2B — 3A / 2A — 3B",14:"Drugi baraż",15:"Zwycięzca grupy — Zwycięzca barażu",16:"Zwycięzca grupy — Zwycięzca barażu",17:"Zwycięzca SF1 — Zwycięzca SF2"},
     }
     return maps.get(fmt,{}).get(no,"Do ustalenia")
@@ -349,7 +349,7 @@ def render_match_context(m):
     if last:st.caption(f"Ostatnio: {last.get('home_name')} {last.get('home_score')}:{last.get('away_score')} {last.get('away_name')}")
 
 
-def score_form(tid,m):
+def score_form(tid,m,fmt):
     no=int(m["match_no"]);pending=st.session_state.get("pending_ko")
     if pending and pending.get("tid")==tid and pending.get("no")==no:
         st.markdown("### ⚽ Karne")
@@ -366,15 +366,21 @@ def score_form(tid,m):
                 except ValueError as e:st.error(str(e))
         if st.button("↩️ Zmień wynik przed karnymi",use_container_width=True,key=f"change_{tid}_{no}"):st.session_state.pop("pending_ko",None);rf()
         return
+    wb_bonus = fmt in ("double5","double7","double8") and m.get("stage")=="FINAL"
+    start_home = 1 if wb_bonus else 0
+    if wb_bonus and st.session_state.get(f"hs_{tid}_{no}",1) < 1:
+        st.session_state[f"hs_{tid}_{no}"] = 1
     with st.form(f"score_{tid}_{no}"):
         c1,mid,c2=st.columns([1,.18,1])
-        with c1:hs=st.number_input(m["home_name"],0,99,0,1,key=f"hs_{tid}_{no}")
+        with c1:hs=st.number_input(m["home_name"],min_value=start_home,max_value=99,value=start_home,step=1,key=f"hs_{tid}_{no}")
         with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
-        with c2:ass=st.number_input(m["away_name"],0,99,0,1,key=f"as_{tid}_{no}")
+        with c2:ass=st.number_input(m["away_name"],min_value=0,max_value=99,value=0,step=1,key=f"as_{tid}_{no}")
         st.divider()
         home_sc=_scorer_side_form(tid,m,"home",m["home_team"],m["home_name"])
         st.divider()
         away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
+        if wb_bonus:
+            st.caption("Bonusowe 1:0 z Winners Bracket nie ma strzelca — nie dodawaj go do listy strzelców.")
         st.caption("Strzelcy są opcjonalni i nie muszą sumować się do wyniku — możesz wpisać tylko znane gole, a samobóje lub nieuzupełnione bramki zostawić bez przypisania.")
         ok=st.form_submit_button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True)
     if ok:
@@ -452,11 +458,13 @@ def live(tid:str):
     b=db.bundle(tid)
     cur=db.current_match_from(b["matches"])
     if not cur:st.info("Czekam na rozstrzygnięcie poprzedniego etapu…");return
-    total=max_matches(meta["format_key"]);suffix="" if cur["stage"]!="RESET_FINAL" else " • JEŚLI POTRZEBNY"
-    st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}{suffix}</div>',unsafe_allow_html=True)
+    total=max_matches(meta["format_key"])
+    st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
+    if meta["format_key"] in ("double5","double7","double8") and cur.get("stage")=="FINAL":
+        st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_context(cur)
-    score_form(tid,cur)
+    score_form(tid,cur,meta["format_key"])
     nxt=[m for m in b["matches"] if int(m["match_no"])>int(cur["match_no"]) and m.get("home_player_id") and m.get("home_score") is None]
     if nxt:st.caption(f"Następny: **{nxt[0]['home_name']} vs {nxt[0]['away_name']}**")
     if st.button("↩️ Cofnij ostatni wynik",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
@@ -477,8 +485,8 @@ def render_schedule(t):
         if m.get("home_player_id"):
             names=f"{esc(m['home_name'])} — {esc(m['away_name'])}";result=result_text(m);icon="✅" if m.get("home_score") is not None else "▶️"
         else:names=source_placeholder(fmt,int(m["match_no"]));result="—";icon="🔒"
-        optional=" • opcjonalny" if m["stage"]=="RESET_FINAL" else ""
-        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{optional}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
+        bonus = " • START 1:0 DLA WINNERS" if fmt in ("double5","double7","double8") and m["stage"]=="FINAL" else ""
+        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{bonus}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
 
 
 def render_stats(t):
