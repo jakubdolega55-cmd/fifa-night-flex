@@ -15,11 +15,12 @@ from psycopg.rows import dict_row
 import streamlit as st
 
 from logic import (
-    BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, build_draw, draw_signature, group_members, group_table,
+    BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
     schedule_for_format, shuffled_assignments, winner_from_result,
 )
+from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 150
+DB_API_VERSION = 160
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -96,9 +97,62 @@ class Database:
                 tournament_id TEXT NOT NULL, match_no INTEGER NOT NULL,
                 home_source TEXT NOT NULL, away_source TEXT NOT NULL,
                 PRIMARY KEY (tournament_id, match_no))""",
+            """CREATE TABLE IF NOT EXISTS team_scorers (
+                id TEXT PRIMARY KEY, team_name TEXT NOT NULL, normalized_team TEXT NOT NULL,
+                scorer_name TEXT NOT NULL, normalized_scorer TEXT NOT NULL, seed_rank INTEGER NOT NULL DEFAULT 999,
+                created_at TEXT NOT NULL, UNIQUE (normalized_team, normalized_scorer))""",
+            """CREATE TABLE IF NOT EXISTS match_scorers (
+                id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, match_no INTEGER NOT NULL, side TEXT NOT NULL,
+                team_name TEXT NOT NULL, normalized_team TEXT NOT NULL, scorer_name TEXT NOT NULL,
+                normalized_scorer TEXT NOT NULL, goals INTEGER NOT NULL,
+                UNIQUE (tournament_id, match_no, side, normalized_scorer))""",
         ]
         with self.connect() as conn:
             for s in stmts: conn.execute(s)
+            self._seed_scorers_conn(conn)
+
+    @staticmethod
+    def _norm_scorer_name(value: str) -> str:
+        return " ".join(str(value or "").strip().casefold().split())
+
+    def _seed_scorers_conn(self, conn) -> None:
+        for team, names in SCORER_SEEDS.items():
+            nt=self._norm_team_name(team)
+            for rank,name in enumerate(names,1):
+                clean=" ".join(str(name or "").strip().split())
+                if not clean: continue
+                ns=self._norm_scorer_name(clean)
+                exists=self._fetchone(conn,"SELECT id FROM team_scorers WHERE normalized_team=? AND normalized_scorer=?",(nt,ns))
+                if exists: continue
+                conn.execute(self._sql("INSERT INTO team_scorers (id,team_name,normalized_team,scorer_name,normalized_scorer,seed_rank,created_at) VALUES (?,?,?,?,?,?,?)"),
+                             (str(uuid.uuid4()),team,nt,clean,ns,rank,now_iso()))
+
+    def wildcard_team_suggestions(self) -> list[str]:
+        fixed={self._norm_team_name(x) for x in BASE_TEAMS+SEVEN_TEAMS+EIGHT_TEAMS if "Dowolna drużyna" not in x}
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"SELECT team,COUNT(*) AS c FROM tournament_players WHERE team<>'' GROUP BY team ORDER BY c DESC,team")
+        out=[]; seen=set()
+        for name in list(WILDCARD_TEAM_SUGGESTIONS)+[r["team"] for r in rows]:
+            clean=" ".join(str(name or "").strip().split()); norm=self._norm_team_name(clean)
+            if not clean or "dowolna drużyna" in clean.casefold() or norm in fixed or norm in seen: continue
+            seen.add(norm); out.append(clean)
+        return out
+
+    def _validate_wildcard_team_conn(self, conn, tid: str, team: str, player_id: str | None = None) -> str:
+        clean=" ".join(str(team or "").strip().split())
+        if not clean: raise ValueError("Wpisz drużynę dla Wild Card.")
+        norm=self._norm_team_name(clean)
+        banned={"real","real madrid","real madryt","rma"}
+        if norm in banned or "real madrid" in norm or "real madryt" in norm: raise ValueError("Real Madryt jest banned 🚫")
+        meta=self._fetchone(conn,"SELECT team_pool_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+        pool=json.loads(meta["team_pool_json"]) if meta else []
+        fixed={self._norm_team_name(x) for x in pool if "Dowolna drużyna" not in x}
+        if norm in fixed: raise ValueError("Ta drużyna jest już osobnym wyborem w puli.")
+        rows=self._fetchall(conn,"SELECT player_id,team FROM tournament_players WHERE tournament_id=? AND team<>''",(tid,))
+        for r in rows:
+            if player_id and r["player_id"]==player_id: continue
+            if self._norm_team_name(r["team"])==norm: raise ValueError("Ta drużyna została już wybrana w tym turnieju.")
+        return clean
 
     def _setting_get_conn(self, conn, key: str) -> str | None:
         r = self._fetchone(conn, "SELECT value FROM app_settings WHERE key = ?", (key,)); return r["value"] if r else None
@@ -121,6 +175,19 @@ class Database:
                 return [str(x) for x in vals][:count] if isinstance(vals, list) else []
             except Exception: return []
 
+    def official_player_names(self) -> list[str]:
+        """Nicki graczy, którzy wystąpili w co najmniej jednym zakończonym turnieju nietestowym."""
+        with self.connect() as conn:
+            rows = self._fetchall(conn, """
+                SELECT DISTINCT p.name
+                FROM players p
+                JOIN tournament_players tp ON tp.player_id = p.id
+                JOIN tournaments t ON t.id = tp.tournament_id
+                WHERE t.status='completed' AND t.is_test=0
+                ORDER BY p.name
+            """)
+            return [str(r["name"]) for r in rows if r.get("name")]
+
     def _get_or_create_player_conn(self, conn, name: str) -> str:
         clean = " ".join(name.strip().split()); norm = clean.casefold()
         r = self._fetchone(conn, "SELECT id FROM players WHERE normalized_name = ?", (norm,))
@@ -141,7 +208,7 @@ class Database:
     def create_tournament(self, player_names: list[str], player_count: int, format_key: str, teams: list[str], is_test: bool) -> str:
         if player_count not in (4,5,6,7,8): raise ValueError("Obsługiwane są turnieje 4–8 osobowe.")
         if len(player_names) != player_count: raise ValueError(f"Turniej wymaga dokładnie {player_count} graczy.")
-        clean = [" ".join(x.strip().split()) for x in player_names]
+        clean = [" ".join(str(x or "").strip().split()) for x in player_names]
         if any(not x for x in clean): raise ValueError("Wpisz nick każdego gracza.")
         if len({x.casefold() for x in clean}) != player_count: raise ValueError("Nicki w jednym turnieju muszą być unikalne.")
         if player_count in (4,5):
@@ -272,13 +339,7 @@ class Database:
             fixed_norm={self._norm_team_name(x):x for x in fixed}; picked_norm={self._norm_team_name(x) for x in picked_names}
             if slot==wildcard:
                 if any(self._norm_team_name(x) not in fixed_norm for x in picked_names): raise ValueError("Wild Card został już wykorzystany.")
-                team=" ".join(str(wildcard_name or "").strip().split())
-                if not team: raise ValueError("Wpisz drużynę dla Wild Card.")
-                norm=self._norm_team_name(team)
-                banned={"real","real madrid","real madryt","rma"}
-                if norm in banned or "real madrid" in norm or "real madryt" in norm: raise ValueError("Real Madryt jest banned 🚫")
-                if norm in fixed_norm: raise ValueError("Ta drużyna jest już osobnym wyborem w puli.")
-                if norm in picked_norm: raise ValueError("Ta drużyna została już wybrana.")
+                team=self._validate_wildcard_team_conn(conn,tid,wildcard_name,player_id)
             else:
                 if slot not in fixed: raise ValueError("Nieprawidłowy wybór drużyny.")
                 if self._norm_team_name(slot) in picked_norm: raise ValueError("Ta drużyna została już wybrana.")
@@ -291,10 +352,35 @@ class Database:
 
     def reveal_next_team(self, tid: str) -> dict | None:
         with self.connect() as conn:
-            row = self._fetchone(conn, """SELECT tp.player_id,tp.team,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? AND tp.team_revealed=0 ORDER BY tp.team_reveal_order LIMIT 1""", (tid,))
+            meta,extra=self._meta_extra_conn(conn,tid)
+            pending=extra.get("pending_wildcard")
+            if pending: return {**pending,"wildcard":True}
+            row=self._fetchone(conn,"""SELECT tp.player_id,tp.team,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id
+                WHERE tp.tournament_id=? AND tp.team_revealed=0 ORDER BY tp.team_reveal_order LIMIT 1""",(tid,))
             if not row: return None
-            conn.execute(self._sql("UPDATE tournament_players SET team_revealed=1 WHERE tournament_id=? AND player_id=?"), (tid,row["player_id"]))
-            return {"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
+            if "Dowolna drużyna" in str(row.get("team") or ""):
+                pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
+                extra["pending_wildcard"]=pending
+                conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+                return {**pending,"wildcard":True}
+            conn.execute(self._sql("UPDATE tournament_players SET team_revealed=1 WHERE tournament_id=? AND player_id=?"),(tid,row["player_id"]))
+            return {"player_id":row["player_id"],"name":row["name"],"team":row["team"],"wildcard":False}
+
+    def pending_wildcard(self, tid: str) -> dict | None:
+        with self.connect() as conn:
+            _meta,extra=self._meta_extra_conn(conn,tid)
+            p=extra.get("pending_wildcard")
+            return {**p,"wildcard":True} if p else None
+
+    def confirm_wildcard_team(self, tid: str, player_id: str, team_name: str) -> str:
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid); pending=extra.get("pending_wildcard")
+            if not pending or pending.get("player_id")!=player_id: raise ValueError("Nie ma aktywnego wyboru Wild Card dla tego gracza.")
+            team=self._validate_wildcard_team_conn(conn,tid,team_name,player_id)
+            conn.execute(self._sql("UPDATE tournament_players SET team=?,team_revealed=1 WHERE tournament_id=? AND player_id=?"),(team,tid,player_id))
+            extra.pop("pending_wildcard",None)
+            conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+            return team
 
     def start_structure_draw(self, tid: str) -> None:
         with self.connect() as conn:
@@ -657,12 +743,272 @@ class Database:
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             self._resolve_all_conn(conn,tid,meta["format_key"])
 
+    def team_scorer_options(self, team_name: str) -> list[dict]:
+        nt=self._norm_team_name(team_name)
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""SELECT ts.scorer_name,ts.seed_rank,
+                    COALESCE(SUM(CASE WHEN t.is_test=0 THEN ms.goals ELSE 0 END),0) AS goals,
+                    COUNT(DISTINCT CASE WHEN t.is_test=0 AND ms.goals>0 THEN ms.tournament_id||':'||ms.match_no END) AS scoring_matches
+                FROM team_scorers ts
+                LEFT JOIN match_scorers ms ON ms.normalized_team=ts.normalized_team AND ms.normalized_scorer=ts.normalized_scorer
+                LEFT JOIN tournaments t ON t.id=ms.tournament_id
+                WHERE ts.normalized_team=?
+                GROUP BY ts.scorer_name,ts.seed_rank
+                ORDER BY goals DESC,scoring_matches DESC,ts.seed_rank ASC,ts.scorer_name ASC""",(nt,))
+            return [{"name":r["scorer_name"],"goals":int(r.get("goals") or 0),"scoring_matches":int(r.get("scoring_matches") or 0)} for r in rows]
+
+    def _save_scorers_conn(self, conn, tid: str, match_no: int, hs: int, ass: int, scorers: dict | None) -> None:
+        conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,match_no))
+        if not scorers: return
+        sides={"home":hs,"away":ass}; total_any=0; side_totals={"home":0,"away":0}
+        cleaned={"home":[],"away":[]}
+        for side in ("home","away"):
+            team=" ".join(str(scorers.get(side,{}).get("team") or "").strip().split())
+            for item in scorers.get(side,{}).get("items",[]):
+                name=" ".join(str(item.get("name") or "").strip().split()); goals=int(item.get("goals") or 0)
+                if not name or goals<=0: continue
+                cleaned[side].append((team,name,goals)); side_totals[side]+=goals; total_any+=goals
+        if total_any and (side_totals["home"]!=hs or side_totals["away"]!=ass):
+            raise ValueError(f"Strzelcy nie sumują się do wyniku. Rozpisano {side_totals['home']}:{side_totals['away']}, a wynik to {hs}:{ass}.")
+        for side,items in cleaned.items():
+            for team,name,goals in items:
+                nt=self._norm_team_name(team); ns=self._norm_scorer_name(name)
+                exists=self._fetchone(conn,"SELECT id FROM team_scorers WHERE normalized_team=? AND normalized_scorer=?",(nt,ns))
+                if not exists:
+                    conn.execute(self._sql("INSERT INTO team_scorers (id,team_name,normalized_team,scorer_name,normalized_scorer,seed_rank,created_at) VALUES (?,?,?,?,?,999,?)"),
+                                 (str(uuid.uuid4()),team,nt,name,ns,now_iso()))
+                conn.execute(self._sql("INSERT INTO match_scorers (id,tournament_id,match_no,side,team_name,normalized_team,scorer_name,normalized_scorer,goals) VALUES (?,?,?,?,?,?,?,?,?)"),
+                             (str(uuid.uuid4()),tid,match_no,side,team,nt,name,ns,goals))
+
+    def scorer_stats(self) -> list[dict]:
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""SELECT ms.normalized_scorer,MIN(ms.scorer_name) AS scorer_name,SUM(ms.goals) AS goals,
+                    COUNT(DISTINCT ms.tournament_id||':'||ms.match_no) AS matches_scored
+                FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
+                WHERE t.status='completed' AND t.is_test=0
+                GROUP BY ms.normalized_scorer ORDER BY goals DESC,matches_scored DESC,scorer_name""")
+            teams=self._fetchall(conn,"""SELECT ms.normalized_scorer,ms.team_name,SUM(ms.goals) AS goals
+                FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
+                WHERE t.status='completed' AND t.is_test=0
+                GROUP BY ms.normalized_scorer,ms.team_name ORDER BY goals DESC""")
+        by=defaultdict(list)
+        for r in teams: by[r["normalized_scorer"]].append((r["team_name"],int(r["goals"])))
+        return [{"name":r["scorer_name"],"goals":int(r["goals"]),"matches_scored":int(r["matches_scored"]),
+                 "teams":", ".join(x[0] for x in by[r["normalized_scorer"]])} for r in rows]
+
+    def _official_matches_conn(self, conn, exclude_tid: str | None = None) -> list[dict]:
+        sql="""SELECT m.*,t.completed_at,t.created_at,hp.name home_name,ap.name away_name,htp.team home_team,atp.team away_team
+            FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+            LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
+            LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
+            LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
+            WHERE t.status='completed' AND t.is_test=0 AND m.home_score IS NOT NULL"""
+        params=()
+        if exclude_tid:
+            sql += " AND m.tournament_id<>?"; params=(exclude_tid,)
+        sql += " ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no"
+        return self._fetchall(conn,sql,params)
+
+    @staticmethod
+    def _result_for_player(m: dict, pid: str) -> str:
+        if m.get("winner_player_id"): return "W" if m["winner_player_id"]==pid else "L"
+        hs,ass=int(m["home_score"]),int(m["away_score"])
+        if hs==ass:return "D"
+        winner=m["home_player_id"] if hs>ass else m["away_player_id"]
+        return "W" if winner==pid else "L"
+
+    def match_context(self, home_pid: str, away_pid: str) -> dict:
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+        pair=[m for m in matches if {m.get("home_player_id"),m.get("away_player_id")}=={home_pid,away_pid}]
+        hw=sum(self._result_for_player(m,home_pid)=="W" for m in pair); aw=sum(self._result_for_player(m,away_pid)=="W" for m in pair)
+        draws=sum(self._result_for_player(m,home_pid)=="D" for m in pair)
+        def form(pid):
+            own=[m for m in matches if pid in (m.get("home_player_id"),m.get("away_player_id"))]
+            return [self._result_for_player(m,pid) for m in own[-5:]]
+        last=pair[-1] if pair else None
+        total=len(pair)
+        return {"meetings":total,"home_wins":hw,"away_wins":aw,"draws":draws,"home_form":form(home_pid),"away_form":form(away_pid),
+                "rivalry": total>=5 and abs(hw-aw)<=2,"derby":total>=10,"last":last}
+
+    def recent_forms(self) -> list[dict]:
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+            names={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
+        seq=defaultdict(list)
+        for m in matches:
+            for pid in (m.get("home_player_id"),m.get("away_player_id")):
+                if pid: seq[pid].append(self._result_for_player(m,pid))
+        out=[]
+        for pid,vals in seq.items():
+            last=vals[-5:]; w=last.count("W");d=last.count("D");l=last.count("L")
+            out.append({"player_id":pid,"name":names.get(pid,"?"),"form":last,"w":w,"d":d,"l":l,"points":w*3+d})
+        out.sort(key=lambda x:(x["points"],x["w"],-x["l"]),reverse=True)
+        return out
+
+    def h2h(self, pid1: str, pid2: str) -> dict:
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+            names={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players WHERE id IN (?,?)",(pid1,pid2))}
+        pair=[m for m in matches if {m.get("home_player_id"),m.get("away_player_id")}=={pid1,pid2}]
+        w1=sum(self._result_for_player(m,pid1)=="W" for m in pair); w2=sum(self._result_for_player(m,pid2)=="W" for m in pair); d=len(pair)-w1-w2
+        gf1=gf2=0
+        recent=[]
+        for m in pair:
+            if m["home_player_id"]==pid1: gf1+=int(m["home_score"]);gf2+=int(m["away_score"])
+            else: gf1+=int(m["away_score"]);gf2+=int(m["home_score"])
+            recent.append({"home":m.get("home_name"),"away":m.get("away_name"),"score":f"{m['home_score']}:{m['away_score']}","played_at":m.get("played_at")})
+        return {"name1":names.get(pid1,"?"),"name2":names.get(pid2,"?"),"meetings":len(pair),"wins1":w1,"wins2":w2,"draws":d,"gf1":gf1,"gf2":gf2,"recent":recent[-5:][::-1]}
+
+    def _records_from_conn(self, conn, exclude_tid: str | None = None) -> dict:
+        matches=self._official_matches_conn(conn,exclude_tid)
+        if not matches:return {}
+        tids=sorted({m["tournament_id"] for m in matches})
+        qmarks=','.join('?' for _ in tids)
+        trs=self._fetchall(conn,f"SELECT id,champion_player_id,completed_at,created_at FROM tournaments WHERE id IN ({qmarks}) ORDER BY COALESCE(completed_at,created_at)",tuple(tids))
+        tps=self._fetchall(conn,f"SELECT tournament_id,player_id FROM tournament_players WHERE tournament_id IN ({qmarks})",tuple(tids))
+        players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
+        finals=[m for m in matches if m["stage"]=="FINAL"]
+        ps=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
+        for tp in tps: ps[tp["player_id"]]["tournaments"]+=1
+        for t in trs:
+            if t.get("champion_player_id"): ps[t["champion_player_id"]]["titles"]+=1
+        for m in finals:
+            for pid in (m.get("home_player_id"),m.get("away_player_id")):
+                if pid: ps[pid]["finals"]+=1
+        per_t=defaultdict(lambda:defaultdict(int)); pair=defaultdict(lambda:{"a":None,"b":None,"aw":0,"bw":0,"d":0,"n":0})
+        sequence=defaultdict(list)
+        for m in matches:
+            h,a=m.get("home_player_id"),m.get("away_player_id");
+            if not h or not a:continue
+            hs,ass=int(m["home_score"]),int(m["away_score"]); ps[h]["gf"]+=hs;ps[h]["ga"]+=ass;ps[a]["gf"]+=ass;ps[a]["ga"]+=hs
+            per_t[m["tournament_id"]][h]+=hs;per_t[m["tournament_id"]][a]+=ass
+            rh=self._result_for_player(m,h); ra=self._result_for_player(m,a); sequence[h].append(rh);sequence[a].append(ra)
+            if rh=="W":ps[h]["w"]+=1;ps[a]["l"]+=1
+            elif ra=="W":ps[a]["w"]+=1;ps[h]["l"]+=1
+            else:ps[h]["d"]+=1;ps[a]["d"]+=1
+            k=tuple(sorted((h,a))); rec=pair[k]; rec["a"],rec["b"]=k;rec["n"]+=1
+            rr=self._result_for_player(m,k[0]);
+            if rr=="W":rec["aw"]+=1
+            elif rr=="L":rec["bw"]+=1
+            else:rec["d"]+=1
+        def best_player(key, eligible=lambda pid,v:True, reverse=True):
+            vals=[(pid,v) for pid,v in ps.items() if eligible(pid,v)]
+            if not vals:return None
+            pid,v=(max(vals,key=lambda x:key(x[0],x[1])) if reverse else min(vals,key=lambda x:key(x[0],x[1])))
+            return {"player_id":pid,"name":players.get(pid,"?"),**v}
+        def longest(seq, allowed):
+            best=cur=0
+            for r in seq:
+                if r in allowed:cur+=1;best=max(best,cur)
+                else:cur=0
+            return best
+        win_streak=max(((longest(seq,{"W"}),pid) for pid,seq in sequence.items()),default=(0,None))
+        unbeaten=max(((longest(seq,{"W","D"}),pid) for pid,seq in sequence.items()),default=(0,None))
+        winless=max(((longest(seq,{"D","L"}),pid) for pid,seq in sequence.items()),default=(0,None))
+        biggest=max(matches,key=lambda m:abs(int(m["home_score"])-int(m["away_score"])))
+        goals_match=max(matches,key=lambda m:int(m["home_score"])+int(m["away_score"]))
+        one_t=max(((g,pid,tid) for tid,d in per_t.items() for pid,g in d.items()),default=(0,None,None))
+        # consecutive championship streak across chronological official tournaments
+        title_best=(0,None); cur_pid=None;cur=0
+        for t in trs:
+            pid=t.get("champion_player_id")
+            if pid and pid==cur_pid:cur+=1
+            elif pid:cur_pid=pid;cur=1
+            else:cur_pid=None;cur=0
+            if cur>title_best[0]:title_best=(cur,pid)
+        pair_vals=list(pair.values())
+        frequent=max(pair_vals,key=lambda r:r["n"],default=None)
+        balanced=min((r for r in pair_vals if r["n"]>=5),key=lambda r:(abs(r["aw"]-r["bw"]),-r["n"]),default=None)
+        dominance=max((r for r in pair_vals if r["n"]>=3),key=lambda r:(abs(r["aw"]-r["bw"]),r["n"]),default=None)
+        def pair_desc(r):
+            if not r:return None
+            return {**r,"name_a":players.get(r["a"],"?"),"name_b":players.get(r["b"],"?")}
+        most_titles=best_player(lambda pid,v:(v["titles"],v["finals"],v["w"]))
+        most_finals=best_player(lambda pid,v:(v["finals"],v["titles"],v["w"]))
+        most_wins=best_player(lambda pid,v:(v["w"],v["titles"]))
+        most_goals=best_player(lambda pid,v:(v["gf"],v["w"]))
+        best_pct=best_player(lambda pid,v:(v["w"]/(v["w"]+v["d"]+v["l"]),v["w"]),lambda pid,v:(v["w"]+v["d"]+v["l"])>=10)
+        best_avg=best_player(lambda pid,v:(v["gf"]/(v["w"]+v["d"]+v["l"]),v["gf"]),lambda pid,v:(v["w"]+v["d"]+v["l"])>=5)
+        best_def=best_player(lambda pid,v:-(v["ga"]/(v["w"]+v["d"]+v["l"])),lambda pid,v:(v["w"]+v["d"]+v["l"])>=5)
+        lost_final=best_player(lambda pid,v:(v["finals"]-v["titles"],v["finals"]))
+        return {
+            "most_titles":most_titles,"most_finals":most_finals,"most_wins":most_wins,"most_goals":most_goals,
+            "best_win_pct":best_pct,"best_goal_avg":best_avg,"best_defense":best_def,"most_lost_finals":lost_final,
+            "win_streak":{"name":players.get(win_streak[1],"?"),"value":win_streak[0]},
+            "unbeaten_streak":{"name":players.get(unbeaten[1],"?"),"value":unbeaten[0]},
+            "winless_streak":{"name":players.get(winless[1],"?"),"value":winless[0]},
+            "biggest_win":{"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{biggest['home_score']}:{biggest['away_score']}","margin":abs(int(biggest["home_score"])-int(biggest["away_score"]))},
+            "highest_scoring":{"home":goals_match.get("home_name"),"away":goals_match.get("away_name"),"score":f"{goals_match['home_score']}:{goals_match['away_score']}","goals":int(goals_match["home_score"])+int(goals_match["away_score"])},
+            "goals_one_tournament":{"name":players.get(one_t[1],"?"),"value":one_t[0]},
+            "consecutive_titles":{"name":players.get(title_best[1],"?"),"value":title_best[0]},
+            "most_frequent_h2h":pair_desc(frequent),"balanced_rivalry":pair_desc(balanced),"h2h_dominance":pair_desc(dominance),
+        }
+
+    def all_time_records(self) -> dict:
+        with self.connect() as conn:return self._records_from_conn(conn)
+
+    def tournament_summary(self, tid: str) -> dict:
+        with self.connect() as conn:
+            t=self._fetchone(conn,"SELECT * FROM tournaments WHERE id=?",(tid,)); matches=self._matches_conn(conn,tid)
+            players={p["player_id"]:p for p in self._fetchall(conn,"SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))}
+            scorer_rows=self._fetchall(conn,"SELECT scorer_name,SUM(goals) AS goals FROM match_scorers WHERE tournament_id=? GROUP BY scorer_name ORDER BY goals DESC,scorer_name",(tid,))
+            previous=self._records_from_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else {}
+            prior_matches=self._official_matches_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else []
+        played=[m for m in matches if m.get("home_score") is not None]
+        ps=defaultdict(lambda:{"w":0,"d":0,"l":0,"gf":0,"ga":0})
+        for m in played:
+            h,a=m["home_player_id"],m["away_player_id"];hs,ass=int(m["home_score"]),int(m["away_score"])
+            ps[h]["gf"]+=hs;ps[h]["ga"]+=ass;ps[a]["gf"]+=ass;ps[a]["ga"]+=hs
+            rh=self._result_for_player(m,h)
+            if rh=="W":ps[h]["w"]+=1;ps[a]["l"]+=1
+            elif rh=="L":ps[a]["w"]+=1;ps[h]["l"]+=1
+            else:ps[h]["d"]+=1;ps[a]["d"]+=1
+        champ=t.get("champion_player_id") if t else None
+        finals=[m for m in played if m["stage"] in ("FINAL","RESET_FINAL")]
+        last_final=finals[-1] if finals else None
+        runner=None
+        if last_final and champ: runner=last_final["away_player_id"] if last_final["home_player_id"]==champ else last_final["home_player_id"]
+        top=max(ps.items(),key=lambda x:(x[1]["gf"],x[1]["w"]),default=(None,{})); defense=min(ps.items(),key=lambda x:(x[1]["ga"]/(sum(x[1][k] for k in ("w","d","l")) or 1),x[1]["ga"]),default=(None,{})); form=max(ps.items(),key=lambda x:(x[1]["w"],x[1]["gf"]-x[1]["ga"]),default=(None,{}))
+        biggest=max(played,key=lambda m:abs(int(m["home_score"])-int(m["away_score"])),default=None); high=max(played,key=lambda m:int(m["home_score"])+int(m["away_score"]),default=None)
+        pair_hist=defaultdict(lambda:{"n":0,"wins":defaultdict(int)})
+        for pm in prior_matches:
+            a,b=pm.get("home_player_id"),pm.get("away_player_id")
+            if not a or not b:continue
+            k=tuple(sorted((a,b)));pair_hist[k]["n"]+=1
+            if pm.get("winner_player_id"):pair_hist[k]["wins"][pm["winner_player_id"]]+=1
+        rivalry=None
+        candidates=[]
+        for m in played:
+            a,b=m.get("home_player_id"),m.get("away_player_id");k=tuple(sorted((a,b))) if a and b else None
+            if not k:continue
+            h=pair_hist.get(k);
+            if not h:continue
+            wa=h["wins"].get(a,0);wb=h["wins"].get(b,0)
+            if h["n"]>=5 and abs(wa-wb)<=2:candidates.append((h["n"],m))
+        if candidates:
+            _n,rm=max(candidates,key=lambda x:x[0]);rivalry={"home":rm.get("home_name"),"away":rm.get("away_name"),"score":f"{rm['home_score']}:{rm['away_score']}"}
+        new_records=[]
+        if not int(t.get("is_test") or 0) and previous:
+            prev_margin=(previous.get("biggest_win") or {}).get("margin",-1)
+            if biggest and abs(int(biggest["home_score"])-int(biggest["away_score"]))>prev_margin:new_records.append(f"Największe zwycięstwo: {biggest['home_name']} {biggest['home_score']}:{biggest['away_score']} {biggest['away_name']}")
+            prev_goals=(previous.get("goals_one_tournament") or {}).get("value",-1)
+            if top[0] and top[1].get("gf",0)>prev_goals:new_records.append(f"Gole jednego gracza w turnieju: {players[top[0]]['name']} — {top[1]['gf']}")
+        return {"champion":players.get(champ,{}).get("name"),"runner_up":players.get(runner,{}).get("name"),
+                "top_goals":{"name":players.get(top[0],{}).get("name"),"value":top[1].get("gf",0)},
+                "best_defense":{"name":players.get(defense[0],{}).get("name"),"value":defense[1].get("ga",0)},
+                "best_form":{"name":players.get(form[0],{}).get("name"),"wins":form[1].get("w",0)},
+                "biggest":({"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{biggest['home_score']}:{biggest['away_score']}"} if biggest else None),
+                "highest":({"home":high.get("home_name"),"away":high.get("away_name"),"score":f"{high['home_score']}:{high['away_score']}"} if high else None),
+                "real_top_scorer":({"name":scorer_rows[0]["scorer_name"],"goals":int(scorer_rows[0]["goals"])} if scorer_rows else None),
+                "rivalry_match":rivalry,"new_records":new_records}
+
     def current_match_from(self, matches: list[dict]) -> dict | None:
         for m in matches:
             if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None: return m
         return None
 
-    def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None) -> None:
+    def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None) -> None:
         with self.connect() as conn:
             m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,match_no))
             if not m or not m.get("home_player_id") or not m.get("away_player_id"): raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
@@ -670,6 +1016,7 @@ class Database:
             knockout = m["stage"] not in ("GROUP","LEAGUE")
             if knockout and hs==ass and (hp is None or ap is None or hp==ap): raise ValueError("W fazie pucharowej remis wymaga karnych.")
             winner=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"],hp,ap)
+            self._save_scorers_conn(conn,tid,match_no,hs,ass,scorers)
             conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=? WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
@@ -713,6 +1060,7 @@ class Database:
             last=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND home_score IS NOT NULL ORDER BY match_no DESC LIMIT 1",(tid,))
             if not last: return None
             no=int(last["match_no"])
+            conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no>=?"),(tid,no))
             conn.execute(self._sql("UPDATE matches SET home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL WHERE tournament_id=? AND match_no=?"),(tid,no))
             # Clear all later matches completely; their participants can depend on the undone result.
             conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL,home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL WHERE tournament_id=? AND match_no>?"),(tid,no))
@@ -743,7 +1091,7 @@ class Database:
 
     def reset_current(self, tid: str) -> None:
         with self.connect() as conn:
-            conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,)); self._setting_set_conn(conn,CURRENT_KEY,"")
+            conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,)); self._setting_set_conn(conn,CURRENT_KEY,"")
 
     def start_new(self) -> None:
         with self.connect() as conn: self._setting_set_conn(conn,CURRENT_KEY,"")
@@ -752,7 +1100,7 @@ class Database:
         with self.connect() as conn:
             ids=[r["tournament_id"] for r in self._fetchall(conn,"SELECT tournament_id FROM flex_tournament_meta")]
             for tid in ids:
-                conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,))
+                conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,))
             conn.execute("DELETE FROM flex_tournament_meta")
             self._setting_set_conn(conn,CURRENT_KEY,"")
 
@@ -781,6 +1129,7 @@ class Database:
 
     def _delete_tournament_conn(self, conn, tid: str) -> None:
         conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,))
+        conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,))
@@ -802,6 +1151,7 @@ class Database:
         with self.connect() as conn:
             if self._setting_get_conn(conn,"fifa_history_locked")=="1": raise ValueError("Historia jest zablokowana.")
             conn.execute("DELETE FROM flex_match_sources")
+            conn.execute("DELETE FROM match_scorers")
             conn.execute("DELETE FROM flex_tournament_meta")
             conn.execute("DELETE FROM matches")
             conn.execute("DELETE FROM tournament_players")

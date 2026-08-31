@@ -21,6 +21,14 @@ def format_option(x):return f"{FORMAT_LABELS[x]} • {FORMAT_MATCH_COUNTS[x]}"
 def rr():st.rerun()
 def rf():st.rerun(scope="fragment")
 
+@st.cache_data(ttl=30,show_spinner=False)
+def official_player_names_cached():
+    return db.official_player_names()
+
+@st.cache_data(ttl=30,show_spinner=False)
+def wildcard_team_suggestions_cached():
+    return db.wildcard_team_suggestions()
+
 def admin_password():
     value=os.getenv("ADMIN_PASSWORD")
     if value:return value
@@ -83,11 +91,19 @@ def format_for(count:int)->str:
     if count==7:return st.session_state.get("format7","double7")
     return st.session_state.get("format8","groups8_sf")
 
-def start_defaults(count:int):
+def start_defaults(count:int, official_names:list[str]):
     key=f"_lineup_init_{count}"
     if st.session_state.get(key):return
     vals=db.last_lineup(count)
-    for i in range(count):st.session_state[f"p_{count}_{i}"]=vals[i] if i<len(vals) else ""
+    canonical={n.casefold():n for n in official_names}
+    for i in range(count):
+        field_key=f"p_{count}_{i}"
+        remembered=vals[i] if i<len(vals) else ""
+        # Automatycznie przywracamy tylko zweryfikowane nicki z oficjalnych statystyk.
+        # Nazwę spoza statystyk nadal można normalnie wpisać jako nową.
+        matched=canonical.get(remembered.casefold()) if remembered else None
+        if matched: st.session_state[field_key]=matched
+        else: st.session_state.pop(field_key,None)
     st.session_state[key]=True
 
 
@@ -97,7 +113,8 @@ def render_start():
     default=db.last_player_count() if "player_count" not in st.session_state else st.session_state.player_count
     if default not in (4,5,6,7,8):default=6
     count=st.segmented_control("Liczba graczy",[4,5,6,7,8],default=default,key="player_count") or default
-    start_defaults(count)
+    official_names=official_player_names_cached()
+    start_defaults(count,official_names)
     if count==5:
         st.session_state.format5=st.radio("Format dla 5 graczy",["double5","league5_final"],format_func=format_option,horizontal=False,key="format5_radio")
     elif count==6:
@@ -109,9 +126,18 @@ def render_start():
     fmt=format_for(count)
     st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}  \n**Łącznie:** {FORMAT_MATCH_COUNTS[fmt]}")
     with st.form(f"create_{count}_{fmt}"):
+        st.caption("Nicki z oficjalnych statystyk są podpowiadane podczas wpisywania. Możesz też wpisać nowego gracza.")
         cols=st.columns(2); names=[]
         for i in range(count):
-            with cols[i%2]:names.append(st.text_input(f"Gracz {i+1}",key=f"p_{count}_{i}",placeholder="Wpisz nick"))
+            with cols[i%2]:
+                names.append(st.selectbox(
+                    f"Gracz {i+1}",
+                    options=official_names,
+                    index=None,
+                    key=f"p_{count}_{i}",
+                    placeholder="Wpisz nick lub wybierz z listy",
+                    accept_new_options=True,
+                ))
         if count in (4,5):
             teams=BASE_TEAMS.copy()
             st.markdown("**Draft drużyn:** najpierw losujemy kolejność wyboru, potem każdy wybiera z pozostałej puli.")
@@ -168,11 +194,13 @@ def team_draft(tid:str):
         st.markdown("**Wybrane:** " + " • ".join(f"{esc(p['name'])}: {esc(p['team'])}" for p in picked))
     with st.form(f"pick_team_{tid}_{current['player_id']}"):
         slot=st.selectbox("Drużyna",remaining,key=f"pick_slot_{tid}_{current['player_id']}")
-        wildcard=st.text_input("Wild Card — wpisz drużynę",placeholder="np. Arsenal",key=f"wild_{tid}_{current['player_id']}")
+        wildcard=st.selectbox("Wild Card — wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
+                              placeholder="np. Arsenal",accept_new_options=True,key=f"wild_{tid}_{current['player_id']}")
         ok=st.form_submit_button("✅ WYBIERAM",type="primary",use_container_width=True)
     if ok:
         try:
             finished=db.draft_pick(tid,current["player_id"],slot,wildcard)
+            wildcard_team_suggestions_cached.clear()
             if finished:rr()
             rf()
         except ValueError as e:st.error(str(e))
@@ -187,18 +215,36 @@ def render_team_draft(t):
 def team_draw(tid:str):
     bundle=db.bundle(tid);players=bundle["players"];pool=bundle["meta"]["team_pool"]
     hidden=[p for p in players if not p["team_revealed"]];last=st.session_state.get("last_spin")
+    pending=db.pending_wildcard(tid)
     done=len(players)-len(hidden);st.progress(done/len(players),text=f"Wylosowano {done}/{len(players)} drużyn")
+    if pending:
+        render_wheel(pending["team"],pending["name"],tid,pool)
+        st.markdown(f"### 🃏 Wild Card — {esc(pending['name'])}")
+        with st.form(f"wildcard_draw_{tid}_{pending['player_id']}"):
+            choice=st.selectbox("Wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
+                                placeholder="np. Arsenal",accept_new_options=True,key=f"wheel_wc_{tid}_{pending['player_id']}")
+            ok=st.form_submit_button("✅ ZATWIERDŹ DRUŻYNĘ",type="primary",use_container_width=True)
+        if ok:
+            try:
+                team=db.confirm_wildcard_team(tid,pending["player_id"],choice)
+                st.session_state.last_spin={"player_id":pending["player_id"],"name":pending["name"],"team":team}
+                wildcard_team_suggestions_cached.clear();rf()
+            except ValueError as e:st.error(str(e))
+        return
     if last:
         render_wheel(last["team"],last["name"],tid,pool)
         if st.button("➡️ LOSUJEMY DALEJ",type="primary",use_container_width=True,key=f"next_{tid}_{done}"):
             st.session_state.pop("last_spin",None)
+            bundle=db.bundle(tid);hidden=[p for p in bundle["players"] if not p["team_revealed"]]
             if not hidden:db.start_structure_draw(tid);rr()
             rf()
         return
     if hidden:
         nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0];st.subheader(f"🎡 Następny: {nxt['name']}")
         if st.button("🎰 ZAKRĘĆ KOŁEM",type="primary",use_container_width=True,key=f"spin_{nxt['player_id']}"):
-            st.session_state.last_spin=db.reveal_next_team(tid);rf()
+            result=db.reveal_next_team(tid)
+            if result and not result.get("wildcard"):st.session_state.last_spin=result
+            rf()
     else:
         if st.button("🎲 PRZEJDŹ DO KOLEJNEGO LOSOWANIA",type="primary",use_container_width=True,key=f"struct_{tid}"):
             db.start_structure_draw(tid);rr()
@@ -257,6 +303,51 @@ def source_placeholder(fmt,no):
     return maps.get(fmt,{}).get(no,"Do ustalenia")
 
 
+def _scorer_side_form(tid,m,side,team_name,player_name):
+    options=db.team_scorer_options(team_name)
+    st.markdown(f"**⚽ {esc(team_name)} — strzelcy**")
+    st.caption("Klikaj +/–. Nic nie zapisuje się ani nie odświeża do zatwierdzenia wyniku.")
+    items=[]
+    top=options[:5]; rest=options[5:]
+    for i,row in enumerate(top):
+        goals=st.number_input(row["name"],0,20,0,1,key=f"sc_{tid}_{m['match_no']}_{side}_{i}_{row['name']}")
+        items.append({"name":row["name"],"goals":int(goals)})
+    if rest:
+        with st.expander(f"Pozostali zawodnicy ({len(rest)})"):
+            for j,row in enumerate(rest,5):
+                goals=st.number_input(row["name"],0,20,0,1,key=f"sc_{tid}_{m['match_no']}_{side}_{j}_{row['name']}")
+                items.append({"name":row["name"],"goals":int(goals)})
+    known=[r["name"] for r in options]
+    st.markdown("**➕ Inny zawodnik**")
+    for k in range(2):
+        c1,c2=st.columns([2,1])
+        with c1:
+            name=st.selectbox(f"Inny strzelec {k+1}",options=known,index=None,accept_new_options=True,
+                              placeholder="Wpisz nazwisko",key=f"sc_other_name_{tid}_{m['match_no']}_{side}_{k}")
+        with c2:
+            goals=st.number_input("Gole",0,20,0,1,key=f"sc_other_goals_{tid}_{m['match_no']}_{side}_{k}")
+        if name and int(goals)>0:items.append({"name":name,"goals":int(goals)})
+    # merge duplicates from top + custom picker
+    merged={}
+    for item in items:
+        n=" ".join(str(item.get("name") or "").strip().split());g=int(item.get("goals") or 0)
+        if n and g>0:merged[n.casefold()]={"name":n,"goals":merged.get(n.casefold(),{}).get("goals",0)+g}
+    return {"team":team_name,"items":list(merged.values())}
+
+
+def render_match_context(m):
+    ctx=db.match_context(m["home_player_id"],m["away_player_id"])
+    tags=[]
+    if ctx.get("rivalry"):tags.append("🔥 RIVALRY")
+    if ctx.get("derby"):tags.append("⚔️ DERBY")
+    if tags:st.markdown("**"+" · ".join(tags)+"**")
+    hf=" ".join(ctx.get("home_form") or []) or "—"; af=" ".join(ctx.get("away_form") or []) or "—"
+    st.caption(f"H2H: {m['home_name']} {ctx['home_wins']}–{ctx['away_wins']} {m['away_name']} • remisy {ctx['draws']} • mecze {ctx['meetings']}")
+    st.caption(f"Forma (ostatnie 5): {m['home_name']} {hf} | {m['away_name']} {af}")
+    last=ctx.get("last")
+    if last:st.caption(f"Ostatnio: {last.get('home_name')} {last.get('home_score')}:{last.get('away_score')} {last.get('away_name')}")
+
+
 def score_form(tid,m):
     no=int(m["match_no"]);pending=st.session_state.get("pending_ko")
     if pending and pending.get("tid")==tid and pending.get("no")==no:
@@ -268,7 +359,10 @@ def score_form(tid,m):
             ok=st.form_submit_button("✅ ZATWIERDŹ KARNE",type="primary",use_container_width=True)
         if ok:
             if hp==ap:st.error("Karne muszą wskazać zwycięzcę.")
-            else:db.save_result(tid,no,pending["hs"],pending["as"],int(hp),int(ap));st.session_state.pop("pending_ko",None);rf()
+            else:
+                try:
+                    db.save_result(tid,no,pending["hs"],pending["as"],int(hp),int(ap),pending.get("scorers"));st.session_state.pop("pending_ko",None);rf()
+                except ValueError as e:st.error(str(e))
         if st.button("↩️ Zmień wynik przed karnymi",use_container_width=True,key=f"change_{tid}_{no}"):st.session_state.pop("pending_ko",None);rf()
         return
     with st.form(f"score_{tid}_{no}"):
@@ -276,11 +370,19 @@ def score_form(tid,m):
         with c1:hs=st.number_input(m["home_name"],0,99,0,1,key=f"hs_{tid}_{no}")
         with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
         with c2:ass=st.number_input(m["away_name"],0,99,0,1,key=f"as_{tid}_{no}")
+        st.divider()
+        home_sc=_scorer_side_form(tid,m,"home",m["home_team"],m["home_name"])
+        st.divider()
+        away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
+        st.caption("Strzelcy są opcjonalni. Jeśli wpiszesz choć jednego, suma rozpisanych goli musi zgadzać się z wynikiem meczu.")
         ok=st.form_submit_button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True)
     if ok:
+        scorers={"home":home_sc,"away":away_sc}
         ko=m["stage"] not in ("GROUP","LEAGUE")
-        if ko and int(hs)==int(ass):st.session_state.pending_ko={"tid":tid,"no":no,"hs":int(hs),"as":int(ass)};rf()
-        else:db.save_result(tid,no,int(hs),int(ass));rf()
+        if ko and int(hs)==int(ass):st.session_state.pending_ko={"tid":tid,"no":no,"hs":int(hs),"as":int(ass),"scorers":scorers};rf()
+        else:
+            try:db.save_result(tid,no,int(hs),int(ass),scorers=scorers);rf()
+            except ValueError as e:st.error(str(e))
 
 
 def render_special_event(tid:str, b:dict) -> bool:
@@ -325,9 +427,23 @@ def render_special_event(tid:str, b:dict) -> bool:
 def live(tid:str):
     b=db.bundle(tid);t=b["tournament"];meta=b["meta"]
     if t["status"]=="completed":
-        champ=next((p["name"] for p in b["players"] if p["player_id"]==t["champion_player_id"]),"Mistrz")
+        summary=db.tournament_summary(tid);champ=summary.get("champion") or "Mistrz"
         st.markdown(f'<div class="winner"><div class="match-no">MISTRZ TURNIEJU</div><div style="font-size:3rem">🏆</div><div class="player-big">{esc(champ)}</div></div>',unsafe_allow_html=True)
         if st.session_state.get("celebrated")!=tid:st.balloons();st.session_state.celebrated=tid
+        st.markdown("### 📋 Podsumowanie turnieju")
+        c1,c2,c3,c4=st.columns(4)
+        c1.metric("🥈 Finalista",summary.get("runner_up") or "—")
+        c2.metric("⚽ Najwięcej goli",summary.get("top_goals",{}).get("name") or "—",summary.get("top_goals",{}).get("value",0))
+        c3.metric("🛡️ Najlepsza defensywa",summary.get("best_defense",{}).get("name") or "—",f"{summary.get('best_defense',{}).get('value',0)} straconych")
+        c4.metric("🔥 Najwięcej wygranych",summary.get("best_form",{}).get("name") or "—",summary.get("best_form",{}).get("wins",0))
+        c1,c2=st.columns(2)
+        if summary.get("biggest"):c1.info(f"💥 Największe zwycięstwo: **{summary['biggest']['home']} {summary['biggest']['score']} {summary['biggest']['away']}**")
+        if summary.get("highest"):c2.info(f"🎯 Najbardziej bramkowy mecz: **{summary['highest']['home']} {summary['highest']['score']} {summary['highest']['away']}**")
+        if summary.get("real_top_scorer"):st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
+        if summary.get("rivalry_match"):st.info(f"🔥 Rivalry match turnieju: **{summary['rivalry_match']['home']} {summary['rivalry_match']['score']} {summary['rivalry_match']['away']}**")
+        if summary.get("new_records"):
+            st.markdown("#### 🆕 Nowe rekordy")
+            for r in summary["new_records"]:st.success(r)
         if t["is_test"]:st.info("Turniej testowy — nie liczy się do statystyk wszech czasów.")
         if st.button("➕ NOWY TURNIEJ",type="primary",use_container_width=True,key=f"new_{tid}"):db.start_new();rr()
         return
@@ -338,6 +454,7 @@ def live(tid:str):
     total=max_matches(meta["format_key"]);suffix="" if cur["stage"]!="RESET_FINAL" else " • JEŚLI POTRZEBNY"
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}{suffix}</div>',unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    render_match_context(cur)
     score_form(tid,cur)
     nxt=[m for m in b["matches"] if int(m["match_no"])>int(cur["match_no"]) and m.get("home_player_id") and m.get("home_score") is None]
     if nxt:st.caption(f"Następny: **{nxt[0]['home_name']} vs {nxt[0]['away_name']}**")
@@ -367,10 +484,71 @@ def render_stats(t):
     st.subheader("📊 Statystyki wszech czasów")
     st.caption("Wszystkie zakończone turnieje nietestowe zapisane w bazie.")
     stats=db.all_time_stats()
-    if not stats:st.info("Brak zakończonych turniejów nietestowych.")
-    else:
+    if not stats:st.info("Brak zakończonych turniejów nietestowych.");return
+    tab1,tab2,tab3,tab4=st.tabs(["🏆 Ranking","⚔️ H2H","🏛️ Rekordy","⚽ Strzelcy"])
+    with tab1:
         leader=stats[0];c1,c2,c3,c4=st.columns(4);c1.metric("🐐 Lider",leader["name"]);c2.metric("🏆 Tytuły",leader["titles"]);tg=max(stats,key=lambda x:x["gf"]);c3.metric("⚽ Król bramek",tg["name"],f"{tg['gf']} goli");tw=max(stats,key=lambda x:x["w"]);c4.metric("🔥 Najwięcej wygranych",tw["name"],f"{tw['w']} W")
         df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
+        st.markdown("#### 🔥 Aktualna forma — ostatnie 5 oficjalnych meczów")
+        forms=db.recent_forms()
+        if forms:
+            best=forms[0];st.success(f"Najlepsza aktualna forma: **{best['name']} — {' '.join(best['form'])}**")
+            st.dataframe(pd.DataFrame([{"Gracz":x["name"],"Forma":" ".join(x["form"]),"W":x["w"],"R":x["d"],"P":x["l"]} for x in forms]),hide_index=True,use_container_width=True)
+    with tab2:
+        st.markdown("### ⚔️ Head to head")
+        opts={p["name"]:p["player_id"] for p in stats}
+        names=list(opts)
+        with st.form("h2h_explorer"):
+            c1,c2=st.columns(2)
+            with c1:a=st.selectbox("Gracz 1",names,index=0)
+            with c2:b=st.selectbox("Gracz 2",names,index=1 if len(names)>1 else 0)
+            go=st.form_submit_button("Pokaż H2H",use_container_width=True)
+        if go:
+            if a==b:st.warning("Wybierz dwóch różnych graczy.")
+            else:
+                h=db.h2h(opts[a],opts[b]);c1,c2,c3,c4=st.columns(4);c1.metric("Mecze",h["meetings"]);c2.metric(a,h["wins1"]);c3.metric("Remisy",h["draws"]);c4.metric(b,h["wins2"])
+                st.caption(f"Bramki: {a} {h['gf1']}–{h['gf2']} {b}")
+                if h["recent"]:
+                    st.markdown("**Ostatnie spotkania:**")
+                    for m in h["recent"]:st.write(f"{m['home']} {m['score']} {m['away']}")
+    with tab3:
+        r=db.all_time_records()
+        if not r:st.info("Za mało danych do rekordów.")
+        else:
+            st.markdown("### 🏛️ Hall of Fame")
+            c1,c2,c3=st.columns(3)
+            c1.metric("👑 Najwięcej tytułów",r["most_titles"]["name"],r["most_titles"]["titles"])
+            c2.metric("🔥 Seria zwycięstw",r["win_streak"]["name"],r["win_streak"]["value"])
+            c3.metric("⚽ Gole w jednym turnieju",r["goals_one_tournament"]["name"],r["goals_one_tournament"]["value"])
+            c1,c2,c3=st.columns(3)
+            c1.metric("🏁 Najwięcej finałów",r["most_finals"]["name"],r["most_finals"]["finals"])
+            c2.metric("🥈 Najwięcej przegranych finałów",r["most_lost_finals"]["name"],r["most_lost_finals"]["finals"]-r["most_lost_finals"]["titles"])
+            c3.metric("🧱 Bez porażki",r["unbeaten_streak"]["name"],r["unbeaten_streak"]["value"])
+            st.markdown("### 📚 Rekordy")
+            rows=[]
+            def add(name,value):rows.append({"Rekord":name,"Wynik":value})
+            add("Najwięcej wygranych",f"{r['most_wins']['name']} — {r['most_wins']['w']}")
+            add("Najwięcej strzelonych goli",f"{r['most_goals']['name']} — {r['most_goals']['gf']}")
+            add("Najdłuższa seria bez wygranej",f"{r['winless_streak']['name']} — {r['winless_streak']['value']}")
+            if r.get("best_win_pct"):
+                p=r['best_win_pct'];m=p['w']+p['d']+p['l'];add("Najlepszy % zwycięstw (min. 10 M)",f"{p['name']} — {round(p['w']/m*100,1)}%")
+            if r.get("best_goal_avg"):
+                p=r['best_goal_avg'];m=p['w']+p['d']+p['l'];add("Najlepsza średnia goli",f"{p['name']} — {round(p['gf']/m,2)}/mecz")
+            if r.get("best_defense"):
+                p=r['best_defense'];m=p['w']+p['d']+p['l'];add("Najmniej straconych na mecz",f"{p['name']} — {round(p['ga']/m,2)}")
+            add("Największe zwycięstwo",f"{r['biggest_win']['home']} {r['biggest_win']['score']} {r['biggest_win']['away']}")
+            add("Najbardziej bramkowy mecz",f"{r['highest_scoring']['home']} {r['highest_scoring']['score']} {r['highest_scoring']['away']}")
+            add("Tytuły z rzędu",f"{r['consecutive_titles']['name']} — {r['consecutive_titles']['value']}")
+            if r.get("most_frequent_h2h"):p=r['most_frequent_h2h'];add("Najczęstsze H2H",f"{p['name_a']} vs {p['name_b']} — {p['n']} meczów")
+            if r.get("balanced_rivalry"):p=r['balanced_rivalry'];add("Najbardziej wyrównana rywalizacja",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
+            if r.get("h2h_dominance"):p=r['h2h_dominance'];add("Największa dominacja H2H",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
+            st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+    with tab4:
+        scorers=db.scorer_stats()
+        if not scorers:st.info("Brak zapisanych strzelców w oficjalnych turniejach.")
+        else:
+            df=pd.DataFrame([{"#":i+1,"Zawodnik":x["name"],"Gole":x["goals"],"Mecze z golem":x["matches_scored"],"Drużyny":x["teams"]} for i,x in enumerate(scorers)])
+            st.dataframe(df,hide_index=True,use_container_width=True)
 
 
 def reset_controls(t,loc):

@@ -4,6 +4,19 @@ from itertools import combinations
 import random
 from typing import Iterable
 
+WILDCARD_TEAM_SUGGESTIONS = [
+    "Inter",
+    "Atletico",
+    "BVB",
+    "Man United",
+    "Arsenal",
+    "Chelsea",
+    "Bayer Leverkusen",
+    "Tottenham",
+    "AC Milan",
+    "Napoli",
+]
+
 BASE_TEAMS = [
     "Bayern Monachium",
     "FC Barcelona",

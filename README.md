@@ -1,38 +1,76 @@
-# FIFA Night Flex
+# FIFA Night Flex v1.6
 
-Druga aplikacja do turniejów FIFA dla 4–7 graczy. Może działać pod osobnym linkiem Streamlit, ale używa **tego samego DATABASE_URL / Neon** co klasyczna aplikacja 6-osobowa.
+Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
 ## Formaty
 
-- 4 graczy: liga każdy z każdym + finał (7 meczów)
-- 5 graczy: double elimination (8 lub 9 meczów)
-- 6 graczy: 2×3 + półfinały + finał (9 meczów)
-- 7 graczy: double elimination (12 lub 13 meczów) **albo** grupy 4+3 + playoff (14 meczów)
+- 4 graczy — liga każdy z każdym + finał (7 meczów)
+- 5 graczy — Double Elimination (8–9) albo liga + finał (11)
+- 6 graczy — klasyczne 2×3 + SF + finał (9) albo rozszerzone 2×3 + QF + SF + finał (11)
+- 7 graczy — Double Elimination (12–13), grupy 4+3 + QF + SF + finał (14) albo grupy 4+3 + SF + finał (12)
+- 8 graczy — grupy 4+4 + SF + finał (15), Double Elimination (14–15) albo grupy 4+4 + baraże + SF + finał (17)
 
-## Wspólna baza ze starą aplikacją
+## Formaty dla 8 graczy
 
-W Streamlit Cloud w `Secrets` wklej **dokładnie ten sam `DATABASE_URL`**, którego używa stara aplikacja.
+### Grupy 4+4 + półfinały + finał — 15 meczów
 
-Nie trzeba zmieniać starej aplikacji, żeby statystyki działały wspólnie. Flex zapisuje zakończone turnieje do tych samych tabel `players`, `tournaments`, `tournament_players`, `matches`, więc stary ekran statystyk również je zobaczy.
+12 meczów grupowych, następnie 1A–2B i 1B–2A, a na końcu finał. Kolejność półfinałów jest dobierana po zakończeniu grup, aby ograniczyć granie bez odpoczynku.
 
-Bieżący turniej Flex jest przechowywany przez osobny klucz `flex_current_tournament` i ma `is_current=0`, więc klasyczna aplikacja nie pomyli go ze swoim aktywnym turniejem.
+### Double Elimination — 14–15 meczów
 
-**Uwaga:** przycisk `Wyczyść całą historię` w starej aplikacji usuwa wszystkie wspólne tabele, więc po podłączeniu obu aplikacji wyczyści historię obu. W Flex przycisk czyszczenia usuwa tylko historię Flex.
+Pełna, symetryczna drabinka dla ośmiu osób, bez BYE. Zawodnik odpada dopiero po drugiej porażce. Mecz 15 jest resetem finału i pojawia się tylko wtedy, gdy mistrz Losers Bracket wygra pierwszy finał.
 
-## Deployment
+### Grupy 4+4 + baraże + półfinały + finał — 17 meczów
 
-1. Utwórz nowe repo GitHub, np. `fifa-night-flex`.
-2. Wrzuć zawartość tego folderu do repo (tak, żeby `app.py` był w katalogu głównym).
-3. Streamlit Community Cloud → `Create app` → wybierz nowe repo → `app.py`.
-4. W `Advanced settings → Secrets` wklej ten sam:
+12 meczów grupowych. Zwycięzcy obu grup przechodzą bezpośrednio do półfinałów. Miejsca 2–3 grają dwa baraże, a 4. miejsca odpadają. Każdy zwycięzca barażu dostaje jeden pełny mecz odpoczynku przed swoim półfinałem.
+
+## Drużyny
+
+- 4 i 5 graczy — losowanie kolejności draftu, następnie wybór drużyn z pozostałej puli.
+- 6 graczy — koło fortuny: Bayern, Barcelona, PSG, Liverpool, Man City, Wild Card.
+- 7 graczy — koło fortuny: 5 klubów + 2 Wild Cards.
+- 8 graczy — koło fortuny: 5 klubów + 3 Wild Cards.
+- Real Madryt pozostaje zablokowany przy Wild Card.
+
+## Telefon
+
+Losowania i ceremonie używają responsywnego układu. Na małym ekranie karty składają się pionowo, długie nicki są zawijane, a animowane elementy dopasowują wysokość do zawartości.
+
+## Wpisywanie graczy
+
+Pola graczy są wyszukiwalne i podpowiadają nicki z zakończonych turniejów nietestowych zapisanych we wspólnej bazie statystyk. Można też wpisać nowy nick. Pola znajdują się w formularzu, więc wpisywanie i filtrowanie podpowiedzi nie uruchamia pełnego reruna aplikacji; dane trafiają do backendu dopiero po zatwierdzeniu formularza.
+
+## Statystyki i klimat meczu
+
+Przed każdym meczem aplikacja pokazuje kompaktowo H2H, formę z ostatnich 5 oficjalnych spotkań oraz oznaczenia Rivalry/Derby, jeśli para spełnia kryteria historyczne.
+
+Zakładka `Statystyki` zawiera ranking, explorer H2H, aktualną formę, rekordy, Hall of Fame oraz klasyfikację dokładnych strzelców. Po zakończeniu turnieju pojawia się osobny ekran podsumowania z mistrzem, finalistą, najlepszym atakiem/obroną, największym zwycięstwem, najbardziej bramkowym meczem, strzelcem turnieju i wykrytymi nowymi rekordami.
+
+## Wild Card
+
+Jeśli koło wylosuje Wild Card, losowanie zatrzymuje się do czasu wpisania konkretnej drużyny. Pole podpowiada wcześniejsze wybory oraz startową listę: Inter, Atletico, BVB, Man United, Arsenal, Chelsea, Bayer Leverkusen, Tottenham, AC Milan i Napoli. Wpisywanie/wybieranie odbywa się w formularzu, więc nie przeładowuje strony przy każdym znaku.
+
+## Dokładni strzelcy
+
+Pod wynikiem meczu można opcjonalnie rozpisać dokładnych strzelców. Dla każdej drużyny na wierzchu pojawia się 5 najpopularniejszych nazwisk z licznikami +/–. Pozostali są dostępni niżej, a nowego zawodnika można dopisać w polu `Inny zawodnik`. Po zapisaniu trafia do puli danej drużyny.
+
+Liczniki są wewnątrz formularza meczu, więc ich zmiana nie uruchamia rerunu; wynik i strzelcy są zapisywani razem dopiero po `ZATWIERDŹ WYNIK`. Jeśli zaczynasz rozpisywać strzelców, suma ich goli musi zgadzać się z wynikiem. Można też zostawić strzelców całkowicie pustych.
+
+Początkowe listy zawodników uzupełnia się w pliku `scorer_seeds.py`.
+
+## Historia i zabezpieczenie bazy
+
+Panel `Historia i baza` obsługuje usunięcie ostatniego zakończonego turnieju nietestowego, wyczyszczenie całej historii oraz blokowanie/odblokowanie historii. Operacje administracyjne wymagają `ADMIN_PASSWORD` ze Streamlit Secrets.
+
+Pełne czyszczenie usuwa turnieje, mecze i statystyki. Tabela graczy i zapamiętane składy pozostają w bazie, ale autocomplete pokazuje wyłącznie nicki występujące w aktualnych oficjalnych statystykach.
+
+## Streamlit Secrets
+
+W Streamlit Community Cloud ustaw:
 
 ```toml
 DATABASE_URL = "TWÓJ_CONNECTION_STRING_Z_NEON"
+ADMIN_PASSWORD = "TWOJE_HASLO"
 ```
 
-5. Deploy. Dostaniesz drugi niezależny link.
-
-
-## v1.1 — draft drużyn dla 4 i 5 graczy
-
-Dla turniejów 4- i 5-osobowych drużyny nie są losowane kołem. Aplikacja najpierw losuje kolejność wyboru, a następnie gracze po kolei wybierają z puli: Bayern, Barcelona, PSG, Liverpool, Manchester City i Wild Card. Wybrana pozycja znika z puli. Wild Card pozwala wpisać inną drużynę; Real Madryt pozostaje zablokowany. Dla 6 i 7 graczy pozostaje koło fortuny.
+Plik `.streamlit/secrets.toml` nie może trafić do GitHuba.
