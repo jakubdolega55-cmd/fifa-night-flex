@@ -23,6 +23,17 @@ SEVEN_TEAMS = [
     "Dowolna drużyna #2 (Real Madryt banned)",
 ]
 
+EIGHT_TEAMS = [
+    "Bayern Monachium",
+    "FC Barcelona",
+    "PSG",
+    "Liverpool",
+    "Manchester City",
+    "Dowolna drużyna #1 (Real Madryt banned)",
+    "Dowolna drużyna #2 (Real Madryt banned)",
+    "Dowolna drużyna #3 (Real Madryt banned)",
+]
+
 FORMAT_LABELS = {
     "league4_final": "Liga każdy z każdym + finał",
     "double5": "Double elimination",
@@ -32,6 +43,9 @@ FORMAT_LABELS = {
     "double7": "Double elimination",
     "groups7": "Grupy 4+3 + ćwierćfinały + półfinały + finał",
     "groups7_sf": "Grupy 4+3 + półfinały + finał",
+    "groups8_sf": "Grupy 4+4 + półfinały + finał",
+    "double8": "Double elimination",
+    "groups8_barrage": "Grupy 4+4 + baraże + półfinały + finał",
 }
 
 FORMAT_MATCH_COUNTS = {
@@ -43,11 +57,16 @@ FORMAT_MATCH_COUNTS = {
     "double7": "12–13 meczów",
     "groups7": "14 meczów",
     "groups7_sf": "12 meczów",
+    "groups8_sf": "15 meczów",
+    "double8": "14–15 meczów",
+    "groups8_barrage": "17 meczów",
 }
 
 
 def allowed_teams(player_count: int) -> list[str]:
-    return SEVEN_TEAMS.copy() if player_count == 7 else BASE_TEAMS.copy()
+    if player_count == 8: return EIGHT_TEAMS.copy()
+    if player_count == 7: return SEVEN_TEAMS.copy()
+    return BASE_TEAMS.copy()
 
 
 def shuffled_assignments(player_ids: list[str], teams: list[str], rng: random.Random) -> dict[str, str]:
@@ -70,6 +89,11 @@ def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> di
         return {"slots": dict(zip(["A", "B", "C", "D", "E", "F", "G"], ids, strict=True))}
     if format_key in ("groups7", "groups7_sf"):
         seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4"]
+        return {"slots": dict(zip(seq, ids, strict=True))}
+    if format_key == "double8":
+        return {"slots": dict(zip(["A", "B", "C", "D", "E", "F", "G", "H"], ids, strict=True))}
+    if format_key in ("groups8_sf", "groups8_barrage"):
+        seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4", "B4"]
         return {"slots": dict(zip(seq, ids, strict=True))}
     raise ValueError(f"Nieznany format: {format_key}")
 
@@ -204,6 +228,68 @@ def schedule_groups7_sf(draw: dict, rng: random.Random) -> list[dict]:
     ]
     return out
 
+
+def _schedule_groups8_phase(draw: dict, rng: random.Random) -> list[dict]:
+    """12 meczów grupowych dla dwóch grup po 4, bez grania mecz po meczu przez tę samą osobę."""
+    a=group_members(draw,"A"); b=group_members(draw,"B")
+    ar=_round_robin_pairs(a); br=_round_robin_pairs(b)
+    ordered=[]
+    for rnd in range(3):
+        ordered += [("A",ar[rnd][0]),("B",br[rnd][0]),("A",ar[rnd][1]),("B",br[rnd][1])]
+    out=[]
+    for no,(group,pair) in enumerate(ordered,1):
+        h,aw=pair
+        if rng.choice([True,False]): h,aw=aw,h
+        out.append({"match_no":no,"stage":"GROUP","group_name":group,"home":f"P:{h}","away":f"P:{aw}"})
+    return out
+
+
+def schedule_groups8_sf(draw: dict, rng: random.Random) -> list[dict]:
+    out=_schedule_groups8_phase(draw,rng)
+    out += [
+        {"match_no":13,"stage":"SF","group_name":None,"home":"G8S:SF13H","away":"G8S:SF13A"},
+        {"match_no":14,"stage":"SF","group_name":None,"home":"G8S:SF14H","away":"G8S:SF14A"},
+        {"match_no":15,"stage":"FINAL","group_name":None,"home":"W:13","away":"W:14"},
+    ]
+    return out
+
+
+def schedule_groups8_barrage(draw: dict, rng: random.Random) -> list[dict]:
+    out=_schedule_groups8_phase(draw,rng)
+    # Kolejność obu ścieżek ustalamy dopiero po grupach. Zwycięzca każdego barażu
+    # dostaje jeden pełny mecz odpoczynku przed swoim półfinałem.
+    out += [
+        {"match_no":13,"stage":"BARRAGE","group_name":None,"home":"G8B:B13H","away":"G8B:B13A"},
+        {"match_no":14,"stage":"BARRAGE","group_name":None,"home":"G8B:B14H","away":"G8B:B14A"},
+        {"match_no":15,"stage":"SF","group_name":None,"home":"G8B:SF15H","away":"W:13"},
+        {"match_no":16,"stage":"SF","group_name":None,"home":"G8B:SF16H","away":"W:14"},
+        {"match_no":17,"stage":"FINAL","group_name":None,"home":"W:15","away":"W:16"},
+    ]
+    return out
+
+
+def schedule_double8(draw: dict, extra: dict) -> list[dict]:
+    """Pełna drabinka Double Elimination dla 8 graczy, bez BYE."""
+    s=draw["slots"]
+    return [
+        {"match_no":1,"stage":"WB","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"},
+        {"match_no":2,"stage":"WB","group_name":None,"home":f"P:{s['C']}","away":f"P:{s['D']}"},
+        {"match_no":3,"stage":"WB","group_name":None,"home":f"P:{s['E']}","away":f"P:{s['F']}"},
+        {"match_no":4,"stage":"WB","group_name":None,"home":f"P:{s['G']}","away":f"P:{s['H']}"},
+        {"match_no":5,"stage":"WB","group_name":None,"home":"W:1","away":"W:2"},
+        {"match_no":6,"stage":"WB","group_name":None,"home":"W:3","away":"W:4"},
+        {"match_no":7,"stage":"LB","group_name":None,"home":"L:1","away":"L:2"},
+        {"match_no":8,"stage":"LB","group_name":None,"home":"L:3","away":"L:4"},
+        # Skrzyżowanie połówek ogranicza szybkie rewanże za pierwszy mecz.
+        {"match_no":9,"stage":"LB","group_name":None,"home":"W:7","away":"L:6"},
+        {"match_no":10,"stage":"LB","group_name":None,"home":"W:8","away":"L:5"},
+        {"match_no":11,"stage":"WB_FINAL","group_name":None,"home":"W:5","away":"W:6"},
+        {"match_no":12,"stage":"LB","group_name":None,"home":"W:9","away":"W:10"},
+        {"match_no":13,"stage":"LB_FINAL","group_name":None,"home":"W:12","away":"L:11"},
+        {"match_no":14,"stage":"FINAL","group_name":None,"home":"W:11","away":"W:13"},
+        {"match_no":15,"stage":"RESET_FINAL","group_name":None,"home":"W:11","away":"W:13"},
+    ]
+
 def schedule_double5(draw: dict, extra: dict) -> list[dict]:
     s=draw["slots"]
     # The opponent for E is a real mid-tournament draw after M1 and M2.
@@ -250,6 +336,9 @@ def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Ra
     if format_key=="double7": return schedule_double7(draw,extra)
     if format_key=="groups7": return schedule_groups7(draw,rng)
     if format_key=="groups7_sf": return schedule_groups7_sf(draw,rng)
+    if format_key=="groups8_sf": return schedule_groups8_sf(draw,rng)
+    if format_key=="double8": return schedule_double8(draw,extra)
+    if format_key=="groups8_barrage": return schedule_groups8_barrage(draw,rng)
     raise ValueError(format_key)
 
 
