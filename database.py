@@ -20,7 +20,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 160
+DB_API_VERSION = 161
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -757,19 +757,45 @@ class Database:
                 ORDER BY goals DESC,scoring_matches DESC,ts.seed_rank ASC,ts.scorer_name ASC""",(nt,))
             return [{"name":r["scorer_name"],"goals":int(r.get("goals") or 0),"scoring_matches":int(r.get("scoring_matches") or 0)} for r in rows]
 
+    def scorer_roster_teams(self) -> list[str]:
+        """Drużyny dostępne w panelu zarządzania listami strzelców."""
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"SELECT team_name,COUNT(*) AS c FROM team_scorers GROUP BY team_name ORDER BY c DESC,team_name")
+        out=[]; seen=set()
+        for team in list(SCORER_SEEDS.keys())+[r["team_name"] for r in rows]:
+            clean=" ".join(str(team or "").strip().split()); norm=self._norm_team_name(clean)
+            if clean and norm not in seen:
+                seen.add(norm); out.append(clean)
+        return out
+
+    def add_team_scorers(self, team_name: str, names: list[str]) -> int:
+        """Dodaje zawodników do stałej listy podpowiedzi danej drużyny."""
+        team=" ".join(str(team_name or "").strip().split())
+        if not team: raise ValueError("Wybierz drużynę.")
+        nt=self._norm_team_name(team); added=0
+        with self.connect() as conn:
+            for raw in names:
+                clean=" ".join(str(raw or "").strip().split())
+                if not clean: continue
+                ns=self._norm_scorer_name(clean)
+                if not ns: continue
+                exists=self._fetchone(conn,"SELECT id FROM team_scorers WHERE normalized_team=? AND normalized_scorer=?",(nt,ns))
+                if exists: continue
+                conn.execute(self._sql("INSERT INTO team_scorers (id,team_name,normalized_team,scorer_name,normalized_scorer,seed_rank,created_at) VALUES (?,?,?,?,?,999,?)"),
+                             (str(uuid.uuid4()),team,nt,clean,ns,now_iso()))
+                added+=1
+        return added
+
     def _save_scorers_conn(self, conn, tid: str, match_no: int, hs: int, ass: int, scorers: dict | None) -> None:
         conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,match_no))
         if not scorers: return
-        sides={"home":hs,"away":ass}; total_any=0; side_totals={"home":0,"away":0}
         cleaned={"home":[],"away":[]}
         for side in ("home","away"):
             team=" ".join(str(scorers.get(side,{}).get("team") or "").strip().split())
             for item in scorers.get(side,{}).get("items",[]):
                 name=" ".join(str(item.get("name") or "").strip().split()); goals=int(item.get("goals") or 0)
                 if not name or goals<=0: continue
-                cleaned[side].append((team,name,goals)); side_totals[side]+=goals; total_any+=goals
-        if total_any and (side_totals["home"]!=hs or side_totals["away"]!=ass):
-            raise ValueError(f"Strzelcy nie sumują się do wyniku. Rozpisano {side_totals['home']}:{side_totals['away']}, a wynik to {hs}:{ass}.")
+                cleaned[side].append((team,name,goals))
         for side,items in cleaned.items():
             for team,name,goals in items:
                 nt=self._norm_team_name(team); ns=self._norm_scorer_name(name)

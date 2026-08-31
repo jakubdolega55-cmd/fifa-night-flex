@@ -374,7 +374,7 @@ def score_form(tid,m):
         home_sc=_scorer_side_form(tid,m,"home",m["home_team"],m["home_name"])
         st.divider()
         away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
-        st.caption("Strzelcy są opcjonalni. Jeśli wpiszesz choć jednego, suma rozpisanych goli musi zgadzać się z wynikiem meczu.")
+        st.caption("Strzelcy są opcjonalni i nie muszą sumować się do wyniku — możesz wpisać tylko znane gole, a samobóje lub nieuzupełnione bramki zostawić bez przypisania.")
         ok=st.form_submit_button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True)
     if ok:
         scorers={"home":home_sc,"away":away_sc}
@@ -549,6 +549,26 @@ def render_stats(t):
         else:
             df=pd.DataFrame([{"#":i+1,"Zawodnik":x["name"],"Gole":x["goals"],"Mecze z golem":x["matches_scored"],"Drużyny":x["teams"]} for i,x in enumerate(scorers)])
             st.dataframe(df,hide_index=True,use_container_width=True)
+
+        st.markdown("### ✏️ Listy zawodników drużyn")
+        st.caption("Tu możesz dopisać zawodników do podpowiedzi. Wpisywanie w formularzu nie odświeża strony — zapis następuje dopiero po kliknięciu przycisku.")
+        teams=db.scorer_roster_teams()
+        selected_team=st.selectbox("Drużyna",teams,key="scorer_roster_team")
+        current=db.team_scorer_options(selected_team)
+        if current:
+            st.caption("Aktualne podpowiedzi: " + " • ".join(x["name"] for x in current))
+        with st.form("add_scorer_roster",clear_on_submit=True):
+            raw=st.text_area("Dodaj zawodników",placeholder="Po jednym nazwisku w każdej linii",height=110)
+            add_btn=st.form_submit_button("➕ Dodaj do drużyny",use_container_width=True)
+        if add_btn:
+            names=[x.strip() for x in raw.splitlines() if x.strip()]
+            if not names:st.warning("Wpisz przynajmniej jednego zawodnika.")
+            else:
+                try:
+                    n=db.add_team_scorers(selected_team,names)
+                    if n:st.success(f"Dodano {n} zawodników do {selected_team}.");rf()
+                    else:st.info("Wszyscy wpisani zawodnicy byli już na liście.")
+                except ValueError as e:st.error(str(e))
 
 
 def reset_controls(t,loc):
