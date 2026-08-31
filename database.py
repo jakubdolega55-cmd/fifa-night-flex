@@ -20,7 +20,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 163
+DB_API_VERSION = 164
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -1017,6 +1017,13 @@ class Database:
         if last_final and champ: runner=last_final["away_player_id"] if last_final["home_player_id"]==champ else last_final["home_player_id"]
         top=max(ps.items(),key=lambda x:(x[1]["gf"],x[1]["w"]),default=(None,{})); defense=min(ps.items(),key=lambda x:(x[1]["ga"]/(sum(x[1][k] for k in ("w","d","l")) or 1),x[1]["ga"]),default=(None,{})); form=max(ps.items(),key=lambda x:(x[1]["w"],x[1]["gf"]-x[1]["ga"]),default=(None,{}))
         biggest=max(played,key=lambda m:abs(int(m["home_score"])-int(m["away_score"])),default=None); high=max(played,key=lambda m:int(m["home_score"])+int(m["away_score"]),default=None)
+        stage_weight={"FINAL":8,"RESET_FINAL":8,"SF":6,"WB_FINAL":6,"LB_FINAL":6,"QF":4,"BARRAGE":4,"WB":2,"LB":2,"LEAGUE":0,"GROUP":0}
+        def match_fun_score(m):
+            hs,ass=int(m["home_score"]),int(m["away_score"]); total=hs+ass; margin=abs(hs-ass)
+            pens=8 if m.get("home_penalties") is not None and m.get("away_penalties") is not None else 0
+            close=5 if margin<=1 else (2 if margin==2 else 0)
+            return total*2+pens+close+stage_weight.get(m.get("stage"),1)
+        match_of_tournament=max(played,key=match_fun_score,default=None)
         pair_hist=defaultdict(lambda:{"n":0,"wins":defaultdict(int)})
         for pm in prior_matches:
             a,b=pm.get("home_player_id"),pm.get("away_player_id")
@@ -1047,6 +1054,9 @@ class Database:
                 "biggest":({"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{biggest['home_score']}:{biggest['away_score']}"} if biggest else None),
                 "highest":({"home":high.get("home_name"),"away":high.get("away_name"),"score":f"{high['home_score']}:{high['away_score']}"} if high else None),
                 "real_top_scorer":({"name":scorer_rows[0]["scorer_name"],"goals":int(scorer_rows[0]["goals"])} if scorer_rows else None),
+                "match_of_tournament":({"home":match_of_tournament.get("home_name"),"away":match_of_tournament.get("away_name"),
+                    "score":f"{match_of_tournament['home_score']}:{match_of_tournament['away_score']}","stage":match_of_tournament.get("stage"),"group_name":match_of_tournament.get("group_name"),
+                    "home_penalties":match_of_tournament.get("home_penalties"),"away_penalties":match_of_tournament.get("away_penalties")} if match_of_tournament else None),
                 "rivalry_match":rivalry,"new_records":new_records}
 
     def current_match_from(self, matches: list[dict]) -> dict | None:
@@ -1194,6 +1204,84 @@ class Database:
             conn.execute("DELETE FROM tournaments")
             # Keep players and remembered lineups. Only live tournament pointers are cleared.
             self._setting_set_conn(conn,CURRENT_KEY,"")
+
+    def team_stats(self) -> list[dict]:
+        """Statystyki klubów z zakończonych turniejów oficjalnych (Classic + Flex)."""
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+            champions=self._fetchall(conn,"""SELECT tp.team,tp.player_id,p.name
+                FROM tournaments t
+                JOIN tournament_players tp ON tp.tournament_id=t.id AND tp.player_id=t.champion_player_id
+                JOIN players p ON p.id=tp.player_id
+                WHERE t.status='completed' AND t.is_test=0 AND tp.team<>''""")
+        agg=defaultdict(lambda:{"display":None,"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0,"players":set()})
+        by_player=defaultdict(lambda:{"display":None,"player_name":None,"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
+        for m in matches:
+            for side in ("home","away"):
+                pid=m.get(f"{side}_player_id"); team=" ".join(str(m.get(f"{side}_team") or "").strip().split())
+                if not pid or not team: continue
+                nt=self._norm_team_name(team); rec=agg[nt]; rec["display"]=rec["display"] or team; rec["matches"]+=1; rec["players"].add(pid)
+                hs,ass=int(m["home_score"]),int(m["away_score"])
+                gf,ga=(hs,ass) if side=="home" else (ass,hs)
+                rec["gf"]+=gf; rec["ga"]+=ga
+                result=self._result_for_player(m,pid)
+                rec[{"W":"w","D":"d","L":"l"}[result]]+=1
+                pr=by_player[(nt,pid)]; pr["display"]=pr["display"] or team; pr["player_name"]=m.get(f"{side}_name") or "?"; pr["matches"]+=1; pr["gf"]+=gf; pr["ga"]+=ga; pr[{"W":"w","D":"d","L":"l"}[result]]+=1
+        for c in champions:
+            team=" ".join(str(c.get("team") or "").strip().split())
+            if team:
+                nt=self._norm_team_name(team); agg[nt]["display"]=agg[nt]["display"] or team; agg[nt]["titles"]+=1; agg[nt]["players"].add(c["player_id"])
+        best_by_team={}
+        for (nt,pid),v in by_player.items():
+            played=v["matches"] or 1; score=(v["w"],v["w"]/played,v["gf"]-v["ga"],v["gf"])
+            old=best_by_team.get(nt)
+            if not old or score>old[0]: best_by_team[nt]=(score,v)
+        out=[]
+        for nt,v in agg.items():
+            if not v["matches"]: continue
+            bp=(best_by_team.get(nt) or (None,{}))[1]
+            out.append({"team":v["display"] or nt,"matches":v["matches"],"w":v["w"],"d":v["d"],"l":v["l"],"gf":v["gf"],"ga":v["ga"],
+                        "gd":v["gf"]-v["ga"],"titles":v["titles"],"players":len(v["players"]),"win_pct":round(v["w"]/v["matches"]*100,1),
+                        "goals_per_match":round(v["gf"]/v["matches"],2),"best_player":bp.get("player_name") or "—","best_player_wins":bp.get("w",0)})
+        out.sort(key=lambda x:(x["titles"],x["w"],x["win_pct"],x["gd"]),reverse=True)
+        return out
+
+    def player_profile(self, pid: str) -> dict | None:
+        """Profil gracza i historia jego oficjalnych meczów."""
+        base=next((x for x in self.all_time_stats() if x["player_id"]==pid),None)
+        if not base:return None
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+        own=[m for m in matches if pid in (m.get("home_player_id"),m.get("away_player_id"))]
+        teams=defaultdict(lambda:{"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"display":None})
+        opponents=defaultdict(lambda:{"name":None,"meetings":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
+        history=[]
+        for m in own:
+            home=m.get("home_player_id")==pid
+            team_raw=m.get("home_team") if home else m.get("away_team")
+            team=" ".join(str(team_raw or "").strip().split())
+            opp=m.get("away_player_id") if home else m.get("home_player_id"); opp_name=m.get("away_name") if home else m.get("home_name")
+            hs,ass=int(m["home_score"]),int(m["away_score"]); gf,ga=(hs,ass) if home else (ass,hs)
+            result=self._result_for_player(m,pid)
+            if team:
+                nt=self._norm_team_name(team); tr=teams[nt];tr["display"]=tr["display"] or team;tr["matches"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[result]]+=1
+            if opp:
+                orc=opponents[opp];orc["name"]=opp_name or "?";orc["meetings"]+=1;orc["gf"]+=gf;orc["ga"]+=ga;orc[{"W":"w","D":"d","L":"l"}[result]]+=1
+            score=f"{m['home_score']}:{m['away_score']}"
+            if m.get("home_penalties") is not None and m.get("away_penalties") is not None:
+                score+=f" (k. {m['home_penalties']}:{m['away_penalties']})"
+            history.append({"result":result,"played_at":m.get("played_at") or m.get("completed_at") or m.get("created_at"),"stage":m.get("stage"),
+                            "opponent":opp_name or "?","team":team or "—","opponent_team":m.get("away_team") if home else m.get("home_team"),"score":score})
+        team_rows=[]
+        for v in teams.values():
+            team_rows.append({"team":v["display"],"matches":v["matches"],"w":v["w"],"d":v["d"],"l":v["l"],"gf":v["gf"],"ga":v["ga"],"gd":v["gf"]-v["ga"],"win_pct":round(v["w"]/v["matches"]*100,1)})
+        team_rows.sort(key=lambda x:(x["matches"],x["w"],x["win_pct"]),reverse=True)
+        opp_rows=[{"player_id":opid,**v} for opid,v in opponents.items()]
+        frequent=max(opp_rows,key=lambda x:(x["meetings"],x["w"]+x["l"]),default=None)
+        nemesis=max((x for x in opp_rows if x["l"]>0),key=lambda x:(x["l"]-x["w"],x["l"],x["meetings"]),default=None)
+        favorite=max((x for x in opp_rows if x["w"]>0),key=lambda x:(x["w"]-x["l"],x["w"],x["meetings"]),default=None)
+        last_results=[self._result_for_player(m,pid) for m in own[-5:]]
+        return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1]}
 
     def all_time_stats(self) -> list[dict]:
         # Intentionally the same source tables as the classic app: stats are shared across both links.

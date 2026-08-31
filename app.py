@@ -234,11 +234,17 @@ def team_draw(tid:str):
         return
     if last:
         render_wheel(last.get("wheel_team",last["team"]),last["name"],tid,pool,display_result=last["team"])
-        if st.button("➡️ LOSUJEMY DALEJ",type="primary",use_container_width=True,key=f"next_{tid}_{done}"):
-            st.session_state.pop("last_spin",None)
-            bundle=db.bundle(tid);hidden=[p for p in bundle["players"] if not p["team_revealed"]]
-            if not hidden:db.start_structure_draw(tid);rr()
-            rf()
+        bundle=db.bundle(tid);hidden=[p for p in bundle["players"] if not p["team_revealed"]]
+        if hidden:
+            nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0]
+            if st.button(f"🎰 ZAKRĘĆ DLA {nxt['name']}",type="primary",use_container_width=True,key=f"next_spin_{tid}_{done}"):
+                st.session_state.pop("last_spin",None)
+                result=db.reveal_next_team(tid)
+                if result and not result.get("wildcard"):st.session_state.last_spin=result
+                rf()
+        else:
+            if st.button("🎲 PRZEJDŹ DO KOLEJNEGO LOSOWANIA",type="primary",use_container_width=True,key=f"next_stage_{tid}_{done}"):
+                st.session_state.pop("last_spin",None);db.start_structure_draw(tid);rr()
         return
     if hidden:
         nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0];st.subheader(f"🎡 Następny: {nxt['name']}")
@@ -446,6 +452,11 @@ def live(tid:str):
         c1,c2=st.columns(2)
         if summary.get("biggest"):c1.info(f"💥 Największe zwycięstwo: **{summary['biggest']['home']} {summary['biggest']['score']} {summary['biggest']['away']}**")
         if summary.get("highest"):c2.info(f"🎯 Najbardziej bramkowy mecz: **{summary['highest']['home']} {summary['highest']['score']} {summary['highest']['away']}**")
+        mot=summary.get("match_of_tournament")
+        if mot:
+            mot_score=mot["score"]
+            if mot.get("home_penalties") is not None and mot.get("away_penalties") is not None:mot_score+=f" (k. {mot['home_penalties']}:{mot['away_penalties']})"
+            st.warning(f"🎬 **Mecz turnieju:** {mot['home']} {mot_score} {mot['away']} • {stage_name({'stage':mot.get('stage'),'group_name':mot.get('group_name') or ''})}")
         if summary.get("real_top_scorer"):st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
         if summary.get("rivalry_match"):st.info(f"🔥 Rivalry match turnieju: **{summary['rivalry_match']['home']} {summary['rivalry_match']['score']} {summary['rivalry_match']['away']}**")
         if summary.get("new_records"):
@@ -494,7 +505,7 @@ def render_stats(t):
     st.caption("Wszystkie zakończone turnieje nietestowe zapisane w bazie.")
     stats=db.all_time_stats()
     if not stats:st.info("Brak zakończonych turniejów nietestowych.");return
-    tab1,tab2,tab3,tab4=st.tabs(["🏆 Ranking","⚔️ H2H","🏛️ Rekordy","⚽ Strzelcy"])
+    tab1,tab2,tab3,tab4,tab5,tab6=st.tabs(["🏆 Ranking","⚔️ H2H","🏛️ Rekordy","👥 Drużyny","👤 Gracze","⚽ Strzelcy"])
     with tab1:
         leader=stats[0];c1,c2,c3,c4=st.columns(4);c1.metric("🐐 Lider",leader["name"]);c2.metric("🏆 Tytuły",leader["titles"]);tg=max(stats,key=lambda x:x["gf"]);c3.metric("⚽ Król bramek",tg["name"],f"{tg['gf']} goli");tw=max(stats,key=lambda x:x["w"]);c4.metric("🔥 Najwięcej wygranych",tw["name"],f"{tw['w']} W")
         df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
@@ -553,6 +564,47 @@ def render_stats(t):
             if r.get("h2h_dominance"):p=r['h2h_dominance'];add("Największa dominacja H2H",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
     with tab4:
+        team_stats=db.team_stats()
+        if not team_stats:st.info("Brak danych o drużynach z oficjalnych turniejów.")
+        else:
+            most_titles=max(team_stats,key=lambda x:(x["titles"],x["w"]))
+            eligible=[x for x in team_stats if x["matches"]>=5];best_pct=max(eligible,key=lambda x:(x["win_pct"],x["w"])) if eligible else max(team_stats,key=lambda x:x["win_pct"])
+            most_goals=max(team_stats,key=lambda x:x["gf"]);most_wins=max(team_stats,key=lambda x:x["w"])
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("🏆 Najwięcej tytułów",most_titles["team"],most_titles["titles"])
+            c2.metric("📈 Najlepszy W%",best_pct["team"],f"{best_pct['win_pct']}%")
+            c3.metric("⚽ Najwięcej goli",most_goals["team"],most_goals["gf"])
+            c4.metric("🔥 Najwięcej wygranych",most_wins["team"],most_wins["w"])
+            df=pd.DataFrame([{"Drużyna":x["team"],"Tytuły":x["titles"],"M":x["matches"],"W":x["w"],"R":x["d"],"P":x["l"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}","G/mecz":x["goals_per_match"],"Gracze":x["players"],"Najlepszy gracz":x["best_player"]} for x in team_stats])
+            st.dataframe(df,hide_index=True,use_container_width=True)
+    with tab5:
+        st.markdown("### 👤 Profil i historia gracza")
+        opts={p["name"]:p["player_id"] for p in stats};names=list(opts)
+        selected=st.selectbox("Gracz",names,key="player_profile_select")
+        profile=db.player_profile(opts[selected])
+        if profile:
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("🏆 Tytuły",profile["titles"]);c2.metric("🏁 Finały",profile["finals"]);c3.metric("🔥 Wygrane",profile["w"],f"{profile['win_pct']}%")
+            c4.metric("⚽ Bramki",profile["gf"],f"{profile['gd']:+d} bilans")
+            st.caption("Forma — ostatnie 5: **"+" ".join(profile.get("form") or [])+"**" if profile.get("form") else "Brak ostatnich meczów")
+            c1,c2,c3=st.columns(3)
+            freq=profile.get("most_frequent");nem=profile.get("nemesis");fav=profile.get("favorite")
+            c1.metric("🤝 Najczęstszy rywal",freq["name"] if freq else "—",f"{freq['meetings']} M" if freq else None)
+            c2.metric("😈 Nemesis",nem["name"] if nem else "—",f"{nem['w']}W–{nem['l']}P" if nem else None)
+            c3.metric("🎯 Ulubiony rywal",fav["name"] if fav else "—",f"{fav['w']}W–{fav['l']}P" if fav else None)
+            if profile.get("teams"):
+                st.markdown("#### 🎮 Drużyny gracza")
+                st.dataframe(pd.DataFrame([{"Drużyna":x["team"],"M":x["matches"],"W":x["w"],"R":x["d"],"P":x["l"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}"} for x in profile["teams"]]),hide_index=True,use_container_width=True)
+            if profile.get("history"):
+                st.markdown("#### 🕘 Ostatnie 10 oficjalnych meczów")
+                stage_labels={"GROUP":"GRUPA","LEAGUE":"LIGA","WB":"WINNERS","WB_FINAL":"FINAŁ WINNERS","LB":"LOSERS","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}
+                hist=[]
+                for x in profile["history"]:
+                    raw=x.get("played_at") or "";date=raw[:10] if raw else "—"
+                    hist.append({"Data":date,"Wynik":x["result"],"Faza":stage_labels.get(x.get("stage"),x.get("stage") or "—"),"Rywal":x["opponent"],"Drużyna":x["team"],"Rezultat":x["score"]})
+                st.dataframe(pd.DataFrame(hist),hide_index=True,use_container_width=True)
+
+    with tab6:
         scorers=db.scorer_stats()
         if not scorers:st.info("Brak zapisanych strzelców w oficjalnych turniejach.")
         else:
