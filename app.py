@@ -226,13 +226,14 @@ def team_draw(tid:str):
             ok=st.form_submit_button("✅ ZATWIERDŹ DRUŻYNĘ",type="primary",use_container_width=True)
         if ok:
             try:
+                wheel_team=pending["team"]
                 team=db.confirm_wildcard_team(tid,pending["player_id"],choice)
-                st.session_state.last_spin={"player_id":pending["player_id"],"name":pending["name"],"team":team}
+                st.session_state.last_spin={"player_id":pending["player_id"],"name":pending["name"],"team":team,"wheel_team":wheel_team}
                 wildcard_team_suggestions_cached.clear();rf()
             except ValueError as e:st.error(str(e))
         return
     if last:
-        render_wheel(last["team"],last["name"],tid,pool)
+        render_wheel(last.get("wheel_team",last["team"]),last["name"],tid,pool,display_result=last["team"])
         if st.button("➡️ LOSUJEMY DALEJ",type="primary",use_container_width=True,key=f"next_{tid}_{done}"):
             st.session_state.pop("last_spin",None)
             bundle=db.bundle(tid);hidden=[p for p in bundle["players"] if not p["team_revealed"]]

@@ -68,15 +68,29 @@ def _sector_path(i,n,r=182,c=210):
     return f"M {c} {c} L {x1:.2f} {y1:.2f} A {r} {r} 0 {large} 1 {x2:.2f} {y2:.2f} Z"
 
 
-def render_wheel(result,player,tid,pool):
-    n=len(pool); idx=pool.index(result); seed=int.from_bytes(hashlib.sha256(f"{tid}-{player}-{result}".encode()).digest()[:4],"big"); rng=random.Random(seed)
+def render_wheel(result,player,tid,pool,display_result=None):
+    display_result = display_result or result
+    wheel_result = result
+    if wheel_result not in pool:
+        # Hotfix: po zatwierdzeniu Wild Card `result` może być już konkretną
+        # drużyną (np. Inter), podczas gdy koło nadal zawiera slot Wild Card.
+        wildcards=[x for x in pool if "Dowolna drużyna" in str(x)]
+        if wildcards:
+            wheel_result=wildcards[0]
+        elif pool:
+            # Ostatnie zabezpieczenie: animacja nigdy nie może wywalić aplikacji.
+            wheel_result=pool[0]
+        else:
+            st.error("Brak drużyn w puli losowania.")
+            return
+    n=len(pool); idx=pool.index(wheel_result); seed=int.from_bytes(hashlib.sha256(f"{tid}-{player}-{display_result}".encode()).digest()[:4],"big"); rng=random.Random(seed)
     span=360/n; offset=rng.uniform(-span*.24,span*.24); rotation=5*360+(360-(idx*span+offset))%360
     sectors=[];labels=[]
     for i,team in enumerate(pool):
         sectors.append(f'<path d="{_sector_path(i,n)}" fill="{COLORS[i%len(COLORS)]}" stroke="rgba(255,255,255,.18)" stroke-width="2"/>')
         deg=i*span;rad=math.radians(deg);x=210+119*math.sin(rad);y=210-119*math.cos(rad);label=html.escape(TEAM_SHORT.get(team,team[:12].upper()))
         labels.append(f'<text x="{x:.1f}" y="{y:.1f}" class="wl" text-anchor="middle" dominant-baseline="middle">{label}</text>')
-    components.html(f"""<div class='card'><div class='eye'>LOSOWANIE DRUŻYNY</div><div class='who'>Teraz losujemy dla <b>{html.escape(player)}</b></div><div class='shell'><div class='pointer'><span></span></div><svg viewBox='0 0 420 420'><g class='spin'>{''.join(sectors)}{''.join(labels)}<circle cx='210' cy='210' r='45' fill='#0b1220' stroke='#f8fafc' stroke-width='7'/><text x='210' y='210' text-anchor='middle' dominant-baseline='middle' class='hub'>FC</text></g></svg></div><div class='land'><div class='small'>{html.escape(player)} dostaje</div><div class='team'>{html.escape(result)}</div><div class='joke'>{html.escape(joke_for(player,result,tid))}</div></div></div>
+    components.html(f"""<div class='card'><div class='eye'>LOSOWANIE DRUŻYNY</div><div class='who'>Teraz losujemy dla <b>{html.escape(player)}</b></div><div class='shell'><div class='pointer'><span></span></div><svg viewBox='0 0 420 420'><g class='spin'>{''.join(sectors)}{''.join(labels)}<circle cx='210' cy='210' r='45' fill='#0b1220' stroke='#f8fafc' stroke-width='7'/><text x='210' y='210' text-anchor='middle' dominant-baseline='middle' class='hub'>FC</text></g></svg></div><div class='land'><div class='small'>{html.escape(player)} dostaje</div><div class='team'>{html.escape(display_result)}</div><div class='joke'>{html.escape(joke_for(player,display_result,tid))}</div></div></div>
     <style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.card{{max-width:680px;margin:2px auto;padding:18px 14px 16px;border-radius:24px;background:radial-gradient(circle at 50% 28%,#1e3a5f,#111c30 46%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center;overflow:hidden}}.eye{{font-size:11px;font-weight:900;letter-spacing:.18em;color:#7dd3fc}}.who{{font-size:18px;color:#dbeafe;margin:5px 0}}.shell{{position:relative;width:min(88vw,420px);margin:auto}}svg{{display:block;width:100%;filter:drop-shadow(0 18px 20px rgba(0,0,0,.33))}}.spin{{transform-box:view-box;transform-origin:210px 210px;animation:spin 2.85s cubic-bezier(.10,.72,.12,1) forwards}}@keyframes spin{{to{{transform:rotate({rotation:.2f}deg)}}}}.wl{{fill:white;font-size:{'13' if n>=7 else '15'}px;font-weight:900;paint-order:stroke;stroke:rgba(0,0,0,.44);stroke-width:3px}}.hub{{fill:#fff;font-size:20px;font-weight:1000}}.pointer{{position:absolute;z-index:5;top:2px;left:50%;transform:translateX(-50%);width:44px;height:52px}}.pointer:before{{content:'';position:absolute;left:7px;top:0;width:30px;height:30px;border-radius:50%;background:#f8fafc;border:5px solid #0b1220}}.pointer span{{position:absolute;left:10px;top:25px;border-left:12px solid transparent;border-right:12px solid transparent;border-top:22px solid #f8fafc}}.land{{opacity:0;transform:translateY(8px);animation:land .32s ease 2.72s forwards;min-height:74px}}@keyframes land{{to{{opacity:1;transform:none}}}}.small{{font-size:12px;color:#94a3b8;text-transform:uppercase;font-weight:850}}.team{{font-size:clamp(22px,5vw,31px);font-weight:1000;color:#fff;margin:4px 0}}.joke{{font-size:14px;color:#cbd5e1}}@media(max-width:480px){{.card{{padding:14px 8px 13px}}.wl{{font-size:{'11' if n>=7 else '13'}px}}}}</style>{FIT_SCRIPT}""",height=585,scrolling=False)
 
 
