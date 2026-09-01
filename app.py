@@ -175,20 +175,31 @@ def render_start():
 
 @st.fragment
 def draft_order(tid:str):
-    b=db.bundle(tid); players=b["players"]; meta=b["meta"]; extra=meta["extra"]
+    b=db.setup_bundle(tid); players=b["players"]; meta=b["meta"]; extra=meta["extra"]
     revealed=bool(extra.get("draft_order_revealed",False))
+    draw_slot=st.empty()
     if not revealed:
-        if st.button("🎱 LOSUJ KOLEJNOŚĆ WYBORU",type="primary",use_container_width=True,key=f"draft_reveal_{tid}"):
-            db.reveal_draft_order(tid);rf()
-        return
-    render_draft_order(players,int(extra.get("draft_redraw_count",0)))
+        reveal_slot=st.empty()
+        with reveal_slot.container():
+            reveal=st.button("🎱 LOSUJ KOLEJNOŚĆ WYBORU",type="primary",use_container_width=True,key=f"draft_reveal_{tid}")
+        if not reveal:
+            return
+        reveal_slot.empty()
+        # The order already exists in DB; revealing it doesn't require another rerun/read.
+        db.reveal_draft_order(tid)
+        revealed=True
+    with draw_slot.container():
+        render_draft_order(players,int(extra.get("draft_redraw_count",0)))
     c1,c2=st.columns(2)
     with c1:
         if st.button("✅ ZATWIERDŹ KOLEJNOŚĆ",type="primary",use_container_width=True,key=f"draft_accept_{tid}"):
             db.confirm_draft_order(tid);rr()
     with c2:
-        if st.button("💸 ZAPŁAĆ I WYLOSUJ PONOWNIE",use_container_width=True,key=f"draft_reroll_{tid}_{extra.get('draft_redraw_count',0)}"):
-            db.reroll_draft_order(tid);rf()
+        if st.button("💸 ZAPŁAĆ I WYLOSUJ PONOWNIE",use_container_width=True,key=f"draft_reroll_{tid}"):
+            refreshed=db.reroll_draft_order(tid)
+            draw_slot.empty()
+            with draw_slot.container():
+                render_draft_order(refreshed.get("players",players),int(refreshed.get("redraw_count",0)))
 
 
 def render_draft_order_stage(t):
@@ -199,7 +210,7 @@ def render_draft_order_stage(t):
 
 @st.fragment
 def team_draft(tid:str):
-    b=db.bundle(tid); players=b["players"]; pool=b["meta"]["team_pool"]
+    b=db.setup_bundle(tid); players=b["players"]; pool=b["meta"]["team_pool"]
     picked=[p for p in players if int(p.get("team_revealed") or 0)]
     waiting=[p for p in players if not int(p.get("team_revealed") or 0)]
     if not waiting:
@@ -232,12 +243,44 @@ def render_team_draft(t):
 
 @st.fragment
 def team_draw(tid:str):
-    bundle=db.bundle(tid);players=bundle["players"];pool=bundle["meta"]["team_pool"]
+    # Setup screens don't need match rows. One lightweight state read is enough.
+    bundle=db.setup_bundle(tid);players=bundle["players"];meta=bundle["meta"];pool=meta["team_pool"]
     hidden=[p for p in players if not p["team_revealed"]];last=st.session_state.get("last_spin")
-    pending=db.pending_wildcard(tid)
-    done=len(players)-len(hidden);st.progress(done/len(players),text=f"Wylosowano {done}/{len(players)} drużyn")
+    pending=(meta.get("extra") or {}).get("pending_wildcard")
+    if pending: pending={**pending,"wildcard":True}
+    done=len(players)-len(hidden)
+    progress_slot=st.empty()
+    progress_slot.progress(done/len(players),text=f"Wylosowano {done}/{len(players)} drużyn")
+    wheel_slot=st.empty()
+
+    def show_wheel(result:dict, display_result:str|None=None):
+        wheel_slot.empty()
+        with wheel_slot.container():
+            render_wheel(result.get("wheel_team",result.get("team")),result["name"],tid,pool,display_result=display_result or result.get("team"))
+
+    def next_after(result:dict, previous_hidden:list[dict], slot=None):
+        remaining=[p for p in previous_hidden if str(p.get("player_id"))!=str(result.get("player_id"))]
+        new_done=len(players)-len(remaining)
+        progress_slot.progress(new_done/len(players),text=f"Wylosowano {new_done}/{len(players)} drużyn")
+        target=slot if slot is not None else st.empty()
+        target.empty()
+        with target.container():
+            if remaining:
+                nxt=sorted(remaining,key=lambda x:x["team_reveal_order"])[0]
+                st.button(f"🎰 ZAKRĘĆ DLA {nxt['name']}",type="primary",use_container_width=True,key=f"next_spin_{tid}_{new_done}")
+            else:
+                st.button("🎲 PRZEJDŹ DO KOLEJNEGO LOSOWANIA",type="primary",use_container_width=True,key=f"next_stage_{tid}_{new_done}")
+
+    def show_pending_wildcard(result:dict):
+        st.markdown(f"### 🃏 Wild Card — {esc(result['name'])}")
+        with st.form(f"wildcard_draw_{tid}_{result['player_id']}"):
+            st.selectbox("Wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
+                         placeholder="np. Arsenal",accept_new_options=True,key=f"wheel_wc_{tid}_{result['player_id']}")
+            st.form_submit_button("✅ ZATWIERDŹ DRUŻYNĘ",type="primary",use_container_width=True)
+
     if pending:
-        render_wheel(pending["team"],pending["name"],tid,pool)
+        with wheel_slot.container():
+            render_wheel(pending["team"],pending["name"],tid,pool)
         st.markdown(f"### 🃏 Wild Card — {esc(pending['name'])}")
         with st.form(f"wildcard_draw_{tid}_{pending['player_id']}"):
             choice=st.selectbox("Wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
@@ -247,30 +290,58 @@ def team_draw(tid:str):
             try:
                 wheel_team=pending["team"]
                 team=db.confirm_wildcard_team(tid,pending["player_id"],choice)
-                st.session_state.last_spin={"player_id":pending["player_id"],"name":pending["name"],"team":team,"wheel_team":wheel_team}
-                wildcard_team_suggestions_cached.clear();rf()
+                result={"player_id":pending["player_id"],"name":pending["name"],"team":team,"wheel_team":wheel_team,"wildcard":False}
+                st.session_state.last_spin=result
+                wildcard_team_suggestions_cached.clear()
+                show_wheel(result,display_result=team)
+                next_after(result,hidden)
             except ValueError as e:st.error(str(e))
         return
+
     if last:
-        render_wheel(last.get("wheel_team",last["team"]),last["name"],tid,pool,display_result=last["team"])
-        bundle=db.bundle(tid);hidden=[p for p in bundle["players"] if not p["team_revealed"]]
+        with wheel_slot.container():
+            render_wheel(last.get("wheel_team",last["team"]),last["name"],tid,pool,display_result=last["team"])
         if hidden:
             nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0]
-            if st.button(f"🎰 ZAKRĘĆ DLA {nxt['name']}",type="primary",use_container_width=True,key=f"next_spin_{tid}_{done}"):
+            action_slot=st.empty()
+            with action_slot.container():
+                spin=st.button(f"🎰 ZAKRĘĆ DLA {nxt['name']}",type="primary",use_container_width=True,key=f"next_spin_{tid}_{done}")
+            if spin:
+                action_slot.empty()
                 st.session_state.pop("last_spin",None)
                 result=db.reveal_next_team(tid)
-                if result and not result.get("wildcard"):st.session_state.last_spin=result
-                rf()
-        else:
-            if st.button("🎲 PRZEJDŹ DO KOLEJNEGO LOSOWANIA",type="primary",use_container_width=True,key=f"next_stage_{tid}_{done}"):
-                st.session_state.pop("last_spin",None);db.start_structure_draw(tid);rr()
+                if result:
+                    # Render the new wheel immediately in this very run: no fragment rerun
+                    # and no second Neon read before the animation starts.
+                    show_wheel(result,display_result=result.get("team"))
+                    if result.get("wildcard"):
+                        st.session_state.pop("last_spin",None)
+                        show_pending_wildcard(result)
+                    else:
+                        st.session_state.last_spin=result
+                        next_after(result,hidden,action_slot)
+            return
+        if st.button("🎲 PRZEJDŹ DO KOLEJNEGO LOSOWANIA",type="primary",use_container_width=True,key=f"next_stage_{tid}_{done}"):
+            st.session_state.pop("last_spin",None);db.start_structure_draw(tid);rr()
         return
+
     if hidden:
-        nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0];st.subheader(f"🎡 Następny: {nxt['name']}")
-        if st.button("🎰 ZAKRĘĆ KOŁEM",type="primary",use_container_width=True,key=f"spin_{nxt['player_id']}"):
+        nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0]
+        title_slot=st.empty();title_slot.subheader(f"🎡 Następny: {nxt['name']}")
+        action_slot=st.empty()
+        with action_slot.container():
+            spin=st.button("🎰 ZAKRĘĆ KOŁEM",type="primary",use_container_width=True,key=f"spin_{nxt['player_id']}")
+        if spin:
+            action_slot.empty()
             result=db.reveal_next_team(tid)
-            if result and not result.get("wildcard"):st.session_state.last_spin=result
-            rf()
+            if result:
+                title_slot.empty()
+                show_wheel(result,display_result=result.get("team"))
+                if result.get("wildcard"):
+                    show_pending_wildcard(result)
+                else:
+                    st.session_state.last_spin=result
+                    next_after(result,hidden,action_slot)
     else:
         if st.button("🎲 PRZEJDŹ DO KOLEJNEGO LOSOWANIA",type="primary",use_container_width=True,key=f"struct_{tid}"):
             db.start_structure_draw(tid);rr()
@@ -284,20 +355,33 @@ def render_team_draw(t):
 
 @st.fragment
 def structure_draw(tid:str):
-    b=db.bundle(tid);m=b["meta"]
-    if not int(m["draw_revealed"]):
-        if st.button("🎱 LOSUJ",type="primary",use_container_width=True,key=f"reveal_struct_{tid}"):
-            db.reveal_structure(tid);rf()
-        return
+    b=db.setup_bundle(tid);m=b["meta"]
     name_map={p["player_id"]:p["name"] for p in b["players"]}
-    render_structure_draw(m["format_key"],m["draw"],int(m["redraw_count"]),name_map=name_map)
+    draw_slot=st.empty()
+    revealed=bool(int(m["draw_revealed"]))
+    if not revealed:
+        reveal_slot=st.empty()
+        with reveal_slot.container():
+            reveal=st.button("🎱 LOSUJ",type="primary",use_container_width=True,key=f"reveal_struct_{tid}")
+        if not reveal:
+            return
+        reveal_slot.empty()
+        # Draw data is already present in memory. Persist reveal, then start animation
+        # immediately instead of doing another fragment rerun + Neon fetch.
+        db.reveal_structure(tid)
+        revealed=True
+    with draw_slot.container():
+        render_structure_draw(m["format_key"],m["draw"],int(m["redraw_count"]),name_map=name_map)
     c1,c2=st.columns(2)
     with c1:
         if st.button("🏁 ZACZYNAMY TURNIEJ",type="primary",use_container_width=True,key=f"accept_{tid}"):
             db.confirm_structure(tid);rr()
     with c2:
-        if st.button("💸 ZAPŁAĆ I WYLOSUJ PONOWNIE — PODGRZANE KULKI",use_container_width=True,key=f"reroll_{tid}_{m['redraw_count']}"):
-            db.reroll_structure(tid);rf()
+        if st.button("💸 ZAPŁAĆ I WYLOSUJ PONOWNIE — PODGRZANE KULKI",use_container_width=True,key=f"reroll_{tid}"):
+            refreshed=db.reroll_structure(tid)
+            draw_slot.empty()
+            with draw_slot.container():
+                render_structure_draw(refreshed.get("format_key",m["format_key"]),refreshed.get("draw",m["draw"]),int(refreshed.get("redraw_count",0)),name_map=name_map)
 
 
 def render_structure(t):
@@ -444,8 +528,16 @@ def render_special_event(tid:str, b:dict) -> bool:
             st.markdown("### 🎱 Losowanie Double Elimination")
             st.caption("Jednym losowaniem ustalamy pary Winners Bracket i Szczęśliwy los w Losers Bracket.")
             if not state.get("selected"):
-                if st.button("🎰 LOSUJ DRABINKĘ",type="primary",use_container_width=True,key=f"d7_combo_draw_{tid}"):
-                    db.reveal_double7_combined_draw(tid);rf()
+                action=st.empty()
+                with action.container():
+                    go=st.button("🎰 LOSUJ DRABINKĘ",type="primary",use_container_width=True,key=f"d7_combo_draw_{tid}")
+                if go:
+                    action.empty()
+                    revealed=db.reveal_double7_combined_draw(tid)
+                    # Start the reveal animation from the data returned by the write itself.
+                    # No extra fragment rerun/read is needed before showing it.
+                    render_double7_combined_draw(revealed.get("pairs",[]),revealed.get("candidates",[]),revealed.get("selected_lucky"))
+                    st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"d7_combo_ack_{tid}")
             else:
                 render_double7_combined_draw(state.get("pairs",[]),state.get("candidates",[]),state.get("selected_lucky"))
                 if st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"d7_combo_ack_{tid}"):
@@ -456,8 +548,14 @@ def render_special_event(tid:str, b:dict) -> bool:
         if state and not state.get("ack"):
             st.markdown("### 🎱 Losowanie par Winners Bracket")
             if not state.get("selected"):
-                if st.button("🎰 LOSUJ PARY WINNERS",type="primary",use_container_width=True,key=f"wb_pair_draw_{fmt}_{tid}"):
-                    db.reveal_double_wb_draw(tid);rf()
+                action=st.empty()
+                with action.container():
+                    go=st.button("🎰 LOSUJ PARY WINNERS",type="primary",use_container_width=True,key=f"wb_pair_draw_{fmt}_{tid}")
+                if go:
+                    action.empty()
+                    revealed=db.reveal_double_wb_draw(tid)
+                    render_double_wb_pairing_draw(fmt,revealed.get("pairs",[]))
+                    st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"wb_pair_ack_{fmt}_{tid}")
             else:
                 render_double_wb_pairing_draw(fmt,state.get("pairs",[]))
                 if st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"wb_pair_ack_{fmt}_{tid}"):
@@ -466,12 +564,18 @@ def render_special_event(tid:str, b:dict) -> bool:
     if fmt=="double5":
         state=db.double5_draw_state(tid)
         if state and not state.get("ack"):
-            st.markdown("### 🎱 Losowanie przeciwnika dla wolnego losu")
+            st.markdown("### 🎱 Losowanie przeciwnika dla Szczęśliwego losu")
             if not state.get("selected"):
                 names=" • ".join(c["name"] for c in state.get("candidates",[]))
                 st.markdown(f"**{esc(state['player_name'])}** czeka. W puli: **{esc(names)}**")
-                if st.button("🎰 LOSUJ PRZECIWNIKA",type="primary",use_container_width=True,key=f"d5_mid_{tid}"):
-                    db.reveal_double5_opponent(tid);rf()
+                action=st.empty()
+                with action.container():
+                    go=st.button("🎰 LOSUJ PRZECIWNIKA",type="primary",use_container_width=True,key=f"d5_mid_{tid}")
+                if go:
+                    action.empty()
+                    selected=db.reveal_double5_opponent(tid)
+                    render_double5_mid_draw(state["player_name"],state.get("candidates",[]),selected)
+                    st.button("➡️ GRAMY DALEJ",type="primary",use_container_width=True,key=f"d5_mid_ack_{tid}")
             else:
                 render_double5_mid_draw(state["player_name"],state.get("candidates",[]),state["selected"])
                 if st.button("➡️ GRAMY DALEJ",type="primary",use_container_width=True,key=f"d5_mid_ack_{tid}"):

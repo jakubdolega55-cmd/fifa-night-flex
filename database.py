@@ -12,6 +12,10 @@ import uuid
 
 import psycopg
 from psycopg.rows import dict_row
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # Safe fallback if an old Streamlit build has not installed the pool extra yet.
+    ConnectionPool = None
 import streamlit as st
 
 from logic import (
@@ -20,7 +24,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 172
+DB_API_VERSION = 173
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -40,6 +44,31 @@ def _database_url() -> str | None:
         return None
 
 
+@st.cache_resource(show_spinner=False)
+def _postgres_pool(url: str):
+    """Keep warm Neon connections between Streamlit reruns.
+
+    The setup/draw screens make several short DB calls. Reusing connections removes
+    most of the TLS/connection handshake delay without caching live tournament data.
+    """
+    if ConnectionPool is None:
+        return None
+    pool = ConnectionPool(
+        conninfo=url,
+        min_size=1,
+        max_size=4,
+        max_idle=300,
+        max_lifetime=1800,
+        kwargs={
+            "row_factory": dict_row,
+            "autocommit": False,
+            "prepare_threshold": None,
+        },
+        open=True,
+    )
+    return pool
+
+
 class Database:
     def __init__(self) -> None:
         self.url = _database_url()
@@ -51,9 +80,30 @@ class Database:
     @contextmanager
     def connect(self):
         if self.is_postgres:
+            # Pool is cached by Streamlit, so ordinary reruns reuse an already-open
+            # Neon connection instead of paying for a new handshake every click.
+            pool = _postgres_pool(self.url)
+            if pool is not None:
+                with pool.connection() as conn:
+                    try:
+                        yield conn
+                        conn.commit()
+                    except Exception:
+                        conn.rollback()
+                        raise
+                return
+            # Compatibility fallback: app still works if the pool dependency was not
+            # installed yet; it simply uses the old per-call connection behaviour.
             conn = psycopg.connect(self.url, row_factory=dict_row, autocommit=False, prepare_threshold=None)
-        else:
-            conn = sqlite3.connect(self.sqlite_path); conn.row_factory = sqlite3.Row
+            try:
+                yield conn; conn.commit()
+            except Exception:
+                conn.rollback(); raise
+            finally:
+                conn.close()
+            return
+
+        conn = sqlite3.connect(self.sqlite_path); conn.row_factory = sqlite3.Row
         try:
             yield conn; conn.commit()
         except Exception:
@@ -397,6 +447,8 @@ class Database:
             extra["draft_order_revealed"]=True
             extra["draft_redraw_count"]=int(extra.get("draft_redraw_count",0))+1
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+            players=self._fetchall(conn,"SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order",(tid,))
+            return {"players":players,"redraw_count":int(extra["draft_redraw_count"])}
 
     def confirm_draft_order(self, tid: str) -> None:
         with self.connect() as conn:
@@ -450,12 +502,18 @@ class Database:
 
     def reveal_next_team(self, tid: str) -> dict | None:
         with self.connect() as conn:
-            meta,extra=self._meta_extra_conn(conn,tid)
+            # One state query instead of separate meta + player queries. This path is
+            # hit on every wheel click, so keeping it short matters for perceived speed.
+            row=self._fetchone(conn,"""SELECT tp.player_id,tp.team,p.name,fm.extra_json
+                FROM tournament_players tp
+                JOIN players p ON p.id=tp.player_id
+                JOIN flex_tournament_meta fm ON fm.tournament_id=tp.tournament_id
+                WHERE tp.tournament_id=? AND tp.team_revealed=0
+                ORDER BY tp.team_reveal_order LIMIT 1""",(tid,))
+            if not row: return None
+            extra=json.loads(row.get("extra_json") or "{}")
             pending=extra.get("pending_wildcard")
             if pending: return {**pending,"wildcard":True}
-            row=self._fetchone(conn,"""SELECT tp.player_id,tp.team,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id
-                WHERE tp.tournament_id=? AND tp.team_revealed=0 ORDER BY tp.team_reveal_order LIMIT 1""",(tid,))
-            if not row: return None
             if "Dowolna drużyna" in str(row.get("team") or ""):
                 pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
                 extra["pending_wildcard"]=pending
@@ -499,10 +557,10 @@ class Database:
                 conn.execute(self._sql("UPDATE tournament_players SET group_name='L', tie_order=? WHERE tournament_id=? AND player_id=?"), (i,tid,pid))
 
     def reveal_structure(self, tid: str) -> None:
+        # Fast reveal path: the animation already has draw_json in memory. Group/table
+        # metadata is only needed once the structure is accepted, so don't perform
+        # 6–8 remote UPDATEs before the reveal animation can start.
         with self.connect() as conn:
-            meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
-            draw = json.loads(meta["draw_json"])
-            self._apply_draw_groups_conn(conn, tid, meta["format_key"], draw)
             conn.execute(self._sql("UPDATE flex_tournament_meta SET draw_revealed=1 WHERE tournament_id=?"), (tid,))
 
     def reroll_structure(self, tid: str) -> None:
@@ -526,7 +584,8 @@ class Database:
                 new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng)
                 extra["cross_tournament_priority"]=carry
             conn.execute(self._sql("UPDATE flex_tournament_meta SET draw_json=?,extra_json=?,draw_revealed=1,redraw_count=redraw_count+1 WHERE tournament_id=?"), (json.dumps(new),json.dumps(extra),tid))
-            self._apply_draw_groups_conn(conn, tid, meta["format_key"], new)
+            # As above, defer group metadata writes until the draw is accepted.
+            return {"draw":new,"redraw_count":int(meta.get("redraw_count") or 0)+1,"format_key":meta["format_key"]}
 
     def confirm_structure(self, tid: str) -> None:
         rng = random.SystemRandom()
@@ -534,6 +593,8 @@ class Database:
             meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
             if not int(meta["draw_revealed"]): raise ValueError("Najpierw wykonaj losowanie.")
             draw = json.loads(meta["draw_json"]); extra = json.loads(meta["extra_json"])
+            # Persist group/league membership only now, after the user accepts the draw.
+            self._apply_draw_groups_conn(conn, tid, meta["format_key"], draw)
             t = self._fetchone(conn, "SELECT is_test FROM tournaments WHERE id=?", (tid,))
             rows = self._fetchall(conn, "SELECT tp.player_id,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order", (tid,))
             pids=[r["player_id"] for r in rows]; names=[r["name"] for r in rows]
@@ -562,6 +623,16 @@ class Database:
 
     def matches(self, tid: str) -> list[dict]:
         with self.connect() as conn: return self._matches_conn(conn,tid)
+
+    def setup_bundle(self, tid: str) -> dict:
+        """Lightweight state for pre-tournament draw screens (no matches query)."""
+        with self.connect() as conn:
+            t = self._fetchone(conn, "SELECT * FROM tournaments WHERE id=?", (tid,))
+            meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
+            players = self._fetchall(conn, "SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order", (tid,))
+            if meta:
+                meta["draw"] = json.loads(meta["draw_json"]); meta["extra"] = json.loads(meta["extra_json"]); meta["team_pool"] = json.loads(meta["team_pool_json"])
+            return {"tournament":t,"meta":meta,"players":players}
 
     def bundle(self, tid: str) -> dict:
         with self.connect() as conn:

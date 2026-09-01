@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.7.2
+# FIFA Night Flex v1.7.3
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -127,6 +127,16 @@ Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algo
 - Rzeczywista kolejność poprzednich spotkań liczona po `played_at`.
 - Status Testowy/Oficjalny można zmienić podczas turnieju i po jego zakończeniu.
 
+
+
+## v1.7.3 — Performance
+- bez zmian długości i wyglądu animacji,
+- koło fortuny po kliknięciu korzysta z jednego lekkiego zapisu i od razu renderuje wynik — bez dodatkowego fragment rerun przed animacją,
+- losowanie grup/drabinki nie zapisuje już grup po jednym graczu przed pokazaniem animacji; te zapisy są wykonywane dopiero po zaakceptowaniu losowania,
+- ekrany przygotowania turnieju używają lżejszego stanu bez pobierania meczów,
+- połączenia z Neon są utrzymywane w małej puli i ponownie używane pomiędzy rerunami Streamlit,
+- losowania DE 5/7/8 pokazują animację bez dodatkowego odczytu po samym kliknięciu losowania,
+- pełny fallback do starego sposobu łączenia pozostaje dostępny, jeśli pool nie jest jeszcze zainstalowany.
 
 ## v1.7.2
 - W DE 7 losowanie Winners Bracket i Losers Bracket po pierwszej rundzie zostało połączone w jeden ekran i jeden przycisk.
