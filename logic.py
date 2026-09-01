@@ -89,6 +89,84 @@ def shuffled_assignments(player_ids: list[str], teams: list[str], rng: random.Ra
     return dict(zip(player_ids, pool, strict=True))
 
 
+
+def _weighted_pick(items: list[str], weights: dict[str, float], rng: random.Random) -> str:
+    if not items:
+        raise ValueError("Brak elementów do losowania.")
+    vals=[max(0.0001,float(weights.get(str(item),1.0))) for item in items]
+    total=sum(vals); pick=rng.random()*total; acc=0.0
+    for item,weight in zip(items,vals):
+        acc+=weight
+        if pick<=acc:
+            return item
+    return items[-1]
+
+
+def weighted_sample_without_replacement(items: list[str], weights: dict[str, float], rng: random.Random) -> list[str]:
+    """Weighted random permutation. Every player always keeps a non-zero chance for every position."""
+    remaining=[str(x) for x in items]; out=[]
+    while remaining:
+        chosen=_weighted_pick(remaining,weights,rng)
+        out.append(chosen); remaining.remove(chosen)
+    return out
+
+
+def draft_order_weights(placement_by_player_id: dict[str,int] | None, previous_player_count: int | None, current_player_count: int) -> dict[str,float]:
+    """Soft catch-up weights for 4/5-player draft order.
+
+    First place is slightly less likely to choose early, last place slightly more likely.
+    A linear percentile keeps the same behavior when the previous tournament had a
+    different number of players. Unknown/new players stay neutral at 1.0.
+    """
+    placements={str(k):int(v) for k,v in (placement_by_player_id or {}).items() if v}
+    prev_n=max(2,int(previous_player_count or 0)) if previous_player_count else 0
+    if current_player_count==4:
+        low,high=0.70,1.35
+    else:
+        low,high=0.65,1.40
+    out={}
+    for pid,place in placements.items():
+        if prev_n<2:
+            out[pid]=1.0; continue
+        pct=max(0.0,min(1.0,(place-1)/(prev_n-1)))
+        out[pid]=low+(high-low)*pct
+    return out
+
+
+def weighted_draft_order(player_ids: list[str], placement_by_player_id: dict[str,int] | None, previous_player_count: int | None, current_player_count: int, rng: random.Random) -> list[str]:
+    weights=draft_order_weights(placement_by_player_id,previous_player_count,current_player_count)
+    return weighted_sample_without_replacement([str(x) for x in player_ids],weights,rng)
+
+
+def wildcard_assignment_weights(placement_by_player_id: dict[str,int] | None) -> dict[str,float]:
+    """Soft handicap for Wild Card assignment: 1st=1.40, 2nd=1.25, 3rd=1.10, others=1.00."""
+    rank_weight={1:1.40,2:1.25,3:1.10}
+    return {str(pid):rank_weight.get(int(place),1.0) for pid,place in (placement_by_player_id or {}).items()}
+
+
+def weighted_team_assignments(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random) -> dict[str,str]:
+    """Random team assignment with only Wild Card slots softly weighted by prior place.
+
+    Fixed clubs remain fully random among players who did not receive a Wild Card.
+    """
+    if len(player_ids)!=len(teams):
+        raise ValueError("Liczba drużyn musi odpowiadać liczbie graczy.")
+    pids=[str(x) for x in player_ids]
+    wild=[t for t in teams if "Dowolna drużyna" in str(t)]
+    fixed=[t for t in teams if "Dowolna drużyna" not in str(t)]
+    if not wild:
+        return shuffled_assignments(pids,teams,rng)
+    weights=wildcard_assignment_weights(placement_by_player_id)
+    # Pick only as many weighted players as there are Wild Cards; all remaining clubs stay uniform.
+    weighted_order=weighted_sample_without_replacement(pids,weights,rng)
+    wild_players=weighted_order[:len(wild)]
+    remaining=[pid for pid in pids if pid not in set(wild_players)]
+    wild_pool=wild.copy(); fixed_pool=fixed.copy(); rng.shuffle(wild_pool); rng.shuffle(fixed_pool)
+    out={}
+    for pid,team in zip(wild_players,wild_pool,strict=True): out[pid]=team
+    for pid,team in zip(remaining,fixed_pool,strict=True): out[pid]=team
+    return out
+
 def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> dict:
     ids = player_ids.copy(); rng.shuffle(ids)
     if format_key == "league4_final":

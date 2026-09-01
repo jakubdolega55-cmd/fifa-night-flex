@@ -20,11 +20,11 @@ import streamlit as st
 
 from logic import (
     BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
-    schedule_for_format, shuffled_assignments, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, weighted_bye_choice,
+    schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_draft_order, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, weighted_bye_choice,
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 173
+DB_API_VERSION = 174
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -266,6 +266,71 @@ class Database:
         conn.execute(self._sql("INSERT INTO players (id,name,normalized_name,created_at) VALUES (?,?,?,?)"), (pid, clean, norm, now_iso()))
         return pid
 
+    def _placement_order_conn(self, conn, tid: str) -> list[str]:
+        """Best-effort full final classification for any Flex format.
+
+        Knockout depth decides first; players eliminated in the same round are ordered
+        by their whole-tournament record (wins, goal difference, goals scored).
+        """
+        t=self._fetchone(conn,"SELECT champion_player_id FROM tournaments WHERE id=?",(tid,))
+        meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+        if not t or not meta:
+            return []
+        fmt=str(meta.get("format_key") or "")
+        matches=[m for m in self._matches_conn(conn,tid) if m.get("home_score") is not None]
+        if not matches:
+            return []
+        mm={int(m["match_no"]):m for m in matches}
+        player_rows=self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=?",(tid,))
+        all_pids=[str(r["player_id"]) for r in player_rows]
+        stats=defaultdict(lambda:{"w":0,"d":0,"l":0,"gf":0,"ga":0})
+        for m in matches:
+            h,a=str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")
+            if not h or not a: continue
+            hs,ass=int(m.get("home_score") or 0),int(m.get("away_score") or 0)
+            stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
+            rh=self._result_for_player(m,h)
+            if rh=="W": stats[h]["w"]+=1; stats[a]["l"]+=1
+            elif rh=="L": stats[a]["w"]+=1; stats[h]["l"]+=1
+            else: stats[h]["d"]+=1; stats[a]["d"]+=1
+        def loser(no:int):
+            m=mm.get(no)
+            return str(self._loser_of(m) or "") if m else ""
+        def rank_group(pids):
+            vals=[str(pid) for pid in pids if pid]
+            return sorted(dict.fromkeys(vals),key=lambda pid:(stats[pid]["w"],stats[pid]["gf"]-stats[pid]["ga"],stats[pid]["gf"],-stats[pid]["ga"]),reverse=True)
+        champ=str(t.get("champion_player_id") or "")
+        finals=[m for m in matches if m.get("stage") in ("FINAL","RESET_FINAL")]
+        final=finals[-1] if finals else None
+        runner=str(self._loser_of(final) or "") if final else ""
+        order=[]
+        def add(pid):
+            pid=str(pid or "")
+            if pid and pid not in order: order.append(pid)
+        add(champ); add(runner)
+
+        if fmt in ("league4_final","league5_final"):
+            table=self._table_from_conn(conn,tid,"L")
+            for row in table: add(row.get("player_id"))
+        elif fmt=="double5":
+            for no in (7,6,4): add(loser(no))
+        elif fmt=="double7":
+            for no in (11,10,8,7,6): add(loser(no))
+        elif fmt=="double8":
+            add(loser(13)); add(loser(12))
+            for pid in rank_group([loser(9),loser(10)]): add(pid)
+            for pid in rank_group([loser(7),loser(8)]): add(pid)
+        elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
+            sf_losers=[self._loser_of(m) for m in matches if m.get("stage")=="SF"]
+            for pid in rank_group(sf_losers): add(pid)
+            q_losers=[self._loser_of(m) for m in matches if m.get("stage") in ("QF","BARRAGE")]
+            for pid in rank_group(q_losers): add(pid)
+            for pid in rank_group([pid for pid in all_pids if pid not in order]): add(pid)
+        else:
+            for pid in rank_group([pid for pid in all_pids if pid not in order]): add(pid)
+        for pid in rank_group([pid for pid in all_pids if pid not in order]): add(pid)
+        return order
+
     def _cross_tournament_priority_conn(self, conn, current_names: list[str], current_pids: list[str], is_test: bool) -> dict:
         """Carry only exact-name matches from the immediately previous completed tournament.
 
@@ -287,6 +352,8 @@ class Database:
             FROM tournament_players tp JOIN players p ON p.id=tp.player_id
             WHERE tp.tournament_id=?
         """,(prev["id"],))
+        placement_order=self._placement_order_conn(conn,prev["id"])
+        placement_prev={str(pid):i+1 for i,pid in enumerate(placement_order)}
         exact_prev={str(r.get("name") or ""):str(r.get("player_id") or "") for r in prev_players}
         played=self._fetchall(conn,"""
             SELECT match_no,played_at,home_player_id,away_player_id
@@ -307,14 +374,15 @@ class Database:
         max_no=max(int(m["match_no"]) for m in played)
 
         current_by_name={name:pid for name,pid in zip(current_names,current_pids)}
-        matched=[];priority={}
+        matched=[];priority={}; placements={}
         for name,pid in current_by_name.items():
             prev_pid=exact_prev.get(name)
             if not prev_pid:
                 continue
             wait=int(wait_by_pid.get(prev_pid,0))
             priority[pid]=wait
-            matched.append({"name":name,"wait_matches":wait})
+            if prev_pid in placement_prev: placements[pid]=int(placement_prev[prev_pid])
+            matched.append({"name":name,"wait_matches":wait,"place":placements.get(pid)})
         if not matched:
             return {}
         matched.sort(key=lambda x:(-int(x["wait_matches"]),x["name"]))
@@ -322,6 +390,8 @@ class Database:
             "source_tournament_id":prev["id"],
             "exact_name_match":True,
             "priority_by_player_id":priority,
+            "placement_by_player_id":placements,
+            "source_player_count":len(prev_players),
             "matched":matched,
             "source_last_match_no":max_no,
         }
@@ -357,9 +427,14 @@ class Database:
         with self.connect() as conn:
             pids = [self._get_or_create_player_conn(conn, n) for n in clean]
             carry=self._cross_tournament_priority_conn(conn,clean,pids,is_test)
+            placements=(carry or {}).get("placement_by_player_id") or {}
             draft_mode = player_count in (4,5)
-            assignments = {} if draft_mode else shuffled_assignments(pids, teams, rng)
-            reveal = pids.copy(); rng.shuffle(reveal); reveal_idx = {p:i+1 for i,p in enumerate(reveal)}
+            assignments = {} if draft_mode else weighted_team_assignments(pids, teams, placements, rng)
+            if draft_mode:
+                reveal=weighted_draft_order(pids,placements,(carry or {}).get("source_player_count"),player_count,rng)
+            else:
+                reveal=pids.copy(); rng.shuffle(reveal)
+            reveal_idx = {p:i+1 for i,p in enumerate(reveal)}
             draw = build_draw(pids, format_key, rng); extra = self._extra_for_format(format_key, rng)
             if carry:
                 draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng)
@@ -438,8 +513,12 @@ class Database:
             if picked and int(picked["c"]): raise ValueError("Draft drużyn już się rozpoczął.")
             rows=self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=? ORDER BY team_reveal_order",(tid,))
             pids=[r["player_id"] for r in rows]; old=pids.copy()
+            meta,extra=self._meta_extra_conn(conn,tid)
+            carry=extra.get("cross_tournament_priority") or {}
+            placements=carry.get("placement_by_player_id") or {}
+            current_count=len(pids)
             for _ in range(30):
-                rng.shuffle(pids)
+                pids=weighted_draft_order(old,placements,carry.get("source_player_count"),current_count,rng)
                 if pids!=old: break
             for i,pid in enumerate(pids,1):
                 conn.execute(self._sql("UPDATE tournament_players SET team_reveal_order=?,tie_order=? WHERE tournament_id=? AND player_id=?"),(i,i,tid,pid))

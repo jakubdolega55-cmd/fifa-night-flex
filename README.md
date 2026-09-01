@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.7.3
+# FIFA Night Flex v1.7.4
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -142,3 +142,11 @@ Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algo
 - W DE 7 losowanie Winners Bracket i Losers Bracket po pierwszej rundzie zostało połączone w jeden ekran i jeden przycisk.
 - `BYE` w widocznym interfejsie zostało zastąpione określeniem `Szczęśliwy los`.
 - Wewnętrzne klucze bazy pozostały bez zmian, więc aktywne i stare turnieje są kompatybilne.
+
+
+## v1.7.4 — ważone wyrównanie drużyn między turniejami
+- 4–5 graczy: kolejność draftu jest nadal losowa, ale miejsce z poprzedniego zakończonego turnieju delikatnie wpływa na szansę wcześniejszego wyboru drużyny; mistrz ma mniejszą, ostatnie miejsce większą szansę.
+- Mechanizm działa także przy zmianie liczby graczy między turniejami; pozycja jest przeliczana względem wielkości poprzedniego turnieju.
+- 6–8 graczy: Wild Cardy są losowane ważeniem 1.40 / 1.25 / 1.10 / 1.00 dla miejsc 1 / 2 / 3 / pozostałych. Pozostałe pięć klubów jest przydzielanych całkowicie losowo.
+- Nowy gracz lub nick bez dokładnego odpowiednika w poprzednim turnieju ma neutralną wagę 1.00.
+- Wagi nie są pokazywane w interfejsie i nie zmieniają animacji koła.
