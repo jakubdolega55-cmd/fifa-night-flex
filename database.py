@@ -1059,6 +1059,31 @@ class Database:
                     "home_penalties":match_of_tournament.get("home_penalties"),"away_penalties":match_of_tournament.get("away_penalties")} if match_of_tournament else None),
                 "rivalry_match":rivalry,"new_records":new_records}
 
+    def tournament_export_meta(self, tid: str) -> dict:
+        with self.connect() as conn:
+            t=self._fetchone(conn,"SELECT * FROM tournaments WHERE id=?",(tid,))
+            meta=self._fetchone(conn,"SELECT player_count,format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+            if not t: return {}
+            official_no=None
+            if not int(t.get("is_test") or 0):
+                rows=self._fetchall(conn,"""
+                    SELECT id FROM tournaments
+                    WHERE status='completed' AND is_test=0
+                    ORDER BY COALESCE(completed_at,created_at), created_at, id
+                """)
+                for i,row in enumerate(rows,1):
+                    if row.get("id")==tid:
+                        official_no=i
+                        break
+            return {
+                "official_no": official_no,
+                "is_test": int(t.get("is_test") or 0),
+                "created_at": t.get("created_at"),
+                "completed_at": t.get("completed_at"),
+                "player_count": int(meta.get("player_count") or 0) if meta else 0,
+                "format_key": meta.get("format_key") if meta else None,
+            }
+
     def current_match_from(self, matches: list[dict]) -> dict | None:
         for m in matches:
             if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None: return m

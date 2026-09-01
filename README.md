@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.6
+# FIFA Night Flex v1.6.5
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -57,6 +57,23 @@ Pod wynikiem meczu można opcjonalnie rozpisać dokładnych strzelców. Dla każ
 Liczniki są wewnątrz formularza meczu, więc ich zmiana nie uruchamia rerunu; wynik i strzelcy są zapisywani razem dopiero po `ZATWIERDŹ WYNIK`. Jeśli zaczynasz rozpisywać strzelców, suma ich goli musi zgadzać się z wynikiem. Można też zostawić strzelców całkowicie pustych.
 
 Początkowe listy zawodników uzupełnia się w pliku `scorer_seeds.py`.
+
+
+## Eksport do obrazka
+
+Po zakończeniu turnieju na ekranie podsumowania pojawia się przycisk `Pobierz podsumowanie PNG`.
+
+Eksport generuje gotową grafikę **1080×1080** do wrzucenia na grupę. Na obrazku znajdują się m.in.:
+
+- numer turnieju (bez nazwy aplikacji),
+- data, liczba graczy i format,
+- mistrz i finalista,
+- wynik finału,
+- strzelec turnieju,
+- mecz turnieju,
+- ofensywa i defensywa turnieju.
+
+Turnieje testowe też można eksportować, ale na grafice są oznaczone jako testowe i nie dostają numeru oficjalnego.
 
 ## Historia i zabezpieczenie bazy
 

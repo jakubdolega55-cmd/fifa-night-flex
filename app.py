@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from database import Database
+from export_utils import generate_summary_png
 from logic import BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_lb_bye, render_playoff_reveal)
@@ -28,6 +29,10 @@ def official_player_names_cached():
 @st.cache_data(ttl=30,show_spinner=False)
 def wildcard_team_suggestions_cached():
     return db.wildcard_team_suggestions()
+
+@st.cache_data(show_spinner=False)
+def tournament_summary_png_cached(bundle:dict, summary:dict, official_no:int|None):
+    return generate_summary_png(bundle, summary, FORMAT_LABELS, official_no)
 
 def admin_password():
     value=os.getenv("ADMIN_PASSWORD")
@@ -441,6 +446,9 @@ def live(tid:str):
     b=db.bundle(tid);t=b["tournament"];meta=b["meta"]
     if t["status"]=="completed":
         summary=db.tournament_summary(tid);champ=summary.get("champion") or "Mistrz"
+        export_meta=db.tournament_export_meta(tid)
+        png_bytes=tournament_summary_png_cached(b, summary, export_meta.get("official_no"))
+        file_tag=f"turniej-{export_meta.get('official_no') or 'test'}-{str(export_meta.get('completed_at') or export_meta.get('created_at') or '')[:10]}".strip('-')
         st.markdown(f'<div class="winner"><div class="match-no">MISTRZ TURNIEJU</div><div style="font-size:3rem">🏆</div><div class="player-big">{esc(champ)}</div></div>',unsafe_allow_html=True)
         if st.session_state.get("celebrated")!=tid:st.balloons();st.session_state.celebrated=tid
         st.markdown("### 📋 Podsumowanie turnieju")
@@ -462,8 +470,14 @@ def live(tid:str):
         if summary.get("new_records"):
             st.markdown("#### 🆕 Nowe rekordy")
             for r in summary["new_records"]:st.success(r)
+        st.markdown("### 🖼️ Eksport")
+        e1,e2=st.columns(2)
+        with e1:
+            st.download_button("📸 Pobierz podsumowanie PNG",data=png_bytes,file_name=f"{file_tag}.png",mime="image/png",use_container_width=True,key=f"dl_png_{tid}")
+        with e2:
+            if st.button("➕ NOWY TURNIEJ",type="primary",use_container_width=True,key=f"new_{tid}"):db.start_new();rr()
+        st.caption("Eksport tworzy gotową grafikę 1080×1080 z numerem turnieju, zwycięzcą, finałem i najważniejszymi statystykami.")
         if t["is_test"]:st.info("Turniej testowy — nie liczy się do statystyk wszech czasów.")
-        if st.button("➕ NOWY TURNIEJ",type="primary",use_container_width=True,key=f"new_{tid}"):db.start_new();rr()
         return
     if render_special_event(tid,b): return
     b=db.bundle(tid)
