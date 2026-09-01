@@ -34,6 +34,18 @@ def wildcard_team_suggestions_cached():
 def tournament_summary_png_cached(bundle:dict, summary:dict, official_no:int|None):
     return generate_summary_png(bundle, summary, FORMAT_LABELS, official_no)
 
+def render_tournament_status_control(t:dict, loc:str):
+    is_test=bool(int(t.get("is_test") or 0))
+    current="🧪 Testowy" if is_test else "🏆 Oficjalny"
+    target="oficjalny" if is_test else "testowy"
+    with st.expander(f"⚙️ Status turnieju • {current}",expanded=False):
+        st.caption("Możesz zmienić status bez resetowania turnieju. Wyniki, drabinka i strzelcy zostają bez zmian. Po zakończeniu status decyduje, czy turniej liczy się do statystyk oficjalnych.")
+        if st.button(f"Zmień na {target}",use_container_width=True,key=f"mode_{loc}_{t['id']}_{int(is_test)}"):
+            db.set_test_mode(t["id"],not is_test)
+            official_player_names_cached.clear()
+            tournament_summary_png_cached.clear()
+            rr()
+
 def admin_password():
     value=os.getenv("ADMIN_PASSWORD")
     if value:return value
@@ -181,6 +193,7 @@ def draft_order(tid:str):
 
 def render_draft_order_stage(t):
     hero(f"Etap 1/3 • losowanie kolejności wyboru • {t['player_count']} graczy")
+    render_tournament_status_control(t,"draft_order")
     draft_order(t["id"]);reset_controls(t,"draft_order")
 
 
@@ -213,6 +226,7 @@ def team_draft(tid:str):
 
 def render_team_draft(t):
     hero(f"Etap 2/3 • draft drużyn • {t['player_count']} graczy")
+    render_tournament_status_control(t,"team_draft")
     team_draft(t["id"]);reset_controls(t,"team_draft")
 
 
@@ -264,6 +278,7 @@ def team_draw(tid:str):
 
 def render_team_draw(t):
     hero(f"Etap 1/2 • losowanie drużyn • {t['player_count']} graczy")
+    render_tournament_status_control(t,"team_draw")
     team_draw(t["id"]);reset_controls(t,"draw")
 
 
@@ -289,6 +304,7 @@ def render_structure(t):
     title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
     step="Etap 3/3" if int(t["player_count"]) in (4,5) else "Etap 2/2"
     hero(f"{step} • {title}")
+    render_tournament_status_control(t,"structure")
     structure_draw(t["id"]);reset_controls(t,"structure")
 
 
@@ -702,7 +718,8 @@ def reset_controls(t,loc):
 
 def render_live(t):
     hero(f"{t['player_count']} graczy • {FORMAT_LABELS[t['format_key']]}")
-    st.markdown(f'<span class="status-chip">{"🧪 TEST" if t["is_test"] else "🏆 PRODUKCYJNY"}</span>',unsafe_allow_html=True)
+    st.markdown(f'<span class="status-chip">{"🧪 TEST" if t["is_test"] else "🏆 OFICJALNY"}</span>',unsafe_allow_html=True)
+    render_tournament_status_control(t,"live")
     opts=["🏠 Ekran główny","📅 Terminarz","📊 Statystyki"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
     if view==opts[0]:live(t["id"]);reset_controls(t,"live")
     elif view==opts[1]:render_schedule(t)

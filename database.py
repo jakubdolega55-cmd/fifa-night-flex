@@ -239,20 +239,22 @@ class Database:
         """,(prev["id"],))
         exact_prev={str(r.get("name") or ""):str(r.get("player_id") or "") for r in prev_players}
         played=self._fetchall(conn,"""
-            SELECT match_no,home_player_id,away_player_id
+            SELECT match_no,played_at,home_player_id,away_player_id
             FROM matches
             WHERE tournament_id=? AND home_score IS NOT NULL
-            ORDER BY match_no
+            ORDER BY CASE WHEN played_at IS NULL THEN 1 ELSE 0 END, played_at, match_no
         """,(prev["id"],))
         if not played:
             return {}
-        last_no={}
-        for m in played:
-            no=int(m["match_no"])
+        # Fairness must follow the real play sequence, because from v1.7.0 the app may
+        # play logical match numbers in a different order. Legacy rows without played_at
+        # naturally fall back to match_no through the ORDER BY above.
+        last_pos={}
+        for pos,m in enumerate(played):
             for pid in (m.get("home_player_id"),m.get("away_player_id")):
-                if pid:last_no[str(pid)]=no
+                if pid:last_pos[str(pid)]=pos
+        wait_by_pid={pid:(len(played)-1-pos) for pid,pos in last_pos.items()}
         max_no=max(int(m["match_no"]) for m in played)
-        wait_by_pid={pid:sum(1 for m in played if int(m["match_no"])>no) for pid,no in last_no.items()}
 
         current_by_name={name:pid for name,pid in zip(current_names,current_pids)}
         matched=[];priority={}
@@ -326,6 +328,18 @@ class Database:
                 conn.execute(self._sql("INSERT INTO tournament_players (tournament_id,player_id,team,team_reveal_order,team_revealed,group_name,tie_order) VALUES (?,?,?,?,0,'',?)"), (tid,p,team,reveal_idx[p],reveal_idx[p]))
             conn.execute(self._sql("INSERT INTO flex_tournament_meta (tournament_id,player_count,format_key,team_pool_json,draw_json,extra_json,draw_revealed,redraw_count) VALUES (?,?,?,?,?,?,0,0)"), (tid,player_count,format_key,json.dumps(teams,ensure_ascii=False),json.dumps(draw),json.dumps(extra)))
         return tid
+
+    def set_test_mode(self, tid: str, is_test: bool) -> None:
+        """Switch an existing tournament between test and official classification.
+
+        Official statistics are query-time based on tournaments.is_test, so changing this
+        flag is enough even after completion. Existing results, bracket and scorer data
+        are never touched.
+        """
+        with self.connect() as conn:
+            t=self._fetchone(conn,"SELECT id FROM tournaments WHERE id=?",(tid,))
+            if not t: raise ValueError("Nie znaleziono turnieju.")
+            conn.execute(self._sql("UPDATE tournaments SET is_test=? WHERE id=?"),(int(bool(is_test)),tid))
 
     def current_tournament(self) -> dict | None:
         with self.connect() as conn:
@@ -495,13 +509,18 @@ class Database:
         rng = random.SystemRandom()
         with self.connect() as conn:
             meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
-            pids = [r["player_id"] for r in self._fetchall(conn, "SELECT player_id FROM tournament_players WHERE tournament_id=? ORDER BY team_reveal_order", (tid,))]
+            t = self._fetchone(conn, "SELECT is_test FROM tournaments WHERE id=?", (tid,))
+            rows = self._fetchall(conn, "SELECT tp.player_id,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order", (tid,))
+            pids = [r["player_id"] for r in rows]
+            names = [r["name"] for r in rows]
             old = json.loads(meta["draw_json"]); new = old
             for _ in range(50):
                 cand = build_draw(pids, meta["format_key"], rng)
                 if draw_signature(cand) != draw_signature(old): new = cand; break
-            old_extra=json.loads(meta.get("extra_json") or "{}")
-            carry=old_extra.get("cross_tournament_priority") or {}
+            # Re-read carry-over fairness using the tournament's current Test/Official
+            # status, so correcting a mistaken status before the start also corrects
+            # the next reroll's BYE weighting and opening-order context.
+            carry=self._cross_tournament_priority_conn(conn,names,pids,bool(int((t or {}).get("is_test") or 0)))
             extra = self._extra_for_format(meta["format_key"], rng)
             if carry:
                 new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng)
@@ -515,8 +534,14 @@ class Database:
             meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
             if not int(meta["draw_revealed"]): raise ValueError("Najpierw wykonaj losowanie.")
             draw = json.loads(meta["draw_json"]); extra = json.loads(meta["extra_json"])
+            t = self._fetchone(conn, "SELECT is_test FROM tournaments WHERE id=?", (tid,))
+            rows = self._fetchall(conn, "SELECT tp.player_id,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order", (tid,))
+            pids=[r["player_id"] for r in rows]; names=[r["name"] for r in rows]
+            carry_info=self._cross_tournament_priority_conn(conn,names,pids,bool(int((t or {}).get("is_test") or 0)))
+            if carry_info: extra["cross_tournament_priority"]=carry_info
+            else: extra.pop("cross_tournament_priority",None)
             plan = schedule_for_format(draw, meta["format_key"], extra, rng)
-            carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
+            carry=(carry_info.get("priority_by_player_id") or {}) if carry_info else {}
             preferred=optimize_opening_order(plan,carry,rng) if carry else [dict(x) for x in plan]
             extra["match_play_order"]=[int(x["match_no"]) for x in preferred]
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))

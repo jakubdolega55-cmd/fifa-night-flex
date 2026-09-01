@@ -439,7 +439,7 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
                     if pid not in seen:
                         # Cross-tournament waiting only influences *when* this already
                         # drawn match is played, never who plays whom.
-                        weight = 1.0 + (priority.get(pid, 0) * 8.0)
+                        weight = 1.0 + (priority.get(pid, 0) * 4.0)
                         add += (pos - 1) * weight
                     else:
                         gap = pos - int(last_pos[pid]) - 1
@@ -476,13 +476,24 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
             prev = players
         gaps = [b-a-1 for arr in positions.values() for a, b in zip(arr, arr[1:])]
         max_gap = max(gaps) if gaps else 0
-        priority_cost = sum((first.get(pid, len(seq)+1)-1) * (1 + priority.get(pid, 0)*8) for pid in first)
         max_first = max(first.values()) if first else 0
-        # Safety first: never trade a worse maximum opening wait for carry-over priority.
-        # Previous-tournament waiting is only a tie-breaker among equally safe orders.
-        return (back, max_gap, max_first, priority_cost)
 
-    best = min(candidates, key=quality)
+        # A player from the very last match of the previous tournament should ideally
+        # get one complete match of rest before starting again.
+        just_finished = {pid for pid,wait in priority.items() if wait == 0}
+        immediate_restart = sum(1 for pid in just_finished if first.get(pid) == 1)
+
+        # Long-waiting players are gently pulled towards an earlier opener.
+        priority_cost = sum((first.get(pid, len(seq)+1)-1) * (1 + priority.get(pid, 0)*4) for pid in first)
+        return (back, max_gap, max_first, immediate_restart, priority_cost)
+
+    # Never buy cross-tournament fairness by making the current tournament's opening
+    # schedule worse. The original schedule is always a candidate, so this set cannot
+    # be empty. Among equally safe orders, first avoid an immediate restart for someone
+    # who just played the previous final, then favour players who waited longer.
+    base_q = quality(base_seq)
+    safe = [seq for seq in candidates if quality(seq)[0] <= base_q[0] and quality(seq)[1] <= base_q[1] and quality(seq)[2] <= base_q[2]]
+    best = min(safe, key=lambda seq:(quality(seq)[0], quality(seq)[3], quality(seq)[1], quality(seq)[2], quality(seq)[4]))
     reordered_opening = [opening[idx] for idx in best]
     out = [dict(x) for x in plan]
     # Only list order changes. Every item keeps its original match_no and sources.
