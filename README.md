@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.6.6
+# FIFA Night Flex v1.6.7
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -95,3 +95,8 @@ ADMIN_PASSWORD = "TWOJE_HASLO"
 ```
 
 Plik `.streamlit/secrets.toml` nie może trafić do GitHuba.
+
+
+## Mobilne strzelcy v1.6.7
+
+Sekcja strzelców została skompresowana pod telefon: każdy z 5 podstawowych zawodników zajmuje jeden niski wiersz z nazwiskiem po lewej i licznikiem goli po prawej. Drużyny są prezentowane jedna pod drugą, a `Pozostali zawodnicy` i `Inny zawodnik` są domyślnie zwinięte. Wszystko nadal znajduje się w formularzu meczu, więc zmiana liczników nie powoduje rerunu strony; dane zapisują się dopiero przy zatwierdzeniu wyniku.

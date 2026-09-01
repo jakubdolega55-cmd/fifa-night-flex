@@ -1062,6 +1062,7 @@ class Database:
     def tournament_summary(self, tid: str) -> dict:
         with self.connect() as conn:
             t=self._fetchone(conn,"SELECT * FROM tournaments WHERE id=?",(tid,)); matches=self._matches_conn(conn,tid)
+            meta=self._fetchone(conn,"SELECT * FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
             players={p["player_id"]:p for p in self._fetchall(conn,"SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))}
             scorer_rows=self._fetchall(conn,"SELECT scorer_name,SUM(goals) AS goals FROM match_scorers WHERE tournament_id=? GROUP BY scorer_name ORDER BY goals DESC,scorer_name",(tid,))
             previous=self._records_from_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else {}
@@ -1076,6 +1077,7 @@ class Database:
             elif rh=="L":ps[a]["w"]+=1;ps[h]["l"]+=1
             else:ps[h]["d"]+=1;ps[a]["d"]+=1
         champ=t.get("champion_player_id") if t else None
+        fmt=(meta or {}).get("format_key")
         finals=[m for m in played if m["stage"] in ("FINAL","RESET_FINAL")]
         last_final=finals[-1] if finals else None
         runner=None
@@ -1112,6 +1114,44 @@ class Database:
             if biggest and abs(int(biggest["home_score"])-int(biggest["away_score"]))>prev_margin:new_records.append(f"Największe zwycięstwo: {biggest['home_name']} {biggest['home_score']}:{biggest['away_score']} {biggest['away_name']}")
             prev_goals=(previous.get("goals_one_tournament") or {}).get("value",-1)
             if top[0] and top[1].get("gf",0)>prev_goals:new_records.append(f"Gole jednego gracza w turnieju: {players[top[0]]['name']} — {top[1]['gf']}")
+
+        by_no={int(m["match_no"]):m for m in played}
+        def place_payload(pid):
+            if not pid: return None
+            row=ps.get(pid,{})
+            return {
+                "name": players.get(pid,{}).get("name"),
+                "team": players.get(pid,{}).get("team"),
+                "w": int(row.get("w",0)), "d": int(row.get("d",0)), "l": int(row.get("l",0)),
+                "gf": int(row.get("gf",0)), "ga": int(row.get("ga",0)), "gd": int(row.get("gf",0))-int(row.get("ga",0)),
+            }
+        def rank_same_stage(pids):
+            clean=[pid for pid in pids if pid]
+            clean=sorted(set(clean), key=lambda pid:(ps[pid]["w"], ps[pid]["gf"]-ps[pid]["ga"], ps[pid]["gf"], -ps[pid]["ga"]), reverse=True)
+            return clean
+
+        third_pid=fourth_pid=None
+        if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
+            sf_losers=rank_same_stage([self._loser_of(m) for m in played if m.get("stage")=="SF"])
+            if sf_losers: third_pid=sf_losers[0]
+            if len(sf_losers)>1: fourth_pid=sf_losers[1]
+        elif fmt=="double5":
+            third_pid=self._loser_of(by_no.get(7)); fourth_pid=self._loser_of(by_no.get(6))
+        elif fmt=="double7":
+            third_pid=self._loser_of(by_no.get(11)); fourth_pid=self._loser_of(by_no.get(10))
+        elif fmt=="double8":
+            third_pid=self._loser_of(by_no.get(13)); fourth_pid=self._loser_of(by_no.get(12))
+
+        wb_pairings=[]
+        if fmt=="double7":
+            for no in (4,5):
+                m=by_no.get(no)
+                if m and m.get("home_name") and m.get("away_name"): wb_pairings.append(f"{m['home_name']} vs {m['away_name']}")
+        elif fmt=="double8":
+            for no in (5,6):
+                m=by_no.get(no)
+                if m and m.get("home_name") and m.get("away_name"): wb_pairings.append(f"{m['home_name']} vs {m['away_name']}")
+
         return {"champion":players.get(champ,{}).get("name"),"runner_up":players.get(runner,{}).get("name"),
                 "top_goals":{"name":players.get(top[0],{}).get("name"),"value":top[1].get("gf",0)},
                 "best_defense":{"name":players.get(defense[0],{}).get("name"),"value":defense[1].get("ga",0)},
@@ -1122,6 +1162,9 @@ class Database:
                 "match_of_tournament":({"home":match_of_tournament.get("home_name"),"away":match_of_tournament.get("away_name"),
                     "score":f"{match_of_tournament['home_score']}:{match_of_tournament['away_score']}","stage":match_of_tournament.get("stage"),"group_name":match_of_tournament.get("group_name"),
                     "home_penalties":match_of_tournament.get("home_penalties"),"away_penalties":match_of_tournament.get("away_penalties")} if match_of_tournament else None),
+                "third_place": place_payload(third_pid),
+                "fourth_place": place_payload(fourth_pid),
+                "wb_pairings": wb_pairings,
                 "rivalry_match":rivalry,"new_records":new_records}
 
     def tournament_export_meta(self, tid: str) -> dict:

@@ -485,6 +485,15 @@ def live(tid:str):
         c2.metric("⚽ Najwięcej goli",summary.get("top_goals",{}).get("name") or "—",summary.get("top_goals",{}).get("value",0))
         c3.metric("🛡️ Najlepsza defensywa",summary.get("best_defense",{}).get("name") or "—",f"{summary.get('best_defense',{}).get('value',0)} straconych")
         c4.metric("🔥 Najwięcej wygranych",summary.get("best_form",{}).get("name") or "—",summary.get("best_form",{}).get("wins",0))
+        third=summary.get("third_place") or {}
+        fourth=summary.get("fourth_place") or {}
+        if third or fourth:
+            st.markdown("#### 🏅 Miejsca 3–4")
+            p1,p2=st.columns(2)
+            if third:
+                p1.success(f"🥉 **3. miejsce:** {third.get('name','—')} • {third.get('team','—')}\nBilans: {third.get('w',0)}W / {third.get('d',0)}R / {third.get('l',0)}P • Bramki {third.get('gf',0)}:{third.get('ga',0)}")
+            if fourth:
+                p2.info(f"4️⃣ **4. miejsce:** {fourth.get('name','—')} • {fourth.get('team','—')}\nBilans: {fourth.get('w',0)}W / {fourth.get('d',0)}R / {fourth.get('l',0)}P • Bramki {fourth.get('gf',0)}:{fourth.get('ga',0)}")
         c1,c2=st.columns(2)
         if summary.get("biggest"):c1.info(f"💥 Największe zwycięstwo: **{summary['biggest']['home']} {summary['biggest']['score']} {summary['biggest']['away']}**")
         if summary.get("highest"):c2.info(f"🎯 Najbardziej bramkowy mecz: **{summary['highest']['home']} {summary['highest']['score']} {summary['highest']['away']}**")
@@ -494,6 +503,8 @@ def live(tid:str):
             if mot.get("home_penalties") is not None and mot.get("away_penalties") is not None:mot_score+=f" (k. {mot['home_penalties']}:{mot['away_penalties']})"
             st.warning(f"🎬 **Mecz turnieju:** {mot['home']} {mot_score} {mot['away']} • {stage_name({'stage':mot.get('stage'),'group_name':mot.get('group_name') or ''})}")
         if summary.get("real_top_scorer"):st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
+        if summary.get("wb_pairings"):
+            st.info("🎱 Losowanie Winners po 1. rundzie: **" + "**  •  **".join(summary.get("wb_pairings", [])) + "**")
         if summary.get("rivalry_match"):st.info(f"🔥 Rivalry match turnieju: **{summary['rivalry_match']['home']} {summary['rivalry_match']['score']} {summary['rivalry_match']['away']}**")
         if summary.get("new_records"):
             st.markdown("#### 🆕 Nowe rekordy")
