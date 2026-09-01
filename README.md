@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.6.7
+# FIFA Night Flex v1.6.9
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -75,7 +75,8 @@ Eksport generuje czytelną grafikę **1080×1080** do wrzucenia na grupę. W v1.
 - wynik finału,
 - strzelec turnieju,
 - mecz turnieju,
-- ofensywa i defensywa turnieju.
+- miejsca 3–4 (jeśli format pozwala je ustalić),
+- bilans mistrza i podstawowe liczby turnieju.
 
 Turnieje testowe też można eksportować, ale na grafice są oznaczone jako testowe i nie dostają numeru oficjalnego.
 
@@ -100,3 +101,14 @@ Plik `.streamlit/secrets.toml` nie może trafić do GitHuba.
 ## Mobilne strzelcy v1.6.7
 
 Sekcja strzelców została skompresowana pod telefon: każdy z 5 podstawowych zawodników zajmuje jeden niski wiersz z nazwiskiem po lewej i licznikiem goli po prawej. Drużyny są prezentowane jedna pod drugą, a `Pozostali zawodnicy` i `Inny zawodnik` są domyślnie zwinięte. Wszystko nadal znajduje się w formularzu meczu, więc zmiana liczników nie powoduje rerunu strony; dane zapisują się dopiero przy zatwierdzeniu wyniku.
+
+
+## Priorytet między turniejami v1.6.9
+
+Po utworzeniu kolejnego turnieju aplikacja sprawdza **bezpośrednio poprzedni zakończony turniej tego samego typu (testowy/produkcyjny)**. Gracz jest rozpoznawany wyłącznie wtedy, gdy jego nick jest identyczny znak w znak z poprzednim turniejem.
+
+Dla dopasowanych graczy aplikacja liczy, ile meczów rozegrano po ich ostatnim występie. Im dłużej ktoś czekał po odpadnięciu lub zakończeniu swoich meczów, tym większy dostaje priorytet wcześniejszego pierwszego meczu w kolejnym turnieju.
+
+Mechanizm działa także przy zmianie liczby graczy i formatu, np. 7 → 5, 5 → 7, 6 → 8. Gracze, których nie było w bezpośrednio poprzednim turnieju, mają priorytet neutralny.
+
+Algorytm nie zwiększa liczby meczów granych bezpośrednio jeden po drugim ani maksymalnej przerwy w otwierającej fazie względem bazowego terminarza. W Double Elimination dla 5 i 7 graczy osoba z największym przeniesionym oczekiwaniem nie dostanie opóźnionego slotu/BYE, jeśli dostępny jest gracz z niższym priorytetem.

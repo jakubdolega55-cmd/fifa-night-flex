@@ -16,7 +16,7 @@ import streamlit as st
 
 from logic import (
     BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
-    schedule_for_format, shuffled_assignments, winner_from_result,
+    schedule_for_format, shuffled_assignments, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority,
 )
 from scorer_seeds import SCORER_SEEDS
 
@@ -216,6 +216,64 @@ class Database:
         conn.execute(self._sql("INSERT INTO players (id,name,normalized_name,created_at) VALUES (?,?,?,?)"), (pid, clean, norm, now_iso()))
         return pid
 
+    def _cross_tournament_priority_conn(self, conn, current_names: list[str], current_pids: list[str], is_test: bool) -> dict:
+        """Carry only exact-name matches from the immediately previous completed tournament.
+
+        The score is the number of already-played matches that happened after a player's
+        final appearance in that previous tournament. This works across different player
+        counts and formats because it is player-based, not bracket-based.
+        """
+        prev=self._fetchone(conn,"""
+            SELECT id,completed_at,created_at
+            FROM tournaments
+            WHERE status='completed' AND is_test=?
+            ORDER BY COALESCE(completed_at,created_at) DESC, created_at DESC
+            LIMIT 1
+        """,(int(is_test),))
+        if not prev:
+            return {}
+        prev_players=self._fetchall(conn,"""
+            SELECT tp.player_id,p.name
+            FROM tournament_players tp JOIN players p ON p.id=tp.player_id
+            WHERE tp.tournament_id=?
+        """,(prev["id"],))
+        exact_prev={str(r.get("name") or ""):str(r.get("player_id") or "") for r in prev_players}
+        played=self._fetchall(conn,"""
+            SELECT match_no,home_player_id,away_player_id
+            FROM matches
+            WHERE tournament_id=? AND home_score IS NOT NULL
+            ORDER BY match_no
+        """,(prev["id"],))
+        if not played:
+            return {}
+        last_no={}
+        for m in played:
+            no=int(m["match_no"])
+            for pid in (m.get("home_player_id"),m.get("away_player_id")):
+                if pid:last_no[str(pid)]=no
+        max_no=max(int(m["match_no"]) for m in played)
+        wait_by_pid={pid:sum(1 for m in played if int(m["match_no"])>no) for pid,no in last_no.items()}
+
+        current_by_name={name:pid for name,pid in zip(current_names,current_pids)}
+        matched=[];priority={}
+        for name,pid in current_by_name.items():
+            prev_pid=exact_prev.get(name)
+            if not prev_pid:
+                continue
+            wait=int(wait_by_pid.get(prev_pid,0))
+            priority[pid]=wait
+            matched.append({"name":name,"wait_matches":wait})
+        if not matched:
+            return {}
+        matched.sort(key=lambda x:(-int(x["wait_matches"]),x["name"]))
+        return {
+            "source_tournament_id":prev["id"],
+            "exact_name_match":True,
+            "priority_by_player_id":priority,
+            "matched":matched,
+            "source_last_match_no":max_no,
+        }
+
     def _extra_for_format(self, format_key: str, rng: random.Random) -> dict:
         if format_key == "double5":
             return {"d5_opponent_match": None, "d5_draw_ack": False}
@@ -246,10 +304,14 @@ class Database:
         tid = str(uuid.uuid4()); rng = random.SystemRandom()
         with self.connect() as conn:
             pids = [self._get_or_create_player_conn(conn, n) for n in clean]
+            carry=self._cross_tournament_priority_conn(conn,clean,pids,is_test)
             draft_mode = player_count in (4,5)
             assignments = {} if draft_mode else shuffled_assignments(pids, teams, rng)
             reveal = pids.copy(); rng.shuffle(reveal); reveal_idx = {p:i+1 for i,p in enumerate(reveal)}
             draw = build_draw(pids, format_key, rng); extra = self._extra_for_format(format_key, rng)
+            if carry:
+                draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng)
+                extra["cross_tournament_priority"]=carry
             if draft_mode:
                 extra.update({"draft_order_revealed":False,"draft_redraw_count":0})
             self._setting_set_conn(conn, CURRENT_KEY, tid)
@@ -449,6 +511,8 @@ class Database:
             if not int(meta["draw_revealed"]): raise ValueError("Najpierw wykonaj losowanie.")
             draw = json.loads(meta["draw_json"]); extra = json.loads(meta["extra_json"])
             plan = schedule_for_format(draw, meta["format_key"], extra, rng)
+            carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
+            if carry: plan=optimize_opening_order(plan,carry,rng)
             conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"), (tid,))
             conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"), (tid,))
             for item in plan:

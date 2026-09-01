@@ -28,7 +28,6 @@ def _font(size: int, bold: bool = False):
         return _FONT_CACHE[key]
     name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
     paths = [
-        os.path.join(_BASE_DIR, "fonts", name),
         name,
         f"/usr/share/fonts/truetype/dejavu/{name}",
         f"/usr/share/fonts/dejavu/{name}",
@@ -40,6 +39,16 @@ def _font(size: int, bold: bool = False):
             return f
         except Exception:
             pass
+    # Streamlit Cloud images do not always expose system fonts. Matplotlib ships
+    # a DejaVu Sans font with full Polish glyph support, so use it as a free fallback.
+    try:
+        from matplotlib import font_manager
+        mpl_path = font_manager.findfont("DejaVu Sans", fallback_to_default=True)
+        f = ImageFont.truetype(mpl_path, size)
+        _FONT_CACHE[key] = f
+        return f
+    except Exception:
+        pass
     try:
         f = ImageFont.load_default(size=size)
     except TypeError:

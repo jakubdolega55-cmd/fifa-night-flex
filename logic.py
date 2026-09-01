@@ -390,3 +390,139 @@ def winner_from_result(home_score:int,away_score:int,home_id:str,away_id:str,hom
     if away_score>home_score:return away_id
     if home_pen is None or away_pen is None or home_pen==away_pen:return None
     return home_id if home_pen>away_pen else away_id
+
+
+def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | None, rng: random.Random) -> list[dict]:
+    """Reorder only the independent opening phase without changing pairings.
+
+    start_priority maps player_id -> number of matches that player waited after their
+    last appearance in the immediately previous tournament. Higher means they should
+    get an earlier first match now. The optimizer also strongly avoids back-to-back
+    games and discourages long gaps inside the opening phase.
+    """
+    priority = {str(k): max(0, int(v or 0)) for k, v in (start_priority or {}).items()}
+    if not plan:
+        return plan
+
+    opening_idx = []
+    for i, item in enumerate(plan):
+        if item.get("stage") not in ("LEAGUE", "GROUP", "WB"):
+            break
+        home = str(item.get("home") or "")
+        away = str(item.get("away") or "")
+        if not (home.startswith("P:") and away.startswith("P:")):
+            break
+        opening_idx.append(i)
+    if len(opening_idx) <= 1:
+        return plan
+
+    original = [dict(plan[i]) for i in opening_idx]
+    slots = [int(plan[i]["match_no"]) for i in opening_idx]
+
+    def pids(item):
+        return (str(item["home"])[2:], str(item["away"])[2:])
+
+    # Tiny random tie-breaks retain variety when two schedules are equally fair.
+    noise = {i: rng.random() * 0.001 for i in range(len(original))}
+    beam = [(0.0, [], frozenset(), {}, None, frozenset(range(len(original))))]
+    beam_width = 420 if len(original) >= 9 else 160
+
+    for pos in range(1, len(original) + 1):
+        nxt = []
+        for score, seq, seen, last_pos, prev_players, remaining in beam:
+            for idx in remaining:
+                item = original[idx]
+                a, b = pids(item)
+                players = frozenset((a, b))
+                add = noise[idx]
+
+                # Absolute priority: never intentionally schedule the same person
+                # in consecutive matches when another reasonable order exists.
+                if prev_players and players & prev_players:
+                    add += 100000.0
+
+                for pid in (a, b):
+                    if pid not in seen:
+                        # Waiting in the previous tournament increases the cost of
+                        # making this player's first match late in the new one.
+                        weight = 1.0 + (priority.get(pid, 0) * 8.0)
+                        add += (pos - 1) * weight
+                    else:
+                        gap = pos - int(last_pos[pid]) - 1
+                        if gap == 0:
+                            add += 100000.0
+                        elif gap == 1:
+                            add += 8.0
+                        elif gap > 3:
+                            add += (gap - 3) * 5.0
+
+                new_seen = set(seen); new_seen.update((a, b))
+                new_last = dict(last_pos); new_last[a] = pos; new_last[b] = pos
+                new_remaining = frozenset(x for x in remaining if x != idx)
+                nxt.append((score + add, seq + [idx], frozenset(new_seen), new_last, players, new_remaining))
+
+        nxt.sort(key=lambda x: x[0])
+        beam = nxt[:beam_width]
+
+    beam_best = min(beam, key=lambda x: x[0])[1]
+
+    # Safety guard: compare the free-form optimizer with rotations of the already
+    # hand-tuned schedule. We never accept more back-to-back games or a larger
+    # maximum idle gap merely to honor cross-tournament priority.
+    base_seq=list(range(len(original)))
+    candidates=[base_seq,beam_best]
+    for k in range(1,len(original)):
+        candidates.append(base_seq[k:]+base_seq[:k])
+    rev=list(reversed(base_seq))
+    for k in range(len(original)):
+        candidates.append(rev[k:]+rev[:k])
+
+    def quality(seq):
+        prev=None; back=0; first={}; positions={}
+        for pos,idx in enumerate(seq,1):
+            a,b=pids(original[idx]);players={a,b}
+            if prev and players & prev:back+=1
+            for pid in players:
+                first.setdefault(pid,pos);positions.setdefault(pid,[]).append(pos)
+            prev=players
+        gaps=[b-a-1 for arr in positions.values() for a,b in zip(arr,arr[1:])]
+        max_gap=max(gaps) if gaps else 0
+        priority_cost=sum((first.get(pid,len(seq)+1)-1)*(1+priority.get(pid,0)*8) for pid in first)
+        max_first=max(first.values()) if first else 0
+        return (back,max_gap,priority_cost,max_first)
+
+    best=min(candidates,key=quality)
+    reordered=[]
+    for match_no,idx in zip(slots,best):
+        item=dict(original[idx]);item["match_no"]=match_no;reordered.append(item)
+
+    out=[dict(x) for x in plan]
+    for target_i,item in zip(opening_idx,reordered):out[target_i]=item
+    return out
+
+
+def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random) -> dict:
+    """Avoid giving a delayed-entry/BYE slot to the player who already waited longest.
+
+    Pairings remain random except for this one fairness correction. If all players have
+    the same carry-over priority, the original random draw is untouched.
+    """
+    if format_key not in ("double5", "double7") or not start_priority:
+        return draw
+    bye_slot = "E" if format_key == "double5" else "G"
+    slots = dict(draw.get("slots") or {})
+    bye_pid = slots.get(bye_slot)
+    if not bye_pid:
+        return draw
+    priority = {str(k): max(0, int(v or 0)) for k, v in start_priority.items()}
+    bye_score = priority.get(str(bye_pid), 0)
+    other_slots = [k for k in slots if k != bye_slot]
+    if not other_slots:
+        return draw
+    min_score = min(priority.get(str(slots[k]), 0) for k in other_slots)
+    if bye_score <= min_score:
+        return draw
+    candidates = [k for k in other_slots if priority.get(str(slots[k]), 0) == min_score]
+    chosen = rng.choice(candidates)
+    slots[bye_slot], slots[chosen] = slots[chosen], slots[bye_slot]
+    return {**draw, "slots": slots}

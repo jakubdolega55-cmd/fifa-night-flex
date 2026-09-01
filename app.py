@@ -288,7 +288,17 @@ def structure_draw(tid:str):
 def render_structure(t):
     title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
     step="Etap 3/3" if int(t["player_count"]) in (4,5) else "Etap 2/2"
-    hero(f"{step} • {title}");structure_draw(t["id"]);reset_controls(t,"structure")
+    hero(f"{step} • {title}")
+    try:
+        carry=(db.meta(t["id"]).get("extra") or {}).get("cross_tournament_priority") or {}
+        matched=carry.get("matched") or []
+        active=[x for x in matched if int(x.get("wait_matches") or 0)>0]
+        if active:
+            txt=" • ".join(f"{x['name']}: {x['wait_matches']} mecz." for x in active[:6])
+            st.info(f"⚖️ **Priorytet między turniejami:** {txt}  \nGracze są rozpoznawani tylko po identycznym nicku. Algorytm przyspieszy ich pierwszy mecz, ale nadal pilnuje odpoczynku między spotkaniami.")
+    except Exception:
+        pass
+    structure_draw(t["id"]);reset_controls(t,"structure")
 
 
 def stage_name(m):
