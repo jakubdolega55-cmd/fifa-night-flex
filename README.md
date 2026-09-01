@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.7.1
+# FIFA Night Flex v1.7.2
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -18,7 +18,7 @@ Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym 
 
 ### Double Elimination — 14 meczów
 
-Pełna, symetryczna drabinka dla ośmiu osób, bez BYE. Zawodnik odpada dopiero po drugiej porażce. Jest jeden finał; mistrz Winners Bracket zaczyna go z bonusem 1:0.
+Pełna, symetryczna drabinka dla ośmiu osób, bez Szczęśliwego losu. Zawodnik odpada dopiero po drugiej porażce. Jest jeden finał; mistrz Winners Bracket zaczyna go z bonusem 1:0.
 
 ### Grupy 4+4 + baraże + półfinały + finał — 17 meczów
 
@@ -54,14 +54,14 @@ Jeśli koło wylosuje Wild Card, losowanie zatrzymuje się do czasu wpisania kon
 
 Pod wynikiem meczu można opcjonalnie rozpisać dokładnych strzelców. Dla każdej drużyny na wierzchu pojawia się 5 najpopularniejszych nazwisk z licznikami +/–. Pozostali są dostępni niżej, a nowego zawodnika można dopisać w polu `Inny zawodnik`. Po zapisaniu trafia do puli danej drużyny.
 
-Liczniki są wewnątrz formularza meczu, więc ich zmiana nie uruchamia rerunu; wynik i strzelcy są zapisywani razem dopiero po `ZATWIERDŹ WYNIK`. Jeśli zaczynasz rozpisywać strzelców, suma ich goli musi zgadzać się z wynikiem. Można też zostawić strzelców całkowicie pustych.
+Liczniki są wewnątrz formularza meczu, więc ich zmiana nie uruchamia rerunu; wynik i strzelcy są zapisywani razem dopiero po `ZATWIERDŹ WYNIK`. Strzelcy są całkowicie opcjonalni i nie muszą sumować się do wyniku — można zostawić ich całkowicie pustych, np. przy samobójach albo gdy nie pamiętacie wszystkich nazwisk.
 
 Początkowe listy zawodników uzupełnia się w pliku `scorer_seeds.py`.
 
 
-## Losowanie Winners Bracket w Double Elimination
+## Losowania w Double Elimination
 
-W formatach 7- i 8-osobowego Double Elimination po zakończeniu pierwszej rundy aplikacja wykonuje osobne losowanie par kolejnej rundy Winners Bracket. Dla 5 graczy pozostaje istniejące losowanie przeciwnika dla zawodnika z wolnym losem.
+W 7-osobowym Double Elimination po pierwszej rundzie jest **jedno wspólne losowanie**: tym samym przyciskiem losowane są pary kolejnej rundy Winners Bracket oraz `Szczęśliwy los` w Losers Bracket. W 8-osobowym DE pozostaje losowanie par Winners Bracket, bo nie ma tam Szczęśliwego losu. Dla 5 graczy pozostaje losowanie przeciwnika dla gracza ze Szczęśliwym losem.
 
 ## Eksport do obrazka
 
@@ -109,7 +109,7 @@ Po utworzeniu kolejnego turnieju aplikacja sprawdza **bezpośrednio poprzedni za
 
 Mechanizm działa również po zmianie liczby graczy lub formatu, np. 7 → 5, 5 → 7 albo 6 → 8. Pary i grupy są losowane normalnie. Dane z poprzedniego turnieju **nie zmieniają przeciwników** — mogą wyłącznie przestawić kolejność rozegrania już wylosowanych, niezależnych meczów otwierających.
 
-W formatach z BYE losowanie pozostaje losowe, ale ma miękkie wagi: spośród aktualnych kandydatów osoba, która czekała najdłużej po swoim ostatnim meczu poprzedniego turnieju, ma 25% standardowej wagi na BYE, druga 50%, pozostali 100%. Nikt nie jest z BYE wykluczony. Przy remisie oczekiwania wybór osób z obniżoną wagą jest losowy, więc dotyczy maksymalnie dwóch graczy.
+W formatach ze Szczęśliwym losem losowanie pozostaje losowe, ale ma miękkie wagi: spośród aktualnych kandydatów osoba, która czekała najdłużej po swoim ostatnim meczu poprzedniego turnieju, ma 25% standardowej wagi na Szczęśliwy los, druga 50%, pozostali 100%. Nikt nie jest ze Szczęśliwego losu wykluczony. Przy remisie oczekiwania wybór osób z obniżoną wagą jest losowy, więc dotyczy maksymalnie dwóch graczy.
 
 Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algorytm kolejności najpierw ogranicza mecze back-to-back i długie przerwy, a dopiero potem wykorzystuje poprzednie oczekiwanie jako dodatkowy tie-breaker.
 
@@ -126,3 +126,9 @@ Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algo
 - Lepsze wyważenie kolejności między kolejnymi turniejami: finalista poprzedniego turnieju nie zaczyna od razu, jeśli można bezpiecznie dać mu jeden mecz przerwy.
 - Rzeczywista kolejność poprzednich spotkań liczona po `played_at`.
 - Status Testowy/Oficjalny można zmienić podczas turnieju i po jego zakończeniu.
+
+
+## v1.7.2
+- W DE 7 losowanie Winners Bracket i Losers Bracket po pierwszej rundzie zostało połączone w jeden ekran i jeden przycisk.
+- `BYE` w widocznym interfejsie zostało zastąpione określeniem `Szczęśliwy los`.
+- Wewnętrzne klucze bazy pozostały bez zmian, więc aktywne i stare turnieje są kompatybilne.

@@ -20,7 +20,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 170
+DB_API_VERSION = 172
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -689,6 +689,83 @@ class Database:
             meta,extra=self._meta_extra_conn(conn,tid)
             if extra.get("d5_opponent_match"):
                 extra["d5_draw_ack"]=True
+                conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+
+    def double7_combined_draw_state(self, tid: str) -> dict | None:
+        """One combined post-R1 draw for DE7: Winners pairs + Losers lucky pass."""
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid)
+            if meta["format_key"]!="double7": return None
+            mm={int(m["match_no"]):m for m in self._matches_conn(conn,tid)}
+            if not all(self._match_played(mm.get(i)) for i in (1,2,3)) or self._match_played(mm.get(4)): return None
+            players={r["player_id"]:r["name"] for r in self._fetchall(conn,"SELECT tp.player_id,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))}
+            candidates=[]
+            for no in (1,2,3):
+                pid=self._loser_of(mm.get(no))
+                if pid: candidates.append({"match_no":no,"player_id":pid,"name":players.get(pid,"?")})
+            bye=extra.get("d7_lb_bye_match")
+            selected_lucky=next((c for c in candidates if bye and int(c["match_no"])==int(bye)),None)
+            pairs=[]
+            if extra.get("d7_wb_draw"):
+                for no in (4,5):
+                    m=mm.get(no)
+                    if m and m.get("home_player_id") and m.get("away_player_id"):
+                        pairs.append({"match_no":no,"stage":"WB","home_name":m.get("home_name"),"away_name":m.get("away_name")})
+            selected=bool(extra.get("d7_wb_draw") and extra.get("d7_lb_bye_match"))
+            ack=bool(extra.get("d7_wb_draw_ack") and extra.get("d7_lb_draw_ack"))
+            return {"pairs":pairs,"candidates":candidates,"selected_lucky":selected_lucky,"selected":selected,"ack":ack}
+
+    def reveal_double7_combined_draw(self, tid: str) -> dict:
+        """Atomically reveal Winners pairings and the first Losers lucky pass for DE7."""
+        rng=random.SystemRandom()
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid)
+            if meta["format_key"]!="double7": raise ValueError("To losowanie nie dotyczy tego formatu.")
+            mm={int(m["match_no"]):m for m in self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,))}
+            if not all(self._match_played(mm.get(i)) for i in (1,2,3)):
+                raise ValueError("Najpierw dokończ pierwszą rundę Winners Bracket.")
+
+            if not extra.get("d7_wb_draw"):
+                sources=["W:1","W:2","W:3"]
+                draw=json.loads(meta["draw_json"]); sources.append(f"P:{draw['slots']['G']}")
+                rng.shuffle(sources)
+                pairs=[sources[:2],sources[2:4]]
+                # Pair composition stays random; only their play order may be swapped for rest.
+                if "W:3" in pairs[0]: pairs=[pairs[1],pairs[0]]
+                extra["d7_wb_draw"]={"M4H":pairs[0][0],"M4A":pairs[0][1],"M5H":pairs[1][0],"M5A":pairs[1][1]}
+            extra["d7_wb_draw_ack"]=False
+
+            if not extra.get("d7_lb_bye_match"):
+                carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
+                loser_by_match={no:self._loser_of(mm.get(no)) for no in (1,2,3)}
+                chosen_pid=weighted_bye_choice([pid for pid in loser_by_match.values() if pid],carry,rng) if carry else None
+                chosen_no=next((no for no,pid in loser_by_match.items() if chosen_pid and pid==chosen_pid),None)
+                extra["d7_lb_bye_match"]=int(chosen_no or rng.choice([1,2,3]))
+                extra["d7_pairing"]=None
+            extra["d7_lb_draw_ack"]=False
+
+            conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+            self._resolve_all_conn(conn,tid,"double7")
+
+            rows=self._matches_conn(conn,tid); by_no={int(m["match_no"]):m for m in rows}
+            pairs=[]
+            for no in (4,5):
+                m=by_no[no]; pairs.append({"match_no":no,"stage":"WB","home_name":m.get("home_name"),"away_name":m.get("away_name")})
+            players={r["player_id"]:r["name"] for r in self._fetchall(conn,"SELECT tp.player_id,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))}
+            candidates=[]
+            for no in (1,2,3):
+                pid=self._loser_of(mm.get(no))
+                if pid: candidates.append({"match_no":no,"player_id":pid,"name":players.get(pid,"?")})
+            lucky_no=int(extra["d7_lb_bye_match"]); lucky=next((c for c in candidates if int(c["match_no"])==lucky_no),None)
+            return {"pairs":pairs,"candidates":candidates,"selected_lucky":lucky}
+
+    def ack_double7_combined_draw(self, tid: str) -> None:
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid)
+            if meta["format_key"]!="double7": return
+            if extra.get("d7_wb_draw") and extra.get("d7_lb_bye_match"):
+                extra["d7_wb_draw_ack"]=True
+                extra["d7_lb_draw_ack"]=True
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
 
     def double_wb_draw_state(self, tid: str) -> dict | None:

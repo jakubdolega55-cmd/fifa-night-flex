@@ -9,7 +9,7 @@ from database import Database
 from export_utils import generate_summary_png
 from logic import BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
-                render_double5_mid_draw, render_double7_lb_bye, render_double_wb_pairing_draw, render_playoff_reveal)
+                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal)
 
 st.set_page_config(page_title="FIFA Night Flex",page_icon="⚽",layout="wide",initial_sidebar_state="collapsed")
 inject_css(); db=Database()
@@ -318,11 +318,11 @@ def max_matches(fmt):return {"league4_final":7,"double5":8,"league5_final":11,"g
 def source_placeholder(fmt,no):
     maps={
       "league4_final":{7:"1. miejsce ligi — 2. miejsce ligi"},
-      "double5":{3:"Wolny los — wylosowany zwycięzca M1/M2",4:"Przegrany M1 — Przegrany M2",5:"Drugi zwycięzca M1/M2 — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners (start 1:0) — Mistrz losers"},
+      "double5":{3:"Szczęśliwy los — wylosowany zwycięzca M1/M2",4:"Przegrany M1 — Przegrany M2",5:"Drugi zwycięzca M1/M2 — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners (start 1:0) — Mistrz losers"},
       "league5_final":{11:"1. miejsce ligi — 2. miejsce ligi"},
       "groups6":{7:"1A — 2B / 1B — 2A",8:"Drugi półfinał",9:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups6_full":{7:"2A — 3B / 2B — 3A",8:"Drugi ćwierćfinał",9:"Zwycięzca grupy — Zwycięzca QF",10:"Zwycięzca grupy — Zwycięzca QF",11:"Zwycięzca SF1 — Zwycięzca SF2"},
-      "double7":{4:"Losowanie par Winners po pierwszej rundzie",5:"Drugi wylosowany półfinał Winners",6:"Dwóch przegranych bez BYE",7:"Wylosowany BYE LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners (start 1:0) — Mistrz losers"},
+      "double7":{4:"Losowanie Winners + Szczęśliwy los po pierwszej rundzie",5:"Drugi wylosowany półfinał Winners",6:"Dwóch przegranych bez Szczęśliwego losu",7:"Szczęśliwy los LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners (start 1:0) — Mistrz losers"},
       "groups7":{10:"2A — 3B / 2B — 3A",11:"Drugi ćwierćfinał",12:"Zwycięzca grupy — Zwycięzca QF",13:"Zwycięzca grupy — Zwycięzca QF",14:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups7_sf":{10:"1A — 2B / 1B — 2A",11:"Drugi półfinał",12:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups8_sf":{13:"1A — 2B / 1B — 2A",14:"Drugi półfinał",15:"Zwycięzca SF1 — Zwycięzca SF2"},
@@ -438,7 +438,20 @@ def score_form(tid,m,fmt):
 
 def render_special_event(tid:str, b:dict) -> bool:
     fmt=b["meta"]["format_key"]
-    if fmt in ("double7","double8"):
+    if fmt=="double7":
+        state=db.double7_combined_draw_state(tid)
+        if state and not state.get("ack"):
+            st.markdown("### 🎱 Losowanie Double Elimination")
+            st.caption("Jednym losowaniem ustalamy pary Winners Bracket i Szczęśliwy los w Losers Bracket.")
+            if not state.get("selected"):
+                if st.button("🎰 LOSUJ DRABINKĘ",type="primary",use_container_width=True,key=f"d7_combo_draw_{tid}"):
+                    db.reveal_double7_combined_draw(tid);rf()
+            else:
+                render_double7_combined_draw(state.get("pairs",[]),state.get("candidates",[]),state.get("selected_lucky"))
+                if st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"d7_combo_ack_{tid}"):
+                    db.ack_double7_combined_draw(tid);rf()
+            return True
+    if fmt=="double8":
         state=db.double_wb_draw_state(tid)
         if state and not state.get("ack"):
             st.markdown("### 🎱 Losowanie par Winners Bracket")
@@ -463,18 +476,6 @@ def render_special_event(tid:str, b:dict) -> bool:
                 render_double5_mid_draw(state["player_name"],state.get("candidates",[]),state["selected"])
                 if st.button("➡️ GRAMY DALEJ",type="primary",use_container_width=True,key=f"d5_mid_ack_{tid}"):
                     db.ack_double5_draw(tid);rf()
-            return True
-    if fmt=="double7":
-        state=db.double7_lb_draw_state(tid)
-        if state and not state.get("ack"):
-            st.markdown("### 💀 Losowanie pierwszego BYE w Losers Bracket")
-            if not state.get("selected"):
-                if st.button("🎱 LOSUJ SZCZĘŚCIE W NIESZCZĘŚCIU",type="primary",use_container_width=True,key=f"d7_lb_{tid}"):
-                    db.reveal_double7_lb_bye(tid);rf()
-            else:
-                render_double7_lb_bye(state.get("candidates",[]),state["selected"])
-                if st.button("➡️ DRABINKA GOTOWA",type="primary",use_container_width=True,key=f"d7_lb_ack_{tid}"):
-                    db.ack_double7_lb_draw(tid);rf()
             return True
     if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
         state=db.group_playoff_reveal_state(tid)
