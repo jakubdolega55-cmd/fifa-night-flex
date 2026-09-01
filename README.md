@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.7.4
+# FIFA Night Flex v1.7.4.1
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -150,3 +150,11 @@ Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algo
 - 6–8 graczy: Wild Cardy są losowane ważeniem 1.40 / 1.25 / 1.10 / 1.00 dla miejsc 1 / 2 / 3 / pozostałych. Pozostałe pięć klubów jest przydzielanych całkowicie losowo.
 - Nowy gracz lub nick bez dokładnego odpowiednika w poprzednim turnieju ma neutralną wagę 1.00.
 - Wagi nie są pokazywane w interfejsie i nie zmieniają animacji koła.
+
+
+## v1.7.4.1 — hotfix połączeń Neon
+
+- naprawione martwe połączenia pozostające w puli po uśpieniu Streamlit/Neon,
+- każde połączenie z puli jest sprawdzane przed przekazaniem aplikacji,
+- usunięty ręczny rollback w gałęzi poola; transakcją zarządza `pool.connection()`,
+- zachowana pula połączeń i optymalizacje wydajności z v1.7.3.

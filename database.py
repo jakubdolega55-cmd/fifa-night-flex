@@ -24,7 +24,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 174
+DB_API_VERSION = 1741
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -64,6 +64,10 @@ def _postgres_pool(url: str):
             "autocommit": False,
             "prepare_threshold": None,
         },
+        # Neon/Streamlit may leave an idle TCP socket in the pool after the
+        # database or app has slept. Validate a connection on checkout so a
+        # stale socket is discarded and replaced before application code sees it.
+        check=ConnectionPool.check_connection,
         open=True,
     )
     return pool
@@ -84,13 +88,12 @@ class Database:
             # Neon connection instead of paying for a new handshake every click.
             pool = _postgres_pool(self.url)
             if pool is not None:
+                # pool.connection() already applies the normal psycopg
+                # transaction behaviour: commit on success, rollback on error,
+                # and replacement of broken connections. Do not rollback a
+                # broken socket manually: doing so can mask the original error.
                 with pool.connection() as conn:
-                    try:
-                        yield conn
-                        conn.commit()
-                    except Exception:
-                        conn.rollback()
-                        raise
+                    yield conn
                 return
             # Compatibility fallback: app still works if the pool dependency was not
             # installed yet; it simply uses the old per-call connection behaviour.
