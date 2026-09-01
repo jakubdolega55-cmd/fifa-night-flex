@@ -315,37 +315,52 @@ def source_placeholder(fmt,no):
     return maps.get(fmt,{}).get(no,"Do ustalenia")
 
 
+def _scorer_goal_row(tid,m,side,row_idx,name):
+    c_name,c_goals=st.columns([3.4,1.15],gap="small",vertical_alignment="center")
+    with c_name:
+        st.markdown(f"<div style='font-weight:750;line-height:1.1;padding:0.18rem 0'>{esc(name)}</div>",unsafe_allow_html=True)
+    with c_goals:
+        goals=st.number_input(
+            f"Gole — {name}",min_value=0,max_value=20,value=0,step=1,
+            key=f"sc_{tid}_{m['match_no']}_{side}_{row_idx}_{name}",label_visibility="collapsed",
+        )
+    return int(goals)
+
+
 def _scorer_side_form(tid,m,side,team_name,player_name):
     options=db.team_scorer_options(team_name)
-    st.markdown(f"**⚽ {esc(team_name)} — strzelcy**")
-    st.caption("Klikaj +/–. Nic nie zapisuje się ani nie odświeża do zatwierdzenia wyniku.")
+    st.markdown(f"#### ⚽ {esc(team_name)}")
+    st.caption(f"{esc(player_name)}")
     items=[]
     top=options[:5]; rest=options[5:]
     for i,row in enumerate(top):
-        goals=st.number_input(row["name"],0,20,0,1,key=f"sc_{tid}_{m['match_no']}_{side}_{i}_{row['name']}")
-        items.append({"name":row["name"],"goals":int(goals)})
+        goals=_scorer_goal_row(tid,m,side,i,row["name"])
+        items.append({"name":row["name"],"goals":goals})
     if rest:
         with st.expander(f"Pozostali zawodnicy ({len(rest)})"):
             for j,row in enumerate(rest,5):
-                goals=st.number_input(row["name"],0,20,0,1,key=f"sc_{tid}_{m['match_no']}_{side}_{j}_{row['name']}")
-                items.append({"name":row["name"],"goals":int(goals)})
+                goals=_scorer_goal_row(tid,m,side,j,row["name"])
+                items.append({"name":row["name"],"goals":goals})
     known=[r["name"] for r in options]
-    st.markdown("**➕ Inny zawodnik**")
-    for k in range(2):
-        c1,c2=st.columns([2,1])
-        with c1:
-            name=st.selectbox(f"Inny strzelec {k+1}",options=known,index=None,accept_new_options=True,
-                              placeholder="Wpisz nazwisko",key=f"sc_other_name_{tid}_{m['match_no']}_{side}_{k}")
-        with c2:
-            goals=st.number_input("Gole",0,20,0,1,key=f"sc_other_goals_{tid}_{m['match_no']}_{side}_{k}")
-        if name and int(goals)>0:items.append({"name":name,"goals":int(goals)})
-    # merge duplicates from top + custom picker
+    with st.expander("➕ Inny zawodnik"):
+        st.caption("Użyj tylko wtedy, gdy strzelca nie ma na liście.")
+        for k in range(2):
+            c1,c2=st.columns([2.6,1],gap="small",vertical_alignment="bottom")
+            with c1:
+                name=st.selectbox(
+                    f"Inny strzelec {k+1}",options=known,index=None,accept_new_options=True,
+                    placeholder="Wpisz nazwisko",key=f"sc_other_name_{tid}_{m['match_no']}_{side}_{k}",
+                )
+            with c2:
+                goals=st.number_input(
+                    f"Gole {k+1}",0,20,0,1,key=f"sc_other_goals_{tid}_{m['match_no']}_{side}_{k}",
+                )
+            if name and int(goals)>0:items.append({"name":name,"goals":int(goals)})
     merged={}
     for item in items:
         n=" ".join(str(item.get("name") or "").strip().split());g=int(item.get("goals") or 0)
         if n and g>0:merged[n.casefold()]={"name":n,"goals":merged.get(n.casefold(),{}).get("goals",0)+g}
     return {"team":team_name,"items":list(merged.values())}
-
 
 def render_match_context(m):
     ctx=db.match_context(m["home_player_id"],m["away_player_id"])
@@ -387,12 +402,13 @@ def score_form(tid,m,fmt):
         with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
         with c2:ass=st.number_input(m["away_name"],min_value=0,max_value=99,value=0,step=1,key=f"as_{tid}_{no}")
         st.divider()
+        st.markdown("### ⚽ Strzelcy")
+        st.caption("Nazwisko po lewej, szybki licznik po prawej. Zmiany zapisują się dopiero razem z wynikiem meczu.")
         home_sc=_scorer_side_form(tid,m,"home",m["home_team"],m["home_name"])
-        st.divider()
         away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
         if wb_bonus:
             st.caption("Bonusowe 1:0 z Winners Bracket nie ma strzelca — nie dodawaj go do listy strzelców.")
-        st.caption("Strzelcy są opcjonalni i nie muszą sumować się do wyniku — możesz wpisać tylko znane gole, a samobóje lub nieuzupełnione bramki zostawić bez przypisania.")
+        st.caption("Strzelcy są opcjonalni i nie muszą sumować się do wyniku — samobóje lub nieuzupełnione bramki możesz zostawić bez przypisania.")
         ok=st.form_submit_button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True)
     if ok:
         scorers={"home":home_sc,"away":away_sc}
