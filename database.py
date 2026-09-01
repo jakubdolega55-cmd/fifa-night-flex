@@ -20,7 +20,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 164
+DB_API_VERSION = 166
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -220,7 +220,9 @@ class Database:
         if format_key == "double5":
             return {"d5_opponent_match": None, "d5_draw_ack": False}
         if format_key == "double7":
-            return {"d7_lb_bye_match": None, "d7_lb_draw_ack": False, "d7_pairing": None}
+            return {"d7_wb_draw": None, "d7_wb_draw_ack": False, "d7_lb_bye_match": None, "d7_lb_draw_ack": False, "d7_pairing": None}
+        if format_key == "double8":
+            return {"d8_wb_draw": None, "d8_wb_draw_ack": False}
         if format_key in ("groups6", "groups6_full", "groups7", "groups7_sf", "groups8_sf", "groups8_barrage"):
             return {"playoff_reveal_ack": False, "playoff_order": None}
         return {}
@@ -504,6 +506,11 @@ class Database:
             if not chosen: return None
             no=int(chosen) if rest[0]=="E_OPP" else (2 if int(chosen)==1 else 1)
             m=match_map.get(no); return m.get("winner_player_id") if m else None
+        if kind in ("D7W","D8W"):
+            _,extra=self._meta_extra_conn(conn,tid)
+            draw=extra.get("d7_wb_draw" if kind=="D7W" else "d8_wb_draw") or {}
+            mapped=draw.get(rest[0])
+            return self._resolve_source_conn(conn,tid,mapped,match_map) if mapped else None
         if kind == "D7":
             _,extra=self._meta_extra_conn(conn,tid); bye=extra.get("d7_lb_bye_match")
             if not bye: return None
@@ -586,6 +593,64 @@ class Database:
             meta,extra=self._meta_extra_conn(conn,tid)
             if extra.get("d5_opponent_match"):
                 extra["d5_draw_ack"]=True
+                conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+
+    def double_wb_draw_state(self, tid: str) -> dict | None:
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid); fmt=meta["format_key"]
+            if fmt not in ("double7","double8"): return None
+            mm={int(m["match_no"]):m for m in self._matches_conn(conn,tid)}
+            first_nos=(1,2,3) if fmt=="double7" else (1,2,3,4)
+            first_next=4 if fmt=="double7" else 5
+            if not all(self._match_played(mm.get(i)) for i in first_nos) or self._match_played(mm.get(first_next)): return None
+            key="d7_wb_draw" if fmt=="double7" else "d8_wb_draw"; ack_key=key+"_ack"
+            draw=extra.get(key)
+            if not draw:return {"format_key":fmt,"pairs":[],"ack":False,"selected":False}
+            pairs=[]
+            for no in ((4,5) if fmt=="double7" else (5,6)):
+                m=mm.get(no)
+                if m and m.get("home_player_id") and m.get("away_player_id"):
+                    pairs.append({"match_no":no,"stage":"WB","home_name":m.get("home_name"),"away_name":m.get("away_name")})
+            return {"format_key":fmt,"pairs":pairs,"ack":bool(extra.get(ack_key)),"selected":True}
+
+    def reveal_double_wb_draw(self, tid: str) -> dict:
+        rng=random.SystemRandom()
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid); fmt=meta["format_key"]
+            if fmt not in ("double7","double8"): raise ValueError("To losowanie nie dotyczy tego formatu.")
+            mm={int(m["match_no"]):m for m in self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,))}
+            first_nos=(1,2,3) if fmt=="double7" else (1,2,3,4)
+            if not all(self._match_played(mm.get(i)) for i in first_nos): raise ValueError("Najpierw dokończ pierwszą rundę Winners Bracket.")
+            key="d7_wb_draw" if fmt=="double7" else "d8_wb_draw"; ack_key=key+"_ack"
+            if not extra.get(key):
+                sources=[f"W:{i}" for i in first_nos]
+                if fmt=="double7":
+                    draw=json.loads(meta["draw_json"]); sources.append(f"P:{draw['slots']['G']}")
+                rng.shuffle(sources)
+                pairs=[sources[:2],sources[2:4]]
+                # Zwycięzca ostatniego meczu pierwszej rundy powinien dostać jeden pełny mecz odpoczynku.
+                last_source=f"W:{first_nos[-1]}"
+                if last_source in pairs[0]: pairs=[pairs[1],pairs[0]]
+                if fmt=="double7":
+                    mapped={"M4H":pairs[0][0],"M4A":pairs[0][1],"M5H":pairs[1][0],"M5A":pairs[1][1]}
+                else:
+                    mapped={"M5H":pairs[0][0],"M5A":pairs[0][1],"M6H":pairs[1][0],"M6A":pairs[1][1]}
+                extra[key]=mapped; extra[ack_key]=False
+                conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+            self._resolve_all_conn(conn,tid,fmt)
+            rows=self._matches_conn(conn,tid); by_no={int(m["match_no"]):m for m in rows}
+            out=[]
+            for no in ((4,5) if fmt=="double7" else (5,6)):
+                m=by_no[no];out.append({"match_no":no,"stage":"WB","home_name":m.get("home_name"),"away_name":m.get("away_name")})
+            return {"format_key":fmt,"pairs":out}
+
+    def ack_double_wb_draw(self, tid: str) -> None:
+        with self.connect() as conn:
+            meta,extra=self._meta_extra_conn(conn,tid);fmt=meta["format_key"]
+            if fmt not in ("double7","double8"): return
+            key="d7_wb_draw" if fmt=="double7" else "d8_wb_draw"; ack_key=key+"_ack"
+            if extra.get(key):
+                extra[ack_key]=True
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
 
     def double7_lb_draw_state(self, tid: str) -> dict | None:
@@ -1141,9 +1206,12 @@ class Database:
                 extra["d5_opponent_match"]=None; extra["d5_draw_ack"]=False
             if fmt=="double7":
                 if no<=3:
+                    extra["d7_wb_draw"]=None; extra["d7_wb_draw_ack"]=False
                     extra["d7_lb_bye_match"]=None; extra["d7_lb_draw_ack"]=False; extra["d7_pairing"]=None
                 elif no<=6:
                     extra["d7_pairing"]=None
+            if fmt=="double8" and no<=4:
+                extra["d8_wb_draw"]=None; extra["d8_wb_draw_ack"]=False
             group_end=6 if fmt in ("groups6","groups6_full") else (9 if fmt in ("groups7","groups7_sf") else (12 if fmt in ("groups8_sf","groups8_barrage") else 0))
             if group_end and no<=group_end:
                 extra.pop("playoff_sources",None); extra.pop("playoff_display_sources",None); extra["playoff_reveal_ack"]=False

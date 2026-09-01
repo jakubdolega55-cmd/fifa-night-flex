@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.6.5
+# FIFA Night Flex v1.6.6
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -59,11 +59,15 @@ Liczniki są wewnątrz formularza meczu, więc ich zmiana nie uruchamia rerunu; 
 Początkowe listy zawodników uzupełnia się w pliku `scorer_seeds.py`.
 
 
+## Losowanie Winners Bracket w Double Elimination
+
+W formatach 7- i 8-osobowego Double Elimination po zakończeniu pierwszej rundy aplikacja wykonuje osobne losowanie par kolejnej rundy Winners Bracket. Dla 5 graczy pozostaje istniejące losowanie przeciwnika dla zawodnika z wolnym losem.
+
 ## Eksport do obrazka
 
 Po zakończeniu turnieju na ekranie podsumowania pojawia się przycisk `Pobierz podsumowanie PNG`.
 
-Eksport generuje gotową grafikę **1080×1080** do wrzucenia na grupę. Na obrazku znajdują się m.in.:
+Eksport generuje czytelną grafikę **1080×1080** do wrzucenia na grupę. W v1.6.6 powiększono typografię i uproszczono układ. Na obrazku znajdują się m.in.:
 
 - numer turnieju (bez nazwy aplikacji),
 - data, liczba graczy i format,
