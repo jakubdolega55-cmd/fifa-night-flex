@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import datetime
 from io import BytesIO
 from PIL import Image, ImageDraw, ImageFont
@@ -31,7 +32,18 @@ def _font(size: int, bold: bool = False):
         name,
         f"/usr/share/fonts/truetype/dejavu/{name}",
         f"/usr/share/fonts/dejavu/{name}",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf" if bold else "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
     ]
+    # On Streamlit Cloud the exact font path varies. fontconfig can resolve a
+    # Unicode-capable system font without bundling any font files with the app.
+    for family in (["DejaVu Sans", "Liberation Sans", "FreeSans"]):
+        try:
+            style = ":style=Bold" if bold else ":style=Regular"
+            found = subprocess.check_output(["fc-match", "-f", "%{file}", family + style], text=True, timeout=1).strip()
+            if found: paths.insert(0, found)
+        except Exception:
+            pass
     for path in paths:
         try:
             f = ImageFont.truetype(path, size)
@@ -39,7 +51,7 @@ def _font(size: int, bold: bool = False):
             return f
         except Exception:
             pass
-    # Streamlit Cloud images do not always expose system fonts. Matplotlib ships
+    # Matplotlib also ships a Unicode-capable DejaVu Sans fallback.
     # a DejaVu Sans font with full Polish glyph support, so use it as a free fallback.
     try:
         from matplotlib import font_manager
@@ -163,16 +175,10 @@ def _wrap(draw, text, x, y, maxw, font, fill=TEXT, max_lines=2, gap=6):
     return y
 
 
-def _placement_line(draw, x, y, place_no, info, maxw):
-    header = f"{place_no}. miejsce: {info.get('name') or '—'}"
-    draw.text((x, y), header, font=_fit(draw, header, maxw, 24, 16, True), fill=TEXT)
-    y += 30
-    team = str(info.get("team") or "—")
-    stats = f"{info.get('w', 0)}W • {info.get('d', 0)}R • {info.get('l', 0)}P   |   Bramki {info.get('gf', 0)}:{info.get('ga', 0)}"
-    draw.text((x, y), team, font=_fit(draw, team, maxw, 21, 15), fill=MUTED)
-    y += 26
-    draw.text((x, y), stats, font=_fit(draw, stats, maxw, 20, 14), fill="#d1d9e8")
-    return y + 16
+def _classification_line(draw, x, y, place_no, name, team, maxw):
+    line=f"{place_no}. {name or '—'}  •  {team or '—'}"
+    draw.text((x,y),line,font=_fit(draw,line,maxw,23,15,True),fill=TEXT)
+    return y+43
 
 
 def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, str], official_no: int | None = None) -> bytes:
@@ -209,8 +215,6 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     draw.text((94, 402), champ_team, font=_fit(draw, champ_team, 520, 30, 22), fill=MUTED)
     record = f"Bilans {rec['w']}W • {rec['d']}R • {rec['l']}P   |   Bramki {rec['gf']}:{rec['ga']}"
     draw.text((94, 440), record, font=_fit(draw, record, 540, 24, 18), fill="#d1d9e8")
-    finalist = f"Finalista: {runner} • {runner_team}"
-    draw.text((94, 468), finalist, font=_fit(draw, finalist, 560, 24, 16), fill="#d1d9e8")
 
     _rr(draw, (728, 298, 970, 455), fill=PANEL2, outline="#2d5b82", r=28)
     draw.text((758, 320), "FINAŁ", font=_font(25, True), fill=CYAN)
@@ -224,30 +228,32 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     _rr(draw, (545, 530, 1022, 715))
     scorer = summary.get("real_top_scorer") or {}
     draw.text((86, 558), "STRZELEC TURNIEJU", font=_font(25, True), fill=GREEN)
-    scorer_name = str(scorer.get("name") or "—")
-    goals = int(scorer.get("goals") or 0)
-    draw.text((86, 608), scorer_name, font=_fit(draw, scorer_name, 390, 39, 25, True), fill=TEXT)
-    draw.text((86, 661), f"{goals} goli", font=_font(27), fill=MUTED)
+    if scorer:
+        scorer_name = str(scorer.get("name") or "—")
+        goals = int(scorer.get("goals") or 0)
+        draw.text((86, 608), scorer_name, font=_fit(draw, scorer_name, 390, 39, 25, True), fill=TEXT)
+        draw.text((86, 661), f"{goals} goli", font=_font(27), fill=MUTED)
+    else:
+        msg="Nie uzupełniono strzelców"
+        draw.text((86, 610), msg, font=_fit(draw, msg, 390, 29, 21, True), fill=TEXT)
+        draw.text((86, 657), "Pole opcjonalne", font=_font(21), fill=MUTED)
 
     mot_title, mot_detail = _mot_text(summary.get("match_of_tournament"))
     draw.text((573, 558), "MECZ TURNIEJU", font=_font(25, True), fill=CYAN)
     _wrap(draw, mot_title, 573, 608, 410, _font(29, True), max_lines=2)
     draw.text((573, 672), mot_detail, font=_font(22), fill=MUTED)
 
-    # Row 2: 3rd/4th places + numbers
+    # Row 2: compact final classification + tournament numbers
     _rr(draw, (58, 745, 515, 938))
     _rr(draw, (545, 745, 1022, 938))
 
-    draw.text((86, 774), "MIEJSCA 3–4", font=_font(25, True), fill=PINK)
-    third = summary.get("third_place")
-    fourth = summary.get("fourth_place")
-    if third:
-        next_y = _placement_line(draw, 86, 814, 3, third, 390)
-        if fourth:
-            _placement_line(draw, 86, next_y, 4, fourth, 390)
-    else:
-        draw.text((86, 826), "Brak klasyfikacji 3./4. miejsca", font=_font(24), fill=MUTED)
-        draw.text((86, 863), "dla tego formatu turnieju.", font=_font(22), fill="#d1d9e8")
+    draw.text((86, 774), "KLASYFIKACJA", font=_font(25, True), fill=PINK)
+    y=814
+    y=_classification_line(draw,86,y,2,runner,runner_team,390)
+    third=summary.get("third_place") or {}
+    fourth=summary.get("fourth_place") or {}
+    if third:y=_classification_line(draw,86,y,3,third.get("name"),third.get("team"),390)
+    if fourth:y=_classification_line(draw,86,y,4,fourth.get("name"),fourth.get("team"),390)
 
     played = [m for m in bundle.get("matches", []) if m.get("home_score") is not None]
     total_goals = sum(int(m.get("home_score") or 0) + int(m.get("away_score") or 0) for m in played)
@@ -255,10 +261,6 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     draw.text((573, 774), "TURNIEJ W LICZBACH", font=_font(25, True), fill=PURPLE)
     draw.text((573, 818), f"{len(played)} meczów  •  {total_goals} goli", font=_font(31, True), fill=TEXT)
     draw.text((573, 860), f"Średnio {avg:.1f} gola / mecz", font=_font(25), fill=MUTED)
-    if summary.get("wb_pairings"):
-        draw.text((573, 900), "Losowanie Winners:", font=_font(20, True), fill="#d1d9e8")
-        pair_line = "  •  ".join(summary.get("wb_pairings", [])[:2])
-        draw.text((573, 924), pair_line, font=_fit(draw, pair_line, 395, 17, 13), fill="#cbd5e1")
 
     # Footer facts
     facts = []

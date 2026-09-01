@@ -16,11 +16,11 @@ import streamlit as st
 
 from logic import (
     BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
-    schedule_for_format, shuffled_assignments, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority,
+    schedule_for_format, shuffled_assignments, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, weighted_bye_choice,
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 166
+DB_API_VERSION = 170
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -500,7 +500,12 @@ class Database:
             for _ in range(50):
                 cand = build_draw(pids, meta["format_key"], rng)
                 if draw_signature(cand) != draw_signature(old): new = cand; break
+            old_extra=json.loads(meta.get("extra_json") or "{}")
+            carry=old_extra.get("cross_tournament_priority") or {}
             extra = self._extra_for_format(meta["format_key"], rng)
+            if carry:
+                new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng)
+                extra["cross_tournament_priority"]=carry
             conn.execute(self._sql("UPDATE flex_tournament_meta SET draw_json=?,extra_json=?,draw_revealed=1,redraw_count=redraw_count+1 WHERE tournament_id=?"), (json.dumps(new),json.dumps(extra),tid))
             self._apply_draw_groups_conn(conn, tid, meta["format_key"], new)
 
@@ -512,7 +517,9 @@ class Database:
             draw = json.loads(meta["draw_json"]); extra = json.loads(meta["extra_json"])
             plan = schedule_for_format(draw, meta["format_key"], extra, rng)
             carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
-            if carry: plan=optimize_opening_order(plan,carry,rng)
+            preferred=optimize_opening_order(plan,carry,rng) if carry else [dict(x) for x in plan]
+            extra["match_play_order"]=[int(x["match_no"]) for x in preferred]
+            conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"), (tid,))
             conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"), (tid,))
             for item in plan:
@@ -739,7 +746,11 @@ class Database:
             mm={int(m["match_no"]):m for m in self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,))}
             if not all(self._match_played(mm.get(i)) for i in (1,2,3)): raise ValueError("Najpierw rozegraj trzy mecze pierwszej rundy.")
             if not extra.get("d7_lb_bye_match"):
-                extra["d7_lb_bye_match"]=rng.choice([1,2,3]); extra["d7_lb_draw_ack"]=False; extra["d7_pairing"]=None
+                carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
+                loser_by_match={no:self._loser_of(mm.get(no)) for no in (1,2,3)}
+                chosen_pid=weighted_bye_choice([pid for pid in loser_by_match.values() if pid],carry,rng) if carry else None
+                chosen_no=next((no for no,pid in loser_by_match.items() if chosen_pid and pid==chosen_pid),None)
+                extra["d7_lb_bye_match"]=int(chosen_no or rng.choice([1,2,3])); extra["d7_lb_draw_ack"]=False; extra["d7_pairing"]=None
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             self._resolve_all_conn(conn,tid,"double7")
             no=int(extra["d7_lb_bye_match"]); pid=self._loser_of(mm.get(no)); name=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(pid,)) if pid else None
@@ -1195,7 +1206,13 @@ class Database:
             return clean
 
         third_pid=fourth_pid=None
-        if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
+        if fmt in ("league4_final","league5_final"):
+            ids=list(players.keys());ties={pid:int(players[pid].get("tie_order") or 9999) for pid in ids}
+            league_matches=[m for m in played if m.get("stage")=="LEAGUE"]
+            table=group_table(ids,league_matches,ties)
+            if len(table)>=3:third_pid=table[2]["player_id"]
+            if len(table)>=4:fourth_pid=table[3]["player_id"]
+        elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
             sf_losers=rank_same_stage([self._loser_of(m) for m in played if m.get("stage")=="SF"])
             if sf_losers: third_pid=sf_losers[0]
             if len(sf_losers)>1: fourth_pid=sf_losers[1]
@@ -1206,17 +1223,8 @@ class Database:
         elif fmt=="double8":
             third_pid=self._loser_of(by_no.get(13)); fourth_pid=self._loser_of(by_no.get(12))
 
-        wb_pairings=[]
-        if fmt=="double7":
-            for no in (4,5):
-                m=by_no.get(no)
-                if m and m.get("home_name") and m.get("away_name"): wb_pairings.append(f"{m['home_name']} vs {m['away_name']}")
-        elif fmt=="double8":
-            for no in (5,6):
-                m=by_no.get(no)
-                if m and m.get("home_name") and m.get("away_name"): wb_pairings.append(f"{m['home_name']} vs {m['away_name']}")
-
         return {"champion":players.get(champ,{}).get("name"),"runner_up":players.get(runner,{}).get("name"),
+                "champion_record": ({"w":int(ps[champ]["w"]),"d":int(ps[champ]["d"]),"l":int(ps[champ]["l"]),"gf":int(ps[champ]["gf"]),"ga":int(ps[champ]["ga"])} if champ else {"w":0,"d":0,"l":0,"gf":0,"ga":0}),
                 "top_goals":{"name":players.get(top[0],{}).get("name"),"value":top[1].get("gf",0)},
                 "best_defense":{"name":players.get(defense[0],{}).get("name"),"value":defense[1].get("ga",0)},
                 "best_form":{"name":players.get(form[0],{}).get("name"),"wins":form[1].get("w",0)},
@@ -1228,7 +1236,6 @@ class Database:
                     "home_penalties":match_of_tournament.get("home_penalties"),"away_penalties":match_of_tournament.get("away_penalties")} if match_of_tournament else None),
                 "third_place": place_payload(third_pid),
                 "fourth_place": place_payload(fourth_pid),
-                "wb_pairings": wb_pairings,
                 "rivalry_match":rivalry,"new_records":new_records}
 
     def tournament_export_meta(self, tid: str) -> dict:
@@ -1256,9 +1263,24 @@ class Database:
                 "format_key": meta.get("format_key") if meta else None,
             }
 
-    def current_match_from(self, matches: list[dict]) -> dict | None:
-        for m in matches:
-            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None: return m
+    def current_match_from(self, matches: list[dict], extra: dict | None = None) -> dict | None:
+        order=[int(x) for x in ((extra or {}).get("match_play_order") or [])]
+        rank={no:i for i,no in enumerate(order)}
+        ordered=sorted(matches,key=lambda m:(rank.get(int(m.get("match_no") or 0),10_000+int(m.get("match_no") or 0)),int(m.get("match_no") or 0)))
+        for m in ordered:
+            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None:
+                return m
+        return None
+
+    def next_ready_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
+        order=[int(x) for x in ((extra or {}).get("match_play_order") or [])]
+        rank={no:i for i,no in enumerate(order)}
+        current_rank=rank.get(int(current_no),-1)
+        ordered=sorted(matches,key=lambda m:(rank.get(int(m.get("match_no") or 0),10_000+int(m.get("match_no") or 0)),int(m.get("match_no") or 0)))
+        later=[m for m in ordered if rank.get(int(m.get("match_no") or 0),10_000+int(m.get("match_no") or 0))>current_rank]
+        for m in later:
+            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None:
+                return m
         return None
 
     def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None) -> None:
@@ -1297,34 +1319,35 @@ class Database:
             conn.execute(self._sql("UPDATE tournaments SET status='completed',phase='completed',champion_player_id=?,completed_at=? WHERE id=?"),(champion,now_iso(),tid))
 
     def undo_last_result(self, tid: str) -> int | None:
-        # Safe approach: clear the latest played result and every later dynamic result/participant,
-        # then resolve the bracket again from the remaining valid history.
+        # Undo the match actually played last, not the numerically highest match.
+        # This is required because cross-tournament fairness may change play order.
         with self.connect() as conn:
-            last=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND home_score IS NOT NULL ORDER BY match_no DESC LIMIT 1",(tid,))
-            if not last: return None
+            last=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND home_score IS NOT NULL ORDER BY played_at DESC,match_no DESC LIMIT 1",(tid,))
+            if not last:return None
             no=int(last["match_no"])
-            conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no>=?"),(tid,no))
+            conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,no))
             conn.execute(self._sql("UPDATE matches SET home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL WHERE tournament_id=? AND match_no=?"),(tid,no))
-            # Clear all later matches completely; their participants can depend on the undone result.
-            conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL,home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL WHERE tournament_id=? AND match_no>?"),(tid,no))
+            # Rebuild participants only for unplayed games. Earlier played games are left untouched,
+            # even when their logical match number is higher than the match being undone.
+            conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL WHERE tournament_id=? AND home_score IS NULL"),(tid,))
             conn.execute(self._sql("UPDATE tournaments SET status='active',phase='active',champion_player_id=NULL,completed_at=NULL WHERE id=?"),(tid,))
-            meta,extra=self._meta_extra_conn(conn,tid); fmt=meta["format_key"]
+            meta,extra=self._meta_extra_conn(conn,tid);fmt=meta["format_key"]
             if fmt=="double5" and no<=2:
-                extra["d5_opponent_match"]=None; extra["d5_draw_ack"]=False
+                extra["d5_opponent_match"]=None;extra["d5_draw_ack"]=False
             if fmt=="double7":
                 if no<=3:
-                    extra["d7_wb_draw"]=None; extra["d7_wb_draw_ack"]=False
-                    extra["d7_lb_bye_match"]=None; extra["d7_lb_draw_ack"]=False; extra["d7_pairing"]=None
+                    extra["d7_wb_draw"]=None;extra["d7_wb_draw_ack"]=False
+                    extra["d7_lb_bye_match"]=None;extra["d7_lb_draw_ack"]=False;extra["d7_pairing"]=None
                 elif no<=6:
                     extra["d7_pairing"]=None
             if fmt=="double8" and no<=4:
-                extra["d8_wb_draw"]=None; extra["d8_wb_draw_ack"]=False
+                extra["d8_wb_draw"]=None;extra["d8_wb_draw_ack"]=False
             group_end=6 if fmt in ("groups6","groups6_full") else (9 if fmt in ("groups7","groups7_sf") else (12 if fmt in ("groups8_sf","groups8_barrage") else 0))
             if group_end and no<=group_end:
-                extra.pop("playoff_sources",None); extra.pop("playoff_display_sources",None); extra["playoff_reveal_ack"]=False
+                extra.pop("playoff_sources",None);extra.pop("playoff_display_sources",None);extra["playoff_reveal_ack"]=False
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
-            if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
-            if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"): self._prepare_group_playoffs_conn(conn,tid)
+            if fmt=="double7":self._prepare_double7_pairing_conn(conn,tid)
+            if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
             return no
 

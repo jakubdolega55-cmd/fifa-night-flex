@@ -1,14 +1,14 @@
-# FIFA Night Flex v1.6.9
+# FIFA Night Flex v1.7.0
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
 ## Formaty
 
 - 4 graczy — liga każdy z każdym + finał (7 meczów)
-- 5 graczy — Double Elimination (8–9) albo liga + finał (11)
+- 5 graczy — Double Elimination (8) albo liga + finał (11)
 - 6 graczy — klasyczne 2×3 + SF + finał (9) albo rozszerzone 2×3 + QF + SF + finał (11)
-- 7 graczy — Double Elimination (12–13), grupy 4+3 + QF + SF + finał (14) albo grupy 4+3 + SF + finał (12)
-- 8 graczy — grupy 4+4 + SF + finał (15), Double Elimination (14–15) albo grupy 4+4 + baraże + SF + finał (17)
+- 7 graczy — Double Elimination (12), grupy 4+3 + QF + SF + finał (14) albo grupy 4+3 + SF + finał (12)
+- 8 graczy — grupy 4+4 + SF + finał (15), Double Elimination (14) albo grupy 4+4 + baraże + SF + finał (17)
 
 ## Formaty dla 8 graczy
 
@@ -16,9 +16,9 @@ Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym 
 
 12 meczów grupowych, następnie 1A–2B i 1B–2A, a na końcu finał. Kolejność półfinałów jest dobierana po zakończeniu grup, aby ograniczyć granie bez odpoczynku.
 
-### Double Elimination — 14–15 meczów
+### Double Elimination — 14 meczów
 
-Pełna, symetryczna drabinka dla ośmiu osób, bez BYE. Zawodnik odpada dopiero po drugiej porażce. Mecz 15 jest resetem finału i pojawia się tylko wtedy, gdy mistrz Losers Bracket wygra pierwszy finał.
+Pełna, symetryczna drabinka dla ośmiu osób, bez BYE. Zawodnik odpada dopiero po drugiej porażce. Jest jeden finał; mistrz Winners Bracket zaczyna go z bonusem 1:0.
 
 ### Grupy 4+4 + baraże + półfinały + finał — 17 meczów
 
@@ -103,12 +103,20 @@ Plik `.streamlit/secrets.toml` nie może trafić do GitHuba.
 Sekcja strzelców została skompresowana pod telefon: każdy z 5 podstawowych zawodników zajmuje jeden niski wiersz z nazwiskiem po lewej i licznikiem goli po prawej. Drużyny są prezentowane jedna pod drugą, a `Pozostali zawodnicy` i `Inny zawodnik` są domyślnie zwinięte. Wszystko nadal znajduje się w formularzu meczu, więc zmiana liczników nie powoduje rerunu strony; dane zapisują się dopiero przy zatwierdzeniu wyniku.
 
 
-## Priorytet między turniejami v1.6.9
+## Kolejność między turniejami v1.7.0
 
-Po utworzeniu kolejnego turnieju aplikacja sprawdza **bezpośrednio poprzedni zakończony turniej tego samego typu (testowy/produkcyjny)**. Gracz jest rozpoznawany wyłącznie wtedy, gdy jego nick jest identyczny znak w znak z poprzednim turniejem.
+Po utworzeniu kolejnego turnieju aplikacja sprawdza **bezpośrednio poprzedni zakończony turniej tego samego typu (testowy/produkcyjny)**. Gracz jest brany pod uwagę tylko wtedy, gdy wpisany nick jest identyczny znak w znak z nickiem z poprzedniego turnieju (po usunięciu przypadkowych spacji na początku/końcu).
 
-Dla dopasowanych graczy aplikacja liczy, ile meczów rozegrano po ich ostatnim występie. Im dłużej ktoś czekał po odpadnięciu lub zakończeniu swoich meczów, tym większy dostaje priorytet wcześniejszego pierwszego meczu w kolejnym turnieju.
+Mechanizm działa również po zmianie liczby graczy lub formatu, np. 7 → 5, 5 → 7 albo 6 → 8. Pary i grupy są losowane normalnie. Dane z poprzedniego turnieju **nie zmieniają przeciwników** — mogą wyłącznie przestawić kolejność rozegrania już wylosowanych, niezależnych meczów otwierających.
 
-Mechanizm działa także przy zmianie liczby graczy i formatu, np. 7 → 5, 5 → 7, 6 → 8. Gracze, których nie było w bezpośrednio poprzednim turnieju, mają priorytet neutralny.
+W formatach z BYE losowanie pozostaje losowe, ale ma miękkie wagi: spośród aktualnych kandydatów osoba, która czekała najdłużej po swoim ostatnim meczu poprzedniego turnieju, ma 25% standardowej wagi na BYE, druga 50%, pozostali 100%. Nikt nie jest z BYE wykluczony. Przy remisie oczekiwania wybór osób z obniżoną wagą jest losowy, więc dotyczy maksymalnie dwóch graczy.
 
-Algorytm nie zwiększa liczby meczów granych bezpośrednio jeden po drugim ani maksymalnej przerwy w otwierającej fazie względem bazowego terminarza. W Double Elimination dla 5 i 7 graczy osoba z największym przeniesionym oczekiwaniem nie dostanie opóźnionego slotu/BYE, jeśli dostępny jest gracz z niższym priorytetem.
+Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algorytm kolejności najpierw ogranicza mecze back-to-back i długie przerwy, a dopiero potem wykorzystuje poprzednie oczekiwanie jako dodatkowy tie-breaker.
+
+## Podsumowanie v1.7.0
+
+- mistrz: gracz, drużyna, bilans W/R/P i bramki,
+- miejsca 2–4: tylko gracz i drużyna,
+- brak informacji o losowaniach Winners w podsumowaniu i PNG,
+- strzelcy pozostają całkowicie opcjonalni; jeżeli nie wpisano żadnego, podsumowanie i PNG pokazują „Nie uzupełniono strzelców” zamiast błędu lub `0 goli`.
+

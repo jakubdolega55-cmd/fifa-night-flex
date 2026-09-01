@@ -289,15 +289,6 @@ def render_structure(t):
     title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
     step="Etap 3/3" if int(t["player_count"]) in (4,5) else "Etap 2/2"
     hero(f"{step} • {title}")
-    try:
-        carry=(db.meta(t["id"]).get("extra") or {}).get("cross_tournament_priority") or {}
-        matched=carry.get("matched") or []
-        active=[x for x in matched if int(x.get("wait_matches") or 0)>0]
-        if active:
-            txt=" • ".join(f"{x['name']}: {x['wait_matches']} mecz." for x in active[:6])
-            st.info(f"⚖️ **Priorytet między turniejami:** {txt}  \nGracze są rozpoznawani tylko po identycznym nicku. Algorytm przyspieszy ich pierwszy mecz, ale nadal pilnuje odpoczynku między spotkaniami.")
-    except Exception:
-        pass
     structure_draw(t["id"]);reset_controls(t,"structure")
 
 
@@ -490,20 +481,22 @@ def live(tid:str):
         st.markdown(f'<div class="winner"><div class="match-no">MISTRZ TURNIEJU</div><div style="font-size:3rem">🏆</div><div class="player-big">{esc(champ)}</div></div>',unsafe_allow_html=True)
         if st.session_state.get("celebrated")!=tid:st.balloons();st.session_state.celebrated=tid
         st.markdown("### 📋 Podsumowanie turnieju")
-        c1,c2,c3,c4=st.columns(4)
-        c1.metric("🥈 Finalista",summary.get("runner_up") or "—")
-        c2.metric("⚽ Najwięcej goli",summary.get("top_goals",{}).get("name") or "—",summary.get("top_goals",{}).get("value",0))
-        c3.metric("🛡️ Najlepsza defensywa",summary.get("best_defense",{}).get("name") or "—",f"{summary.get('best_defense',{}).get('value',0)} straconych")
-        c4.metric("🔥 Najwięcej wygranych",summary.get("best_form",{}).get("name") or "—",summary.get("best_form",{}).get("wins",0))
+        champ_record=summary.get("champion_record") or {}
+        champ_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==champ),"—")
+        st.success(
+            f"🏆 **1. miejsce: {champ} • {champ_team}**\n\n"
+            f"Bilans: {champ_record.get('w',0)}W / {champ_record.get('d',0)}R / {champ_record.get('l',0)}P • "
+            f"Bramki {champ_record.get('gf',0)}:{champ_record.get('ga',0)}"
+        )
         third=summary.get("third_place") or {}
         fourth=summary.get("fourth_place") or {}
-        if third or fourth:
-            st.markdown("#### 🏅 Miejsca 3–4")
-            p1,p2=st.columns(2)
-            if third:
-                p1.success(f"🥉 **3. miejsce:** {third.get('name','—')} • {third.get('team','—')}\nBilans: {third.get('w',0)}W / {third.get('d',0)}R / {third.get('l',0)}P • Bramki {third.get('gf',0)}:{third.get('ga',0)}")
-            if fourth:
-                p2.info(f"4️⃣ **4. miejsce:** {fourth.get('name','—')} • {fourth.get('team','—')}\nBilans: {fourth.get('w',0)}W / {fourth.get('d',0)}R / {fourth.get('l',0)}P • Bramki {fourth.get('gf',0)}:{fourth.get('ga',0)}")
+        runner_name=summary.get("runner_up") or "—"
+        runner_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==runner_name),"—")
+        st.markdown("#### 🏅 Klasyfikacja")
+        p1,p2,p3=st.columns(3)
+        p1.info(f"🥈 **2. miejsce:** {runner_name} • {runner_team}")
+        if third:p2.info(f"🥉 **3. miejsce:** {third.get('name','—')} • {third.get('team','—')}")
+        if fourth:p3.info(f"4️⃣ **4. miejsce:** {fourth.get('name','—')} • {fourth.get('team','—')}")
         c1,c2=st.columns(2)
         if summary.get("biggest"):c1.info(f"💥 Największe zwycięstwo: **{summary['biggest']['home']} {summary['biggest']['score']} {summary['biggest']['away']}**")
         if summary.get("highest"):c2.info(f"🎯 Najbardziej bramkowy mecz: **{summary['highest']['home']} {summary['highest']['score']} {summary['highest']['away']}**")
@@ -512,9 +505,10 @@ def live(tid:str):
             mot_score=mot["score"]
             if mot.get("home_penalties") is not None and mot.get("away_penalties") is not None:mot_score+=f" (k. {mot['home_penalties']}:{mot['away_penalties']})"
             st.warning(f"🎬 **Mecz turnieju:** {mot['home']} {mot_score} {mot['away']} • {stage_name({'stage':mot.get('stage'),'group_name':mot.get('group_name') or ''})}")
-        if summary.get("real_top_scorer"):st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
-        if summary.get("wb_pairings"):
-            st.info("🎱 Losowanie Winners po 1. rundzie: **" + "**  •  **".join(summary.get("wb_pairings", [])) + "**")
+        if summary.get("real_top_scorer"):
+            st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
+        else:
+            st.info("⚽ **Strzelcy:** nie uzupełniono strzelców w tym turnieju.")
         if summary.get("rivalry_match"):st.info(f"🔥 Rivalry match turnieju: **{summary['rivalry_match']['home']} {summary['rivalry_match']['score']} {summary['rivalry_match']['away']}**")
         if summary.get("new_records"):
             st.markdown("#### 🆕 Nowe rekordy")
@@ -530,7 +524,7 @@ def live(tid:str):
         return
     if render_special_event(tid,b): return
     b=db.bundle(tid)
-    cur=db.current_match_from(b["matches"])
+    cur=db.current_match_from(b["matches"],meta.get("extra") or {})
     if not cur:st.info("Czekam na rozstrzygnięcie poprzedniego etapu…");return
     total=max_matches(meta["format_key"])
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
@@ -539,8 +533,8 @@ def live(tid:str):
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_context(cur)
     score_form(tid,cur,meta["format_key"])
-    nxt=[m for m in b["matches"] if int(m["match_no"])>int(cur["match_no"]) and m.get("home_player_id") and m.get("home_score") is None]
-    if nxt:st.caption(f"Następny: **{nxt[0]['home_name']} vs {nxt[0]['away_name']}**")
+    nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
+    if nxt:st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")
     if st.button("↩️ Cofnij ostatni wynik",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
         st.session_state.pop("pending_ko",None);db.undo_last_result(tid);rf()
     tables=db.standings(tid)

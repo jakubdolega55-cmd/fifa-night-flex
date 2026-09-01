@@ -393,12 +393,11 @@ def winner_from_result(home_score:int,away_score:int,home_id:str,away_id:str,hom
 
 
 def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | None, rng: random.Random) -> list[dict]:
-    """Reorder only the independent opening phase without changing pairings.
+    """Reorder only the independent opening games; never change the drawn pairings.
 
-    start_priority maps player_id -> number of matches that player waited after their
-    last appearance in the immediately previous tournament. Higher means they should
-    get an earlier first match now. The optimizer also strongly avoids back-to-back
-    games and discourages long gaps inside the opening phase.
+    Logical match numbers stay attached to their original pairings. The returned list
+    only describes the preferred *play order*. Higher carry-over wait means an earlier
+    first game is preferred, while back-to-back games and very long gaps are penalized.
     """
     priority = {str(k): max(0, int(v or 0)) for k, v in (start_priority or {}).items()}
     if not plan:
@@ -414,37 +413,32 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
             break
         opening_idx.append(i)
     if len(opening_idx) <= 1:
-        return plan
+        return [dict(x) for x in plan]
 
-    original = [dict(plan[i]) for i in opening_idx]
-    slots = [int(plan[i]["match_no"]) for i in opening_idx]
+    opening = [dict(plan[i]) for i in opening_idx]
 
     def pids(item):
         return (str(item["home"])[2:], str(item["away"])[2:])
 
-    # Tiny random tie-breaks retain variety when two schedules are equally fair.
-    noise = {i: rng.random() * 0.001 for i in range(len(original))}
-    beam = [(0.0, [], frozenset(), {}, None, frozenset(range(len(original))))]
-    beam_width = 420 if len(original) >= 9 else 160
+    # Random tie-breaks keep schedules varied when fairness scores are equal.
+    noise = {i: rng.random() * 0.001 for i in range(len(opening))}
+    beam = [(0.0, [], frozenset(), {}, None, frozenset(range(len(opening))))]
+    beam_width = 420 if len(opening) >= 9 else 180
 
-    for pos in range(1, len(original) + 1):
+    for pos in range(1, len(opening) + 1):
         nxt = []
         for score, seq, seen, last_pos, prev_players, remaining in beam:
             for idx in remaining:
-                item = original[idx]
+                item = opening[idx]
                 a, b = pids(item)
                 players = frozenset((a, b))
                 add = noise[idx]
-
-                # Absolute priority: never intentionally schedule the same person
-                # in consecutive matches when another reasonable order exists.
                 if prev_players and players & prev_players:
                     add += 100000.0
-
                 for pid in (a, b):
                     if pid not in seen:
-                        # Waiting in the previous tournament increases the cost of
-                        # making this player's first match late in the new one.
+                        # Cross-tournament waiting only influences *when* this already
+                        # drawn match is played, never who plays whom.
                         weight = 1.0 + (priority.get(pid, 0) * 8.0)
                         add += (pos - 1) * weight
                     else:
@@ -455,74 +449,89 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
                             add += 8.0
                         elif gap > 3:
                             add += (gap - 3) * 5.0
-
                 new_seen = set(seen); new_seen.update((a, b))
                 new_last = dict(last_pos); new_last[a] = pos; new_last[b] = pos
                 new_remaining = frozenset(x for x in remaining if x != idx)
                 nxt.append((score + add, seq + [idx], frozenset(new_seen), new_last, players, new_remaining))
-
         nxt.sort(key=lambda x: x[0])
         beam = nxt[:beam_width]
 
     beam_best = min(beam, key=lambda x: x[0])[1]
-
-    # Safety guard: compare the free-form optimizer with rotations of the already
-    # hand-tuned schedule. We never accept more back-to-back games or a larger
-    # maximum idle gap merely to honor cross-tournament priority.
-    base_seq=list(range(len(original)))
-    candidates=[base_seq,beam_best]
-    for k in range(1,len(original)):
-        candidates.append(base_seq[k:]+base_seq[:k])
-    rev=list(reversed(base_seq))
-    for k in range(len(original)):
-        candidates.append(rev[k:]+rev[:k])
+    base_seq = list(range(len(opening)))
+    candidates = [base_seq, beam_best]
+    for k in range(1, len(opening)):
+        candidates.append(base_seq[k:] + base_seq[:k])
+    rev = list(reversed(base_seq))
+    for k in range(len(opening)):
+        candidates.append(rev[k:] + rev[:k])
 
     def quality(seq):
-        prev=None; back=0; first={}; positions={}
-        for pos,idx in enumerate(seq,1):
-            a,b=pids(original[idx]);players={a,b}
-            if prev and players & prev:back+=1
+        prev = None; back = 0; first = {}; positions = {}
+        for pos, idx in enumerate(seq, 1):
+            a, b = pids(opening[idx]); players = {a, b}
+            if prev and players & prev:
+                back += 1
             for pid in players:
-                first.setdefault(pid,pos);positions.setdefault(pid,[]).append(pos)
-            prev=players
-        gaps=[b-a-1 for arr in positions.values() for a,b in zip(arr,arr[1:])]
-        max_gap=max(gaps) if gaps else 0
-        priority_cost=sum((first.get(pid,len(seq)+1)-1)*(1+priority.get(pid,0)*8) for pid in first)
-        max_first=max(first.values()) if first else 0
-        return (back,max_gap,priority_cost,max_first)
+                first.setdefault(pid, pos); positions.setdefault(pid, []).append(pos)
+            prev = players
+        gaps = [b-a-1 for arr in positions.values() for a, b in zip(arr, arr[1:])]
+        max_gap = max(gaps) if gaps else 0
+        priority_cost = sum((first.get(pid, len(seq)+1)-1) * (1 + priority.get(pid, 0)*8) for pid in first)
+        max_first = max(first.values()) if first else 0
+        # Safety first: never trade a worse maximum opening wait for carry-over priority.
+        # Previous-tournament waiting is only a tie-breaker among equally safe orders.
+        return (back, max_gap, max_first, priority_cost)
 
-    best=min(candidates,key=quality)
-    reordered=[]
-    for match_no,idx in zip(slots,best):
-        item=dict(original[idx]);item["match_no"]=match_no;reordered.append(item)
-
-    out=[dict(x) for x in plan]
-    for target_i,item in zip(opening_idx,reordered):out[target_i]=item
+    best = min(candidates, key=quality)
+    reordered_opening = [opening[idx] for idx in best]
+    out = [dict(x) for x in plan]
+    # Only list order changes. Every item keeps its original match_no and sources.
+    for target_i, item in zip(opening_idx, reordered_opening):
+        out[target_i] = item
     return out
 
 
-def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random) -> dict:
-    """Avoid giving a delayed-entry/BYE slot to the player who already waited longest.
+def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | None, rng: random.Random) -> str | None:
+    """Random BYE draw with a soft handicap for at most two longest-waiting players.
 
-    Pairings remain random except for this one fairness correction. If all players have
-    the same carry-over priority, the original random draw is untouched.
+    Nobody is excluded. Among the actual BYE candidates, the longest-waiting player
+    gets 25% of normal weight and the second-longest gets 50%. Ties are randomized,
+    so at most two people are discounted and the draw always remains genuinely random.
     """
+    vals = [str(x) for x in candidates if x]
+    if not vals:
+        return None
+    priority = {str(k): max(0, int(v or 0)) for k, v in (start_priority or {}).items()}
+    ranked = [(priority.get(pid, 0), rng.random(), pid) for pid in vals]
+    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    discounted = {}
+    if ranked and ranked[0][0] > 0:
+        discounted[ranked[0][2]] = 0.25
+    if len(ranked) > 1 and ranked[1][0] > 0:
+        discounted[ranked[1][2]] = 0.50
+    weights = [discounted.get(pid, 1.0) for pid in vals]
+    total = sum(weights)
+    pick = rng.random() * total
+    acc = 0.0
+    for pid, weight in zip(vals, weights):
+        acc += weight
+        if pick <= acc:
+            return pid
+    return vals[-1]
+
+def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random) -> dict:
+    """Softly weight the initial WB BYE while keeping all non-BYE pairings random."""
     if format_key not in ("double5", "double7") or not start_priority:
         return draw
     bye_slot = "E" if format_key == "double5" else "G"
     slots = dict(draw.get("slots") or {})
-    bye_pid = slots.get(bye_slot)
-    if not bye_pid:
+    if bye_slot not in slots:
         return draw
-    priority = {str(k): max(0, int(v or 0)) for k, v in start_priority.items()}
-    bye_score = priority.get(str(bye_pid), 0)
-    other_slots = [k for k in slots if k != bye_slot]
-    if not other_slots:
+    selected = weighted_bye_choice(list(slots.values()), start_priority, rng)
+    if not selected or selected == slots[bye_slot]:
         return draw
-    min_score = min(priority.get(str(slots[k]), 0) for k in other_slots)
-    if bye_score <= min_score:
+    selected_slot = next((slot for slot, pid in slots.items() if str(pid) == str(selected)), None)
+    if not selected_slot:
         return draw
-    candidates = [k for k in other_slots if priority.get(str(slots[k]), 0) == min_score]
-    chosen = rng.choice(candidates)
-    slots[bye_slot], slots[chosen] = slots[chosen], slots[bye_slot]
+    slots[bye_slot], slots[selected_slot] = slots[selected_slot], slots[bye_slot]
     return {**draw, "slots": slots}
