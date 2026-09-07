@@ -1054,6 +1054,21 @@ def render_awards():
 
     award_cats=[c for c in cats if c.get("award")]
     view_cats=[c for c in cats if not c.get("award")]
+
+    # W zwykłym widoku AWARDS pokazujemy dokładnie tę samą kolejność kategorii,
+    # w której organizator później wybiera laureatów. Tutaj lista pozostaje płaska:
+    # bez etapów, nagłówków grup i dodatkowych opisów kolejności.
+    award_priority_keys=[
+        "player_year","offensive","defense","player_scorers","clutch",
+        "regular","progress","penalties","duel","universal","wildcards","debut","outsider",
+        "finance","rivalry","team_best","team_worst","superscorer","match_year",
+    ]
+    award_priority_index={key:i for i,key in enumerate(award_priority_keys)}
+    award_cats=sorted(
+        award_cats,
+        key=lambda c:(award_priority_index.get(str(c.get("key")),len(award_priority_keys)), str(c.get("title") or "")),
+    )
+
     st.markdown("### 📊 Rankingi LIVE — TOP 5")
     for cat in award_cats:
         candidates=cat.get("candidates") or []

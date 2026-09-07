@@ -57,3 +57,8 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - przy każdym kandydacie z TOP 3 widać, ile nagród ma już wybranych; kandydat bez nagrody jest oznaczony jako `bez nagrody`, co ułatwia rozłożenie wyróżnień przy zbliżonych kandydaturach;
 - nad wyborem laureatów wyświetlany jest bieżący rozkład nagród per gracz;
 - `Król Strzelców FIFA Night` liczy nagrodę do właściwego gracza kontrolującego danego piłkarza, dzięki czemu licznik rozkładu nagród pozostaje poprawny.
+
+### Awards hotfix 4
+- Zwykły widok `AWARDS` używa teraz tej samej kolejności kategorii co panel wyboru laureatów.
+- W widoku rankingów kolejność jest płaska — bez podziału na etapy i bez opisów etapów.
+- Podział na etapy pozostaje wyłącznie w sekcji organizatora do wyboru laureatów.
