@@ -135,7 +135,14 @@ def render_start():
     # st.segmented_control. On some Streamlit/theme combinations the
     # segmented-control labels can render invisibly (only the underline is
     # visible), which made the Statistics entry look as if it wasn't there.
+    # Keep the navigation BELOW the hero so Streamlit's top chrome never
+    # clips the buttons on desktop/mobile.
     start_view=st.session_state.get("start_view","tournament")
+    hero(
+        "Statystyki i historia oficjalnych turniejów."
+        if start_view=="stats"
+        else "Wybierz liczbę graczy i format turnieju."
+    )
     nav1,nav2=st.columns(2)
     with nav1:
         if st.button(
@@ -146,6 +153,7 @@ def render_start():
         ):
             st.session_state.start_view="tournament"
             start_view="tournament"
+            st.rerun()
     with nav2:
         if st.button(
             "📊 STATYSTYKI",
@@ -155,11 +163,10 @@ def render_start():
         ):
             st.session_state.start_view="stats"
             start_view="stats"
+            st.rerun()
     if start_view=="stats":
-        hero("Statystyki i historia oficjalnych turniejów.")
         render_stats()
         return
-    hero("Wybierz liczbę graczy i format turnieju.")
     if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud podłącz DATABASE_URL z Neon.")
     default=db.last_player_count() if "player_count" not in st.session_state else st.session_state.player_count
     if default not in (4,5,6,7,8):default=6
