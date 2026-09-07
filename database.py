@@ -351,6 +351,106 @@ class Database:
             """)
             return [str(r["name"]) for r in rows if r.get("name")]
 
+    def admin_players(self) -> list[dict]:
+        """All known player identities for password-protected administrative edits."""
+        with self.connect() as conn:
+            return self._fetchall(conn, "SELECT id,name,created_at FROM players ORDER BY name")
+
+    def rename_player(self, player_id: str, new_name: str) -> dict:
+        """Rename one player identity everywhere, including historical views.
+
+        Matches/tournaments store player IDs, so changing the canonical row updates the
+        whole statistical history automatically. We additionally refresh convenience
+        snapshots kept in JSON settings/meta so old nick text does not survive in the UI.
+        This is a rename only: merging two existing player identities is deliberately
+        rejected because it would change historical ownership of results.
+        """
+        pid=str(player_id or "").strip()
+        clean=" ".join(str(new_name or "").strip().split())
+        if not pid: raise ValueError("Wybierz gracza.")
+        if not clean: raise ValueError("Nowa nazwa nie może być pusta.")
+        if len(clean)>60: raise ValueError("Nazwa gracza jest zbyt długa.")
+        norm=clean.casefold()
+        with self.connect() as conn:
+            current=self._fetchone(conn,"SELECT id,name,normalized_name FROM players WHERE id=?",(pid,))
+            if not current: raise ValueError("Nie znaleziono gracza.")
+            old_name=str(current.get("name") or "")
+            collision=self._fetchone(conn,"SELECT id,name FROM players WHERE normalized_name=? AND id<>?",(norm,pid))
+            if collision:
+                raise ValueError(f"Gracz o nazwie „{collision.get('name')}” już istnieje. Zmiana nazwy nie łączy dwóch profili.")
+            if old_name==clean:
+                return {"id":pid,"old_name":old_name,"new_name":clean,"changed":False}
+
+            conn.execute(self._sql("UPDATE players SET name=?, normalized_name=? WHERE id=?"),(clean,norm,pid))
+
+            # Historical cash-name snapshots. IDs remain the source of truth.
+            metas=self._fetchall(conn,"SELECT tournament_id,extra_json FROM flex_tournament_meta")
+            for row in metas:
+                try: extra=json.loads(row.get("extra_json") or "{}")
+                except Exception: continue
+                ids=[str(x) for x in (extra.get("cash_player_ids") or [])]
+                names=list(extra.get("cash_player_names") or [])
+                changed=False
+                for i,x in enumerate(ids):
+                    if x==pid and i<len(names) and names[i]!=clean:
+                        names[i]=clean; changed=True
+                if changed:
+                    extra["cash_player_names"]=names
+                    conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),row["tournament_id"]))
+
+            # Remembered line-ups are text snapshots used only as start-screen defaults.
+            settings=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE 'flex_last_lineup_%'")
+            for row in settings:
+                try: values=json.loads(row.get("value") or "[]")
+                except Exception: continue
+                if not isinstance(values,list): continue
+                replaced=[clean if str(v).strip().casefold()==old_name.strip().casefold() else v for v in values]
+                if replaced!=values:
+                    self._setting_set_conn(conn,row["key"],json.dumps(replaced,ensure_ascii=False))
+
+            # Organizer-selected award names are stored as display snapshots. Refresh the
+            # categories where a participant name is embedded in that snapshot.
+            award_rows=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE 'flex_award_selections_%'")
+            direct_keys={"player_year","offensive","defense","clutch","penalties","wildcards","progress","regular","debut","outsider","universal","finance","duel"}
+            for row in award_rows:
+                try: data=json.loads(row.get("value") or "{}")
+                except Exception: continue
+                if not isinstance(data,dict): continue
+                dirty=False
+                for cat_key,sel in data.items():
+                    if not isinstance(sel,dict): continue
+                    sid=str(sel.get("id") or "")
+                    if cat_key in direct_keys and sid==pid:
+                        if sel.get("name")!=clean: sel["name"]=clean; dirty=True
+                    elif cat_key=="player_scorers" and sid.startswith(pid+"|"):
+                        scorer=str(sel.get("name") or "").split(" — ",1)[0].strip()
+                        new_display=f"{scorer} — {clean}" if scorer else clean
+                        if sel.get("name")!=new_display: sel["name"]=new_display; dirty=True
+                    elif cat_key=="rivalry" and pid in sid.split("|"):
+                        pair_ids=sid.split("|")
+                        if len(pair_ids)==2:
+                            names2=[]
+                            for pair_pid in pair_ids:
+                                pr=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(pair_pid,))
+                                names2.append(str((pr or {}).get("name") or "?"))
+                            new_display=f"{names2[0]} vs {names2[1]}"
+                            if sel.get("name")!=new_display: sel["name"]=new_display; dirty=True
+                    elif cat_key=="match_year" and ":" in sid:
+                        tid,no=sid.rsplit(":",1)
+                        try: no_i=int(no)
+                        except Exception: no_i=None
+                        if no_i is not None:
+                            m=self._fetchone(conn,"""SELECT m.home_score,m.away_score,hp.name home_name,ap.name away_name
+                                FROM matches m LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
+                                WHERE m.tournament_id=? AND m.match_no=?""",(tid,no_i))
+                            if m:
+                                new_display=f"{m.get('home_name')} {m.get('home_score')}:{m.get('away_score')} {m.get('away_name')}"
+                                if sel.get("name")!=new_display: sel["name"]=new_display; dirty=True
+                if dirty:
+                    self._setting_set_conn(conn,row["key"],json.dumps(data,ensure_ascii=False))
+
+        return {"id":pid,"old_name":old_name,"new_name":clean,"changed":True}
+
     def _get_or_create_player_conn(self, conn, name: str) -> str:
         clean = " ".join(name.strip().split()); norm = clean.casefold()
         r = self._fetchone(conn, "SELECT id FROM players WHERE normalized_name = ?", (norm,))
@@ -2319,10 +2419,68 @@ class Database:
                     margin=gf-ga;v["max_margin"]=max(v["max_margin"],margin);v["big_wins"]+=int(margin>=3);v["one_goal_wins"]+=int(margin==1)
                 if r=="L":v["narrow_losses"]+=int((ga-gf)==1 or m.get("home_penalties") is not None)
                 if m.get("home_penalties") is not None and m.get("away_penalties") is not None:v["pen"]+=1;v["pen_w"]+=int(m.get("winner_player_id")==pid)
-            weight={"FINAL":8,"SF":6,"WB_FINAL":6,"LB_FINAL":6,"QF":4,"BARRAGE":4,"WB":2,"LB":2}.get(stage,0)
-            margin=abs(hs-ass);pens=8 if m.get("home_penalties") is not None else 0;close=5 if margin<=1 else (2 if margin==2 else 0)
-            match_candidates.append({"id":f"{tid}:{m['match_no']}","name":f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}","score":(hs+ass)*2+pens+close+weight,
-                                     "reason":f"{stage} • {hs+ass} goli"})
+            # Mecz Roku: wynik końcowy jest ważniejszy niż sama etykieta fazy.
+            # W rankingu dominują (1) bliskość meczu i (2) realna stawka / ryzyko odpadnięcia.
+            # Ranga fazy i liczba goli są tylko czynnikami pomocniczymi. Wartość score jest
+            # wyłącznie techniczna do sortowania i nigdy nie jest pokazywana w UI.
+            margin=abs(hs-ass)
+            has_pens=m.get("home_penalties") is not None and m.get("away_penalties") is not None
+            if has_pens:
+                closeness=1.00; closeness_text="rozstrzygnięty po karnych"
+            elif margin==0:
+                closeness=.96; closeness_text="remis"
+            elif margin==1:
+                closeness=1.00; closeness_text="różnica 1 gola"
+            elif margin==2:
+                closeness=.66; closeness_text="różnica 2 goli"
+            elif margin==3:
+                # Od tego miejsca oba wyniki są już wyraźne. Nie robimy ogromnej
+                # przepaści między np. 4:1 i 7:3 — przy podobnej stawce bardziej
+                # bramkowy 7:3 może być ciekawszym kandydatem do Meczu Roku.
+                closeness=.25; closeness_text="różnica 3 goli"
+            elif margin==4:
+                closeness=.20; closeness_text="różnica 4 goli"
+            else:
+                closeness=.08; closeness_text=f"różnica {margin} goli"
+
+            # Stakes answer the practical question: co oznaczała porażka w tym meczu?
+            if stage in ("FINAL","RESET_FINAL"):
+                stakes=1.00; stakes_text="mecz o tytuł"
+            elif stage=="LB_FINAL":
+                stakes=1.00; stakes_text="przegrany odpadał"
+            elif stage in ("SF","QF","BARRAGE","LB"):
+                stakes=.90; stakes_text="przegrany odpadał"
+            elif stage=="WB_FINAL":
+                stakes=.55; stakes_text="wysoka stawka, bez eliminacji"
+            elif stage=="WB":
+                stakes=.35; stakes_text="ważny mecz drabinki"
+            else:
+                stakes=.15; stakes_text="faza ligowa / grupowa"
+
+            rank_value={
+                "FINAL":1.00,"RESET_FINAL":1.00,"LB_FINAL":.86,"WB_FINAL":.80,"SF":.80,
+                "QF":.60,"BARRAGE":.60,"LB":.46,"WB":.42
+            }.get(stage,.20)
+            stage_text={
+                "FINAL":"finał","RESET_FINAL":"finał resetowy","LB_FINAL":"finał Lower Bracket",
+                "WB_FINAL":"finał Winners Bracket","SF":"półfinał","QF":"ćwierćfinał",
+                "BARRAGE":"baraż","LB":"Lower Bracket","WB":"Winners Bracket",
+                "GROUP":"faza grupowa","L":"liga"
+            }.get(stage,stage or "mecz")
+            goals_value=min(hs+ass,8)/8.0
+
+            # Dominują bliskość i stawka. Dzięki temu jednostronny finał nie dostaje
+            # automatycznie wysokiego miejsca tylko dlatego, że był finałem.
+            match_score=closeness*.46 + stakes*.34 + rank_value*.12 + goals_value*.08
+            reason_parts=[stage_text,closeness_text,stakes_text,f"{hs+ass} goli"]
+            if has_pens:
+                reason_parts.append(f"karne {m.get('home_penalties')}:{m.get('away_penalties')}")
+            match_candidates.append({
+                "id":f"{tid}:{m['match_no']}",
+                "name":f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}",
+                "score":round(match_score,6),
+                "reason":" • ".join(reason_parts),
+            })
         # tournament champion clubs
         for e in events:
             tid=str(e["id"]);champ=str(e.get("champion_player_id") or "")
@@ -2451,7 +2609,7 @@ class Database:
             if v["n"]<3:continue
             balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"]);score=v["n"]*5+balance*20+v["importance_points"]*2
             na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"));rivalry.append({"id":f"{a}|{b}","name":f"{na} vs {nb}","score":round(score,2),"reason":f"{v['n']} meczów • {v['aw']}:{v['bw']} w zwycięstwach • ważne mecze {v['important_matches']}"})
-        add("rivalry","⚔️ Rywalizacja Roku","Dużo i wyrównanych H2H plus znaczenie spotkań.",rivalry)
+        add("rivalry","⚔️ Rywalizacja Roku","Minimum 3 bezpośrednie mecze w roku. Ranking premiuje częstotliwość H2H, wyrównany bilans zwycięstw i spotkania o wysokiej randze (finał > półfinał > QF/baraż/WB/LB).",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
             if not v["m"]:continue
@@ -2463,7 +2621,7 @@ class Database:
         add("team_worst","📉 Najgorsza Drużyna Roku","Najsłabszy klub wg tej samej bazy danych co Drużyna Roku.",worst)
         scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
         add("superscorer","⚡ Supersnajper Roku","Konkretny piłkarz z EA FC z największą liczbą wpisanych goli; kategoria pojawia się przy sensownej próbie.",scorer_items)
-        add("match_year","🎬 Mecz Roku","Znaczenie meczu, bliskość wyniku, gole i ewentualne karne.",match_candidates)
+        add("match_year","🎬 Mecz Roku","Ranking stawia przede wszystkim na bliskość wyniku i stawkę spotkania (np. czy przegrany odpadał albo był to mecz o tytuł). Ranga fazy i liczba goli pomagają rozstrzygać kolejność, ale nie dominują rankingu. Punkty techniczne nie są pokazywane.",match_candidates)
         items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
         add("minimalist","📐 Król Minimalistów","Najwięcej zwycięstw dokładnie jedną bramką.",items,award=False)
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]

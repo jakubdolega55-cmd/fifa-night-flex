@@ -222,3 +222,11 @@ Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statysty
 - Opisy statystyk używają polskich nazw zamiast skrótów GF/GA/GD.
 - Na końcu rankingów Awards znajduje się podsumowanie najczęściej nominowanych w TOP 3/TOP 5.
 - Wybór laureatów jest ułożony w 3 etapy od najważniejszych nagród do kategorii specjalnych; przy kandydacie widać, ile nagród ma już wybranych.
+
+### Awards hotfix 5 — czytelność rankingów i administracyjna zmiana nicku
+- gdy mniej niż 5 osób spełnia warunki kategorii, nagłówek pokazuje `X zakwalifikowanych` zamiast mylącego `TOP X`;
+- `Mecz Roku` premiuje przede wszystkim bliskość wyniku i stawkę spotkania (w tym ryzyko odpadnięcia); ranga fazy i gole są pomocnicze, a punkty techniczne nie są pokazywane;
+- opis `Rywalizacji Roku` podaje minimalną próbę oraz główne elementy rankingu;
+- w sekcji `Historia i baza` administrator może po podaniu `ADMIN_PASSWORD` zmienić nazwę istniejącego gracza;
+- zmiana nicku działa historycznie, ponieważ wszystkie wyniki są przypisane do stałego `player_id`; dodatkowo aktualizowane są tekstowe snapshoty ostatnich składów, gry za kasę i zapisanych laureatów Awards;
+- zmiana nazwy nie łączy dwóch istniejących profili — kolizja z już istniejącym nickiem jest blokowana.

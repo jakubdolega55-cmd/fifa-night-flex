@@ -62,3 +62,25 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - Zwykły widok `AWARDS` używa teraz tej samej kolejności kategorii co panel wyboru laureatów.
 - W widoku rankingów kolejność jest płaska — bez podziału na etapy i bez opisów etapów.
 - Podział na etapy pozostaje wyłącznie w sekcji organizatora do wyboru laureatów.
+
+### Awards hotfix 5 — etykiety, Mecz Roku i zmiana nicku
+- krótsze listy kandydatów są opisane jako `X zakwalifikowanych`; `TOP 5` pojawia się dopiero przy pięciu kandydatach;
+- `Mecz Roku` pokazuje jawny breakdown punktów rankingu;
+- `Rywalizacja Roku` ma doprecyzowane kryteria w opisie;
+- dodano chronioną hasłem administratora zmianę nazwy gracza działającą na całą historię dzięki zachowaniu tego samego `player_id`;
+- odświeżane są także tekstowe snapshoty w ustawieniach/finansach/Awards, aby stary nick nie pozostawał w historycznych ekranach.
+
+
+### Awards hotfix 6 — nowy algorytm Meczu Roku
+- `Mecz Roku` nie jest już rankingiem punktów widocznych dla użytkownika;
+- najważniejsze są bliskość wyniku oraz stawka spotkania / ryzyko odpadnięcia;
+- ranga fazy i liczba goli pozostają czynnikami pomocniczymi;
+- jednostronny finał nie jest automatycznie wysoko tylko dlatego, że był finałem;
+- uzasadnienia pokazują wynikowe cechy meczu (np. różnica 1 gola, przegrany odpadał, liczba goli), bez punktów technicznych.
+### Awards hotfix 7 — korekta Meczu Roku
+
+- bliskość wyniku nadal jest kluczowa przy różnicy 1–2 goli;
+- przy różnicy 3–4 goli kara jest łagodniejsza, bo oba wyniki są już traktowane jako wyraźne zwycięstwa;
+- dzięki temu przy identycznej stawce i randze bardzo bramkowy finał 7:3 może znaleźć się przed finałem 4:1;
+- punkty techniczne nadal pozostają ukryte — użytkownik widzi tylko ranking, wynik i opis meczu.
+

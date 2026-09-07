@@ -71,6 +71,38 @@ def render_history_admin():
     if not secret_ready:
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Operacje administracyjne są wyłączone.")
         return
+
+    st.markdown("#### ✏️ Zmiana nazwy gracza")
+    st.caption("Zmiana dotyczy całego profilu gracza, więc nowy nick pojawi się również przy wszystkich historycznych turniejach, meczach, H2H, statystykach i AWARDS. To nie łączy dwóch różnych profili graczy.")
+    admin_players=db.admin_players()
+    if admin_players:
+        player_options={str(x["id"]):str(x["name"]) for x in admin_players}
+        with st.form("rename_player_admin"):
+            rename_pid=st.selectbox("Gracz",list(player_options),format_func=lambda x:player_options.get(str(x),str(x)),key="rename_player_id")
+            rename_new=st.text_input("Nowa nazwa",value=player_options.get(str(rename_pid),""),key="rename_player_new")
+            rename_pwd=st.text_input("Hasło administratora",type="password",key="rename_player_pwd")
+            rename_confirm=st.checkbox("Potwierdzam zmianę nazwy także w historii",key="rename_player_confirm")
+            rename_go=st.form_submit_button("✏️ ZMIEŃ NAZWĘ GRACZA",use_container_width=True)
+        if rename_go:
+            if not admin_ok(rename_pwd): st.error("Nieprawidłowe hasło.")
+            elif not rename_confirm: st.error("Zaznacz potwierdzenie zmiany historycznej.")
+            else:
+                try:
+                    result=db.rename_player(rename_pid,rename_new)
+                    official_player_names_cached.clear(); tournament_summary_png_cached.clear()
+                    old_name=str(result.get("old_name") or ""); new_name=str(result.get("new_name") or "")
+                    for k in list(st.session_state.keys()):
+                        if str(k).startswith("_lineup_init_"): st.session_state.pop(k,None)
+                        elif str(k).startswith("p_") and isinstance(st.session_state.get(k),str) and st.session_state.get(k).strip().casefold()==old_name.strip().casefold():
+                            st.session_state[k]=new_name
+                    if result.get("changed"): st.success(f"Zmieniono nazwę: {old_name} → {new_name}. Historia została zachowana pod nową nazwą.")
+                    else: st.info("Nazwa gracza nie wymagała zmiany.")
+                    rr()
+                except ValueError as e: st.error(str(e))
+    else:
+        st.caption("Brak graczy w bazie.")
+
+    st.divider()
     if locked:
         with st.form("unlock_history"):
             pwd=st.text_input("Hasło administratora",type="password",key="unlock_pwd")
@@ -1074,7 +1106,8 @@ def render_awards():
         candidates=cat.get("candidates") or []
         selected=selections.get(cat["key"]) or {}
         selected_note=f" • 🏅 wybrany laureat: **{selected.get('name')}**" if selected.get("name") else ""
-        with st.expander(f"{cat['title']}{' • TOP '+str(len(candidates)) if candidates else ''}",expanded=cat.get("key") in ("player_year","offensive","defense")):
+        qualified_label=(" • TOP 5" if len(candidates)>=5 else (f" • {len(candidates)} zakwalifikowanych" if candidates else ""))
+        with st.expander(f"{cat['title']}{qualified_label}",expanded=cat.get("key") in ("player_year","offensive","defense")):
             st.caption(cat.get("description") or "")
             if selected_note: st.markdown(selected_note)
             if not candidates:
