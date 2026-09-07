@@ -399,7 +399,7 @@ class Database:
                     conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),row["tournament_id"]))
 
             # Remembered line-ups are text snapshots used only as start-screen defaults.
-            settings=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE 'flex_last_lineup_%'")
+            settings=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE ?",("flex_last_lineup_%",))
             for row in settings:
                 try: values=json.loads(row.get("value") or "[]")
                 except Exception: continue
@@ -410,7 +410,7 @@ class Database:
 
             # Organizer-selected award names are stored as display snapshots. Refresh the
             # categories where a participant name is embedded in that snapshot.
-            award_rows=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE 'flex_award_selections_%'")
+            award_rows=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE ?",("flex_award_selections_%",))
             direct_keys={"player_year","offensive","defense","clutch","penalties","wildcards","progress","regular","debut","outsider","universal","finance","duel"}
             for row in award_rows:
                 try: data=json.loads(row.get("value") or "{}")

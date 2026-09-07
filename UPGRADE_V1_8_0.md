@@ -90,3 +90,9 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - bliskość wyniku, karne i bramkowość mają teraz pierwszeństwo przed stawką;
 - mecze różnicą 2 goli są wyraźnie słabiej premiowane niż spotkania na styku;
 - stawka i ranga fazy nadal pomagają, ale nie powinny wypychać zwykłego 2:0 nad 4:4, 2:2 + karne czy bardziej widowiskowy finał.
+
+
+### Hotfix 9 — zmiana nazwy gracza na PostgreSQL / Neon
+- Naprawiono `psycopg.ProgrammingError` podczas historycznej zmiany nazwy gracza.
+- Wzorce `LIKE` dla zapamiętanych składów i zapisanych wyborów AWARDS są teraz przekazywane jako parametry SQL, dzięki czemu znak `%` nie jest interpretowany przez psycopg jako placeholder.
+- Nie zmienia to logiki rename: `player_id` pozostaje ten sam, więc historyczne mecze, H2H, statystyki i finanse nadal należą do tego samego profilu.
