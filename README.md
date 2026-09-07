@@ -225,7 +225,7 @@ Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statysty
 
 ### Awards hotfix 5 — czytelność rankingów i administracyjna zmiana nicku
 - gdy mniej niż 5 osób spełnia warunki kategorii, nagłówek pokazuje `X zakwalifikowanych` zamiast mylącego `TOP X`;
-- `Mecz Roku` premiuje przede wszystkim bliskość wyniku i stawkę spotkania (w tym ryzyko odpadnięcia); ranga fazy i gole są pomocnicze, a punkty techniczne nie są pokazywane;
+- `Mecz Roku` premiuje przede wszystkim charakter meczu: bliskość wyniku, karne i bramkowość; stawka (odpadnięcie / tytuł) jest ważnym bonusem, ale nie może sama wynieść przeciętnego meczu, a ranga fazy pozostaje pomocnicza;
 - opis `Rywalizacji Roku` podaje minimalną próbę oraz główne elementy rankingu;
 - w sekcji `Historia i baza` administrator może po podaniu `ADMIN_PASSWORD` zmienić nazwę istniejącego gracza;
 - zmiana nicku działa historycznie, ponieważ wszystkie wyniki są przypisane do stałego `player_id`; dodatkowo aktualizowane są tekstowe snapshoty ostatnich składów, gry za kasę i zapisanych laureatów Awards;

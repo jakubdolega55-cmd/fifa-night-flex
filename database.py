@@ -2428,11 +2428,13 @@ class Database:
             if has_pens:
                 closeness=1.00; closeness_text="rozstrzygnięty po karnych"
             elif margin==0:
-                closeness=.96; closeness_text="remis"
+                closeness=1.00; closeness_text="remis"
             elif margin==1:
                 closeness=1.00; closeness_text="różnica 1 gola"
             elif margin==2:
-                closeness=.66; closeness_text="różnica 2 goli"
+                # Dwa gole różnicy to już wyraźnie mniej emocji niż mecz na styku.
+                # Sama wysoka stawka nie może wypchnąć zwykłego 2:0 nad 4:4 czy karne.
+                closeness=.55; closeness_text="różnica 2 goli"
             elif margin==3:
                 # Od tego miejsca oba wyniki są już wyraźne. Nie robimy ogromnej
                 # przepaści między np. 4:1 i 7:3 — przy podobnej stawce bardziej
@@ -2469,9 +2471,17 @@ class Database:
             }.get(stage,stage or "mecz")
             goals_value=min(hs+ass,8)/8.0
 
-            # Dominują bliskość i stawka. Dzięki temu jednostronny finał nie dostaje
-            # automatycznie wysokiego miejsca tylko dlatego, że był finałem.
-            match_score=closeness*.46 + stakes*.34 + rank_value*.12 + goals_value*.08
+            # Najpierw oceniamy sam mecz: bliskość, gole i karne. Stawka jest ważnym
+            # bonusem, ale nie może sama wynieść przeciętnego 2:0 ponad widowiskowe
+            # 4:4, 2:2 + karne czy bramkowy finał. Ranga fazy jest tylko dodatkiem.
+            penalties_drama=.04 if has_pens else 0.0
+            match_score=(
+                closeness*.48
+                + goals_value*.22
+                + stakes*.18
+                + rank_value*.08
+                + penalties_drama
+            )
             reason_parts=[stage_text,closeness_text,stakes_text,f"{hs+ass} goli"]
             if has_pens:
                 reason_parts.append(f"karne {m.get('home_penalties')}:{m.get('away_penalties')}")
@@ -2621,7 +2631,7 @@ class Database:
         add("team_worst","📉 Najgorsza Drużyna Roku","Najsłabszy klub wg tej samej bazy danych co Drużyna Roku.",worst)
         scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
         add("superscorer","⚡ Supersnajper Roku","Konkretny piłkarz z EA FC z największą liczbą wpisanych goli; kategoria pojawia się przy sensownej próbie.",scorer_items)
-        add("match_year","🎬 Mecz Roku","Ranking stawia przede wszystkim na bliskość wyniku i stawkę spotkania (np. czy przegrany odpadał albo był to mecz o tytuł). Ranga fazy i liczba goli pomagają rozstrzygać kolejność, ale nie dominują rankingu. Punkty techniczne nie są pokazywane.",match_candidates)
+        add("match_year","🎬 Mecz Roku","Ranking ocenia przede wszystkim charakter samego meczu: bliskość wyniku, karne i liczbę goli. Stawka spotkania (np. odpadnięcie lub mecz o tytuł) daje ważną premię, ale nie przykrywa przeciętnego wyniku. Ranga fazy jest czynnikiem pomocniczym. Punkty techniczne nie są pokazywane.",match_candidates)
         items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
         add("minimalist","📐 Król Minimalistów","Najwięcej zwycięstw dokładnie jedną bramką.",items,award=False)
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]

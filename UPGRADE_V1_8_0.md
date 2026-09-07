@@ -84,3 +84,9 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - dzięki temu przy identycznej stawce i randze bardzo bramkowy finał 7:3 może znaleźć się przed finałem 4:1;
 - punkty techniczne nadal pozostają ukryte — użytkownik widzi tylko ranking, wynik i opis meczu.
 
+
+### Awards hotfix 8 — balans Meczu Roku
+- zmniejszono wpływ samego faktu, że przegrany odpadał;
+- bliskość wyniku, karne i bramkowość mają teraz pierwszeństwo przed stawką;
+- mecze różnicą 2 goli są wyraźnie słabiej premiowane niż spotkania na styku;
+- stawka i ranga fazy nadal pomagają, ale nie powinny wypychać zwykłego 2:0 nad 4:4, 2:2 + karne czy bardziej widowiskowy finał.
