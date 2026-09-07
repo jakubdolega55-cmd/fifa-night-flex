@@ -149,3 +149,16 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - bieżący mecz ma oznaczenie `TERAZ`, kolejny już znany mecz `NASTĘPNY`, a pozostałe gotowe spotkania `GOTOWY`;
 - logiczne numery meczów i zależności drabinki nie są zmieniane — zmienia się tylko sposób prezentacji terminarza;
 - hotfix zawiera także poprawki z Hotfix 15: godzina na osi historii w czasie polskim oraz mistrz przy `Pierwszy Double Elimination`.
+
+### Achievements hotfix 17 — nowe odznaki i regularne jubileusze
+- dodano 6 odznak graczy: `Nerwy ze stali`, `Egzekutor`, `Zemsta najlepiej smakuje`, `Twierdza`, `Na styku` i `Łowca mistrza`;
+- `Nerwy ze stali`: wygrany finał FIFA Night po rzutach karnych;
+- `Egzekutor`: 3 wygrane mecze eliminacyjne w jednym turnieju; Winners Bracket nie jest liczony jako eliminacja;
+- `Zemsta najlepiej smakuje`: po wcześniejszej porażce z tym samym rywalem w danym turnieju gracz pokonuje go później w meczu eliminacyjnym lub finale;
+- `Twierdza`: mistrzostwo bez straty gola; sztuczny bonus 1:0 dla zwycięzcy Winners Bracket w finale DE nie jest traktowany jako gol;
+- `Na styku`: 3 zwycięstwa różnicą jednej bramki w jednym turnieju; sztuczny bonus DE nie tworzy fałszywego zwycięstwa jedną bramką;
+- `Łowca mistrza`: pokonanie obrońcy tytułu w bezpośrednio następnym FIFA Night;
+- jubileusze globalnych meczów, goli i zwycięstw są od teraz zapisywane przy 50 i 100, a następnie co 100 (200, 300, 400...);
+- czyste konta i hat-tricki są zapisywane co 25 (25, 50, 75, 100...);
+- mechanizm historycznego wskazywania autora jubileuszowego gola obejmuje także 50. gola.
+- przy jubileuszach czystych kont oraz pierwszych rekordach bramkowych bonus 1:0 z finału DE jest ignorowany tak samo jak przy pozostałych statystykach rzeczywistych goli.

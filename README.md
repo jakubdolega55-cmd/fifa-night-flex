@@ -251,3 +251,6 @@ W `Statystyki → Osiągnięcia` znajdują się odznaki graczy oraz chronologicz
 
 ### Live terminarz
 W aktywnym turnieju terminarz jest prezentowany według aktualnej kolejności gry, nie wyłącznie według logicznych numerów meczów. Po każdym wyniku kolejność odświeża się automatycznie; `TERAZ` wskazuje bieżące spotkanie, `NASTĘPNY` kolejny już ustalony mecz, a zablokowane pozycje czekają na rozstrzygnięcie wcześniejszych par.
+
+### Dodatkowe osiągnięcia i jubileusze
+Odznaki graczy obejmują także sytuacyjne wyczyny: wygrany finał po karnych, trzy eliminacyjne zwycięstwa w jednym turnieju, zwycięski rewanż po wcześniejszej porażce, mistrzostwo bez straty gola, trzy wygrane jedną bramką oraz pokonanie obrońcy tytułu w kolejnym FIFA Night. Globalne jubileusze meczów, goli i zwycięstw są zapisywane przy 50/100 i dalej co 100, a czyste konta i hat-tricki co 25.

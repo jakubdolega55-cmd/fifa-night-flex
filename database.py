@@ -2353,7 +2353,7 @@ class Database:
 
 
     # ------------------------------------------------------------------
-    # Achievements & global FIFA Night milestones (v1.8.0 hotfix 14)
+    # Achievements & global FIFA Night milestones (v1.8.0 hotfix 17)
     # ------------------------------------------------------------------
     @staticmethod
     def _event_when_match(m: dict) -> str:
@@ -2382,6 +2382,12 @@ class Database:
             {"key":"shark","icon":"🦈","name":"Rekin","desc":"Historyczny bilans finansowy osiąga co najmniej +250 zł."},
             {"key":"sponsor","icon":"🤡","name":"Sponsor imprezy","desc":"Historyczny bilans finansowy spada do -250 zł lub niżej."},
             {"key":"back_to_back","icon":"🏆","name":"Back to Back","desc":"Dwa tytuły FIFA Night z rzędu."},
+            {"key":"steel_nerves","icon":"🧊","name":"Nerwy ze stali","desc":"Wygrany finał FIFA Night po rzutach karnych."},
+            {"key":"executioner","icon":"⚔️","name":"Egzekutor","desc":"Trzy wygrane mecze eliminacyjne w jednym turnieju."},
+            {"key":"revenge","icon":"😈","name":"Zemsta najlepiej smakuje","desc":"Po wcześniejszej porażce z rywalem w tym samym turnieju pokonaj go później w meczu, po którym odpada lub w finale."},
+            {"key":"fortress","icon":"🏰","name":"Twierdza","desc":"Wygraj turniej bez straty ani jednego gola."},
+            {"key":"on_the_edge","icon":"🫀","name":"Na styku","desc":"Wygraj trzy mecze różnicą jednej bramki w jednym turnieju."},
+            {"key":"champion_hunter","icon":"🏹","name":"Łowca mistrza","desc":"Pokonaj obrońcę tytułu w następnym FIFA Night."},
         ]
 
     def achievement_center(self) -> dict:
@@ -2409,7 +2415,7 @@ class Database:
         event_by={str(e["id"]):e for e in events}
 
         unlocked=defaultdict(dict)
-        progress=defaultdict(lambda:{"wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,"pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,"title_streak":0,"max_title_streak":0})
+        progress=defaultdict(lambda:{"wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,"pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,"title_streak":0,"max_title_streak":0,"max_elim_wins_tournament":0,"max_close_wins_tournament":0})
         win_streak=defaultdict(int);clean_streak=defaultdict(int)
 
         def award(pid,key,when="",tid=None,match_no=None,detail=""):
@@ -2455,6 +2461,59 @@ class Database:
                 if result=="W" and m.get("home_penalties") is not None and m.get("away_penalties") is not None:
                     pr["pen_wins"]+=1;award(pid,"ice_cold",when,tid,no,f"Karne {m.get('home_penalties')}:{m.get('away_penalties')}")
 
+        # Tournament-context achievements.  These need the history inside one FIFA Night,
+        # so they are evaluated per completed tournament instead of as global streaks.
+        elimination_stages={"QF","BARRAGE","SF","LB","LB_FINAL","FINAL","RESET_FINAL"}
+        proper_events=[e for e in events if str(e.get("format_key") or "")!="duel1v1"]
+        defending_champion_by_tid={}
+        prev_champ_for_event=None
+        for e in proper_events:
+            defending_champion_by_tid[str(e["id"])]=prev_champ_for_event
+            if e.get("champion_player_id"):prev_champ_for_event=str(e.get("champion_player_id") or "")
+
+        def actual_scores(m: dict) -> tuple[int,int]:
+            hs,ass=int(m.get("home_score") or 0),int(m.get("away_score") or 0)
+            tid=str(m.get("tournament_id") or "")
+            fmt=str((event_by.get(tid) or {}).get("format_key") or "")
+            if fmt.startswith("double") and str(m.get("stage") or "")=="FINAL":hs=max(0,hs-1)
+            return hs,ass
+
+        for e in proper_events:
+            tid=str(e["id"]);defending=defending_champion_by_tid.get(tid)
+            tmatches=[m for m in matches if str(m.get("tournament_id") or "")==tid]
+            tmatches.sort(key=lambda m:(self._event_when_match(m),int(m.get("match_no") or 0)))
+            prior_losses=defaultdict(set);elim_wins=defaultdict(int);close_wins=defaultdict(int)
+            for m in tmatches:
+                home=str(m.get("home_player_id") or "");away=str(m.get("away_player_id") or "")
+                if not home or not away:continue
+                rh=self._result_for_player(m,home)
+                if rh=="D":continue
+                winner=home if rh=="W" else away;loser=away if winner==home else home
+                stage=str(m.get("stage") or "");when=self._event_when_match(m);no=int(m.get("match_no") or 0)
+                hs,ass=actual_scores(m);margin=abs(hs-ass)
+
+                if margin==1:
+                    close_wins[winner]+=1
+                    progress[winner]["max_close_wins_tournament"]=max(progress[winner]["max_close_wins_tournament"],close_wins[winner])
+                    if close_wins[winner]>=3:
+                        award(winner,"on_the_edge",when,tid,no,f"3. wygrana jedną bramką w tym turnieju: {m.get('home_name')} {int(m.get('home_score') or 0)}:{int(m.get('away_score') or 0)} {m.get('away_name')}")
+
+                if stage in elimination_stages:
+                    elim_wins[winner]+=1
+                    progress[winner]["max_elim_wins_tournament"]=max(progress[winner]["max_elim_wins_tournament"],elim_wins[winner])
+                    if elim_wins[winner]>=3:
+                        award(winner,"executioner",when,tid,no,"3. wygrany mecz eliminacyjny w tym turnieju")
+                    if loser in prior_losses[winner]:
+                        award(winner,"revenge",when,tid,no,f"Rewanż z {names.get(loser,'rywalem')} zakończony zwycięstwem w meczu eliminacyjnym")
+
+                if stage in {"FINAL","RESET_FINAL"} and m.get("home_penalties") is not None and m.get("away_penalties") is not None:
+                    award(winner,"steel_nerves",when,tid,no,f"Finał po karnych {m.get('home_penalties')}:{m.get('away_penalties')}")
+
+                if defending and loser==defending and winner!=defending:
+                    award(winner,"champion_hunter",when,tid,no,f"Pokonany obrońca tytułu: {names.get(defending,'?')}")
+
+                prior_losses[loser].add(winner)
+
         # Tournament achievements.
         previous_champ=None
         for e in events:
@@ -2477,6 +2536,13 @@ class Database:
             own=[m for m in matches if str(m.get("tournament_id"))==tid and champ in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or ""))]
             if own and not any(self._result_for_player(m,champ)=="L" for m in own):
                 award(champ,"perfect_night",when,tid,None,"Tytuł bez porażki")
+            if own:
+                goals_against=0
+                for m in own:
+                    ah,aa=actual_scores(m)
+                    goals_against += aa if str(m.get("home_player_id") or "")==champ else ah
+                if goals_against==0:
+                    award(champ,"fortress",when,tid,None,"Tytuł bez straty gola")
             fmt=str(e.get("format_key") or "")
             if fmt.startswith("double") and any(self._result_for_player(m,champ)=="L" for m in own):
                 award(champ,"from_the_dead",when,tid,None,"Tytuł po spadku do Losers Bracket")
@@ -2529,6 +2595,12 @@ class Database:
                     elif k=="shark":pg=f"bilans: {pr['balance_cents']/100:.2f} zł / +250 zł"
                     elif k=="sponsor":pg=f"bilans: {pr['balance_cents']/100:.2f} zł / -250 zł"
                     elif k=="back_to_back":pg=f"najlepsza seria tytułów: {pr['max_title_streak']}/2"
+                    elif k=="steel_nerves":pg="czeka na wygrany finał po karnych"
+                    elif k=="executioner":pg=f"najlepiej w turnieju: {pr['max_elim_wins_tournament']}/3 meczów eliminacyjnych"
+                    elif k=="revenge":pg="czeka na zwycięski rewanż w meczu eliminacyjnym"
+                    elif k=="fortress":pg="czeka na tytuł bez straty gola"
+                    elif k=="on_the_edge":pg=f"najlepiej w turnieju: {pr['max_close_wins_tournament']}/3 wygranych jedną bramką"
+                    elif k=="champion_hunter":pg="czeka na pokonanie obrońcy tytułu"
                     else:pg="—"
                     locked.append({**c,"progress":pg})
             earned.sort(key=lambda x:(x.get("earned_at") or "",list(cat_by).index(x["key"])))
@@ -2580,9 +2652,11 @@ class Database:
         tournaments=[e for e in events_all if str(e.get("format_key"))!="duel1v1"]
         event_fmt={str(e["id"]):str(e.get("format_key") or "") for e in events_all}
         tournament_no={str(e["id"]):i+1 for i,e in enumerate(tournaments)}
-        def actual_goals_in_match(m):
+        def actual_score_pair(m):
             bonus=1 if event_fmt.get(str(m.get("tournament_id") or ""),"").startswith("double") and str(m.get("stage") or "")=="FINAL" else 0
-            return max(0,int(m.get("home_score") or 0)-bonus)+int(m.get("away_score") or 0)
+            return max(0,int(m.get("home_score") or 0)-bonus),int(m.get("away_score") or 0)
+        def actual_goals_in_match(m):
+            hs,ass=actual_score_pair(m);return hs+ass
         match_by={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
         scorer_by=defaultdict(list)
         for r in scorer_rows:scorer_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
@@ -2603,15 +2677,15 @@ class Database:
             e=tournaments[0];champ=str(e.get("champion_player_id") or "");add("first_champion","🏆","Pierwszy mistrz FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,names.get(champ,"?"),"first",2)
         first_pen=next((m for m in matches if m.get("home_penalties") is not None and m.get("away_penalties") is not None),None)
         if first_pen:add("first_penalties","🥅","Pierwsze karne",self._event_when_match(first_pen),first_pen["tournament_id"],first_pen["match_no"],mdetail(first_pen),"first",3)
-        first_cs=next((m for m in matches if int(m.get("home_score") or 0)==0 or int(m.get("away_score") or 0)==0),None)
+        first_cs=next((m for m in matches if 0 in actual_score_pair(m)),None)
         if first_cs:
-            holders=[]
-            if int(first_cs.get("away_score") or 0)==0:holders.append(str(first_cs.get("home_name") or "?"))
-            if int(first_cs.get("home_score") or 0)==0:holders.append(str(first_cs.get("away_name") or "?"))
+            holders=[];fhs,fas=actual_score_pair(first_cs)
+            if fas==0:holders.append(str(first_cs.get("home_name") or "?"))
+            if fhs==0:holders.append(str(first_cs.get("away_name") or "?"))
             add("first_clean_sheet","🧱","Pierwsze czyste konto",self._event_when_match(first_cs),first_cs["tournament_id"],first_cs["match_no"],f"{', '.join(holders)} • {mdetail(first_cs)}","first",4)
-        first_ten=next((m for m in matches if int(m.get("home_score") or 0)+int(m.get("away_score") or 0)>=10),None)
+        first_ten=next((m for m in matches if actual_goals_in_match(m)>=10),None)
         if first_ten:add("first_10_goals_match","🔥","Pierwszy mecz z 10+ golami",self._event_when_match(first_ten),first_ten["tournament_id"],first_ten["match_no"],mdetail(first_ten),"first",5)
-        first_mass=next((m for m in matches if abs(int(m.get("home_score") or 0)-int(m.get("away_score") or 0))>=5),None)
+        first_mass=next((m for m in matches if abs(actual_score_pair(m)[0]-actual_score_pair(m)[1])>=5),None)
         if first_mass:add("first_big_win","💥","Pierwsze zwycięstwo różnicą 5+",self._event_when_match(first_mass),first_mass["tournament_id"],first_mass["match_no"],mdetail(first_mass),"first",6)
         first_de=next((e for e in tournaments if str(e.get("format_key") or "").startswith("double")),None)
         if first_de:
@@ -2630,11 +2704,12 @@ class Database:
 
         # Match number milestones.
         for idx,m in enumerate(matches,1):
-            if idx in (50,100,250,500):add(f"match_{idx}","💎",f"{idx}. mecz FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"match",idx)
+            if idx==50 or (idx>=100 and idx%100==0):add(f"match_{idx}","💎",f"{idx}. mecz FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"match",idx)
 
         # Global goals and manual scorer identity.
         cumulative=0
-        goal_thresholds=(1,100,250,500,1000)
+        max_goal_total=sum(actual_goals_in_match(m) for m in matches)
+        goal_thresholds=(1,50,*tuple(range(100,((max_goal_total//100)+1)*100+1,100)))
         for m in matches:
             before=cumulative;cumulative+=actual_goals_in_match(m)
             crossed=[x for x in goal_thresholds if before<x<=cumulative]
@@ -2663,7 +2738,7 @@ class Database:
         for m in matches:
             if self._result_for_player(m,str(m.get("home_player_id") or ""))=="D":continue
             wins+=1
-            if wins in (100,250,500):
+            if wins==50 or (wins>=100 and wins%100==0):
                 winner=str(m.get("winner_player_id") or (m.get("home_player_id") if int(m.get("home_score") or 0)>int(m.get("away_score") or 0) else m.get("away_player_id")) or "")
                 add(f"win_{wins}","🥇",f"{wins}. zwycięstwo w historii FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],f"{names.get(winner,m.get('home_name') if winner==m.get('home_player_id') else m.get('away_name'))} • {mdetail(m)}","win",wins)
 
@@ -2677,12 +2752,12 @@ class Database:
         # Clean sheets. A 0:0 creates two clean sheets in the same match.
         cs_count=0
         for m in matches:
-            holders=[]
-            if int(m.get("away_score") or 0)==0:holders.append((str(m.get("home_player_id") or ""),str(m.get("home_name") or "?")))
-            if int(m.get("home_score") or 0)==0:holders.append((str(m.get("away_player_id") or ""),str(m.get("away_name") or "?")))
+            holders=[];mhs,mas=actual_score_pair(m)
+            if mas==0:holders.append((str(m.get("home_player_id") or ""),str(m.get("home_name") or "?")))
+            if mhs==0:holders.append((str(m.get("away_player_id") or ""),str(m.get("away_name") or "?")))
             for pid,pname in holders:
                 cs_count+=1
-                if cs_count in (25,50,100):add(f"clean_sheet_{cs_count}","🧱",f"{cs_count}. czyste konto w historii",self._event_when_match(m),m["tournament_id"],m["match_no"],f"{pname} • {mdetail(m)}","clean_sheet",cs_count)
+                if cs_count%25==0:add(f"clean_sheet_{cs_count}","🧱",f"{cs_count}. czyste konto w historii",self._event_when_match(m),m["tournament_id"],m["match_no"],f"{pname} • {mdetail(m)}","clean_sheet",cs_count)
 
         # Hat-tricks from entered scorer rows.
         hat_events=[]
@@ -2696,26 +2771,32 @@ class Database:
         if hat_events:
             when,tid,no,scorer,pname,m=hat_events[0];add("first_hattrick","🎩","Pierwszy hat-trick",when,tid,no,f"{scorer} dla {pname} • {mdetail(m)}","first",10)
         for idx,item in enumerate(hat_events,1):
-            if idx in (25,50,100):
+            if idx%25==0:
                 when,tid,no,scorer,pname,m=item;add(f"hattrick_{idx}","🎩",f"{idx}. hat-trick w historii",when,tid,no,f"{scorer} dla {pname} • {mdetail(m)}","hattrick",idx)
 
         timeline.sort(key=lambda x:(x.get("earned_at") or "",x.get("order") or 0,x.get("title") or ""))
 
         def next_target(current, thresholds):
             return next((x for x in thresholds if current<x),None)
+        def next_50_then_100(current):
+            if current<50:return 50
+            if current<100:return 100
+            return ((current//100)+1)*100
+        def next_25(current):
+            return ((current//25)+1)*25
         total_goals=sum(actual_goals_in_match(m) for m in matches)
         total_wins=sum(1 for m in matches if self._result_for_player(m,str(m.get("home_player_id") or ""))!="D")
         total_pens=sum(1 for m in matches if m.get("home_penalties") is not None and m.get("away_penalties") is not None)
-        total_cs=sum((1 if int(m.get("away_score") or 0)==0 else 0)+(1 if int(m.get("home_score") or 0)==0 else 0) for m in matches)
+        total_cs=sum((1 if actual_score_pair(m)[1]==0 else 0)+(1 if actual_score_pair(m)[0]==0 else 0) for m in matches)
         total_hats=len(hat_events)
         counters=[
-            ("Mecze",len(matches),next_target(len(matches),(50,100,250,500,1000))),
-            ("Gole",total_goals,next_target(total_goals,(100,250,500,1000,2000))),
+            ("Mecze",len(matches),next_50_then_100(len(matches))),
+            ("Gole",total_goals,next_50_then_100(total_goals)),
             ("FIFA Night",len(tournaments),next_target(len(tournaments),(10,25,50,100))),
-            ("Zwycięstwa",total_wins,next_target(total_wins,(100,250,500,1000))),
+            ("Zwycięstwa",total_wins,next_50_then_100(total_wins)),
             ("Karne",total_pens,next_target(total_pens,(10,25,50,100))),
-            ("Czyste konta",total_cs,next_target(total_cs,(25,50,100,250))),
-            ("Hat-tricki",total_hats,next_target(total_hats,(25,50,100,250))),
+            ("Czyste konta",total_cs,next_25(total_cs)),
+            ("Hat-tricki",total_hats,next_25(total_hats)),
         ]
         next_rows=[{"name":n,"current":cur,"target":target,"left":max(0,target-cur) if target else 0} for n,cur,target in counters if target]
         return {"timeline":timeline,"pending_goal_scorers":pending,"next":next_rows,"totals":{"matches":len(matches),"goals":total_goals,"tournaments":len(tournaments),"wins":total_wins,"penalties":total_pens,"clean_sheets":total_cs,"hattricks":total_hats}}
@@ -2729,7 +2810,7 @@ class Database:
             row=self._fetchone(conn,"""SELECT COUNT(*) AS n FROM matches m JOIN tournaments t ON t.id=m.tournament_id
                 WHERE t.is_test=0 AND m.home_score IS NOT NULL""")
         no=int((row or {}).get("n") or 0)+1
-        if no in (50,100,250,500,1000):return {"number":no,"title":f"{no}. OFICJALNY MECZ FIFA NIGHT"}
+        if no==50 or (no>=100 and no%100==0):return {"number":no,"title":f"{no}. OFICJALNY MECZ FIFA NIGHT"}
         return None
 
     def award_selections(self, year: int) -> dict:
