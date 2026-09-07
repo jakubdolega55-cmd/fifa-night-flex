@@ -1042,7 +1042,7 @@ def render_stats(t=None):
 
 def render_awards():
     st.subheader("🏆 FIFA Night Awards")
-    st.info("Nagrody i końcowi laureaci zależą od indywidualnej decyzji organizatora. Rankingi TOP 5 są podpowiedzią statystyczną i aktualizują się wraz z wynikami.")
+    st.info("📊 TOP 5 liczy algorytm. 🏆 Nagrody rozdaje organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano. 😎 Rankingi aktualizują się wraz z wynikami.")
     current_year=datetime.now().year
     year=int(st.number_input("Rok",min_value=2024,max_value=current_year+1,value=current_year,step=1,key="awards_year"))
     data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {}

@@ -56,9 +56,9 @@ Jeśli koło wylosuje Wild Card, losowanie zatrzymuje się do czasu wpisania kon
 
 ## Dokładni strzelcy
 
-Pod wynikiem meczu można opcjonalnie rozpisać dokładnych strzelców. Dla każdej drużyny na wierzchu pojawia się 5 najpopularniejszych nazwisk z licznikami +/–. Pozostali są dostępni niżej, a nowego zawodnika można dopisać w polu `Inny zawodnik`. Po zapisaniu trafia do puli danej drużyny.
+Pod wynikiem meczu można opcjonalnie rozpisać dokładnych strzelców. Dla każdej drużyny są 3 kompaktowe wiersze z wyborem nazwiska i licznikami −/+, a przyciskiem `Dodaj strzelca` można dołożyć kolejne pozycje. Nowe nazwisko można również dopisać ręcznie i zachować w puli danej drużyny.
 
-Liczniki są wewnątrz formularza meczu, więc ich zmiana nie uruchamia rerunu; wynik i strzelcy są zapisywani razem dopiero po `ZATWIERDŹ WYNIK`. Strzelcy są całkowicie opcjonalni i nie muszą sumować się do wyniku — można zostawić ich całkowicie pustych, np. przy samobójach albo gdy nie pamiętacie wszystkich nazwisk.
+Strzelcy są zapisywani razem z wynikiem po `ZATWIERDŹ WYNIK`. Pozostają całkowicie opcjonalni i nie muszą sumować się do wyniku — można zostawić ich pustych, np. przy samobójach albo gdy nie pamiętacie wszystkich nazwisk.
 
 Początkowe listy zawodników uzupełnia się w pliku `scorer_seeds.py`.
 
@@ -119,7 +119,7 @@ Sekcja strzelców została skompresowana pod telefon: każdy z 5 podstawowych za
 - uproszczone, opcjonalne wpisywanie strzelców: 3 kompaktowe wiersze +/− i możliwość dodania kolejnych;
 - matematycznie bezpieczne **Pomiń mecz** w lidze + finał; pominięte spotkanie nie jest 0:0 i nie wchodzi do statystyk;
 - rozliczenia rozszerzone o jackpot oraz eksport **TXT + PNG 1080×1080**;
-- nowy ekran **AWARDS**: 19 kategorii nagród, TOP5 live, uzasadnienia, wybór organizatora z TOP2–3 oraz dwa rankingi podglądowe bez nagrody;
+- nowy ekran **AWARDS**: 19 kategorii nagród, TOP5 live, uzasadnienia, wybór organizatora z TOP2–3 oraz dwa rankingi podglądowe bez nagrody; `Król Strzelców FIFA Night` liczy konkretny duet piłkarz EA FC + gracz (np. Ferran Torres — Benio), a `Supersnajper Roku` sumuje gole piłkarza globalnie;
 - roczne grafiki **Rok w liczbach** i **FIFA Night Awards**;
 - usunięta osobna zakładka H2H ze Statystyk (same dane H2H pozostają w bazie i są dalej wykorzystywane).
 

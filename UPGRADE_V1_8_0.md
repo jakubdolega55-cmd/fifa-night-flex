@@ -36,3 +36,9 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - `Pomiń mecz`: status `skipped`, przejście do finału i brak wpisu do statystyk;
 - Awards: 19 kategorii + 2 podglądowe;
 - generowanie trzech typów PNG w rozdzielczości 1080×1080.
+
+## Hotfix Awards po testach v1.8.0
+- `Rywalizacja Roku`: pole „ważne mecze” pokazuje teraz faktyczną liczbę ważnych spotkań. Wewnętrzna waga nadal premiuje finał/półfinał, ale nie jest już prezentowana jako liczba meczów.
+- `Król Strzelców FIFA Night`: ranking jest liczony per **konkretny piłkarz + konkretny gracz**; np. 9 goli Ferrana Torresa dla Benia wyprzedza 8 goli Isaka dla Jarka.
+- `Supersnajper Roku` pozostaje rankingiem piłkarza liczonym globalnie we wszystkich wpisanych golach.
+- komunikat o decyzji organizatora został zmieniony na prześmiewczy tekst w stylu FIFA Night.

@@ -2270,7 +2270,7 @@ class Database:
                                "teams":defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0}),"wc_m":0,"wc_w":0,"wc_gf":0,"wc_ga":0,
                                "result_points":[],"t_results":defaultdict(lambda:{"m":0,"pts":0,"gf":0,"ga":0}),"scorer_goals":0})
         clutch_stages={"QF","BARRAGE","SF","WB","WB_FINAL","LB","LB_FINAL","FINAL"}
-        pair=defaultdict(lambda:{"n":0,"aw":0,"bw":0,"d":0,"important":0,"names":None})
+        pair=defaultdict(lambda:{"n":0,"aw":0,"bw":0,"d":0,"important_matches":0,"importance_points":0,"names":None})
         teamagg=defaultdict(lambda:{"display":None,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0})
         match_candidates=[]
         match_map={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
@@ -2296,7 +2296,10 @@ class Database:
             if rk=="W":rec["aw"]+=1
             elif rk=="L":rec["bw"]+=1
             else:rec["d"]+=1
-            rec["important"]+=4 if stage=="FINAL" else (3 if stage in ("SF","WB_FINAL","LB_FINAL") else (2 if stage in ("QF","BARRAGE","WB","LB") else 0))
+            importance_weight=4 if stage=="FINAL" else (3 if stage in ("SF","WB_FINAL","LB_FINAL") else (2 if stage in ("QF","BARRAGE","WB","LB") else 0))
+            if importance_weight:
+                rec["important_matches"]+=1
+                rec["importance_points"]+=importance_weight
             # Team awards/rating also use all official matches.
             for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,rh),(a,m.get("away_team"),ass,hs,ra)):
                 team=" ".join(str(team or "").split())
@@ -2326,15 +2329,28 @@ class Database:
             if tid in tournament_ids and champ:
                 team=team_by.get((tid,champ),"");nt=self._norm_team_name(team)
                 if nt:teamagg[nt]["display"]=teamagg[nt]["display"] or team;teamagg[nt]["titles"]+=1
-        # scorer goals attributed to the player controlling the side
+        # Scorers:
+        # - scorer_totals: concrete EA FC footballer across all official matches (Supersnajper)
+        # - scorer_by_player: concrete footballer + FIFA Night participant controlling him (Król Strzelców)
         scorer_totals=defaultdict(int)
+        scorer_display={}
+        scorer_by_player=defaultdict(int)
+        scorer_pair_display={}
         for r in scorer_rows:
             m=match_map.get((str(r["tournament_id"]),int(r["match_no"])))
             if not m:continue
-            scorer_totals[str(r["scorer_name"])]+=int(r.get("goals") or 0)
+            scorer=" ".join(str(r.get("scorer_name") or "").split())
+            goals=int(r.get("goals") or 0)
+            if not scorer or goals<=0:continue
+            sn=scorer.casefold()
+            scorer_totals[sn]+=goals
+            scorer_display.setdefault(sn,scorer)
             if str(r["tournament_id"]) in tournament_ids:
                 pid=m.get("home_player_id") if str(r.get("side"))=="home" else m.get("away_player_id")
-                if pid:ps[str(pid)]["scorer_goals"]+=int(r.get("goals") or 0)
+                if pid:
+                    pid=str(pid)
+                    scorer_by_player[(pid,sn)]+=goals
+                    scorer_pair_display.setdefault((pid,sn),scorer)
 
         def pc(pid,v):return round(v["w"]/v["m"]*100,1) if v["m"] else 0.0
         def cand(pid,score,reason):return {"id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(float(score),2),"reason":reason}
@@ -2385,8 +2401,13 @@ class Database:
             good=sum(1 for tv in v["teams"].values() if tv["m"]>=2 and tv["w"]/tv["m"]>=.4)
             if len(v["teams"])>=2:items.append(cand(pid,good*12+len(v["teams"])*5+pc(pid,v)*.25,f"{len(v['teams'])} drużyn • {good} z dobrym wynikiem • W% {pc(pid,v)}"))
         add("universal","🔄 Najbardziej Uniwersalny Gracz","Dobre wyniki wieloma różnymi drużynami.",items)
-        items=[cand(pid,v["scorer_goals"],f"{v['scorer_goals']} goli wpisanych strzelców") for pid,v in ps.items() if v["scorer_goals"]>0]
-        add("player_scorers","👟 Król Strzelców FIFA Night","Uczestnik, którego wpisani strzelcy zdobyli łącznie najwięcej bramek.",items)
+        items=[]
+        for (pid,sn),goals in scorer_by_player.items():
+            scorer=scorer_pair_display.get((pid,sn),sn)
+            player=name_by.get(pid,"?")
+            items.append({"id":f"{pid}|{sn}","name":f"{scorer} — {player}","score":goals,
+                          "reason":f"{goals} goli • gracz: {player}"})
+        add("player_scorers","👟 Król Strzelców FIFA Night","Konkretny piłkarz przypisany do konkretnego gracza. Liczy się największa liczba jego goli dla jednej osoby — nie suma wszystkich strzelców gracza.",items)
         # finance for events completed this year
         finance=defaultdict(lambda:{"paid":0,"won":0})
         year_ids=set(tids)
@@ -2412,8 +2433,8 @@ class Database:
         rivalry=[]
         for (a,b),v in pair.items():
             if v["n"]<3:continue
-            balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"]);score=v["n"]*5+balance*20+v["important"]*2
-            na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"));rivalry.append({"id":f"{a}|{b}","name":f"{na} vs {nb}","score":round(score,2),"reason":f"{v['n']} meczów • {v['aw']}:{v['bw']} w zwycięstwach • ważne mecze {v['important']}"})
+            balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"]);score=v["n"]*5+balance*20+v["importance_points"]*2
+            na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"));rivalry.append({"id":f"{a}|{b}","name":f"{na} vs {nb}","score":round(score,2),"reason":f"{v['n']} meczów • {v['aw']}:{v['bw']} w zwycięstwach • ważne mecze {v['important_matches']}"})
         add("rivalry","⚔️ Rywalizacja Roku","Dużo i wyrównanych H2H plus znaczenie spotkań.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
@@ -2424,7 +2445,7 @@ class Database:
         add("team_best","🏟️ Drużyna Roku","Najlepszy klub wg wyników, próby, bilansu i tytułów.",teamitems)
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
         add("team_worst","📉 Najgorsza Drużyna Roku","Najsłabszy klub wg tej samej bazy danych co Drużyna Roku.",worst)
-        scorer_items=[{"id":name.casefold(),"name":name,"score":goals,"reason":f"{goals} wpisanych goli"} for name,goals in scorer_totals.items() if goals>=5]
+        scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
         add("superscorer","⚡ Supersnajper Roku","Konkretny piłkarz z EA FC z największą liczbą wpisanych goli; kategoria pojawia się przy sensownej próbie.",scorer_items)
         add("match_year","🎬 Mecz Roku","Znaczenie meczu, bliskość wyniku, gole i ewentualne karne.",match_candidates)
         items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
