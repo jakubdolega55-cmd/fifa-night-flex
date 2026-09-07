@@ -138,3 +138,14 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - historyczne jubileuszowe gole wykrywają konkretny mecz. Ponieważ baza nie zapisuje kolejności bramek w meczu, aplikacja prosi administratora o wskazanie strzelca z zapisanej listy lub ręczne wpisanie go; wybór jest chroniony `ADMIN_PASSWORD` i zapisywany w `app_settings`;
 - przy zmianie nazwy gracza odświeżany jest także zapis właściciela jubileuszowego gola;
 - bonusowe 1:0 dla Winners Bracket w finale Double Elimination nie jest liczone jako rzeczywiście strzelony gol do jubileuszy ani odznaki `100 goli`.
+
+### Achievements hotfix 15 — godzina na osi historii i pierwszy DE
+- `Oś historii` pokazuje teraz pełną datę i godzinę zdarzenia w czasie polskim (`Europe/Warsaw`) zamiast samej daty; baza nadal przechowuje timestamp w UTC.
+- przy kamieniu `Pierwszy Double Elimination` kolumna `Co się wydarzyło` pokazuje mistrza pierwszego turnieju DE zamiast powtarzać numer FIFA Night, który jest już widoczny w kolumnie `Gdzie`.
+
+### Hotfix 16 — live terminarz
+- `Terminarz` pokazuje teraz faktyczną kolejność rozgrywania meczów zamiast surowej kolejności numerów logicznych;
+- po każdym zapisanym wyniku i rerunie kolejność jest wyliczana ponownie: rozegrane mecze zostają u góry w kolejności rozegrania, potem są mecze już gotowe do gry, a na końcu spotkania czekające na rozstrzygnięcie wcześniejszych par;
+- bieżący mecz ma oznaczenie `TERAZ`, kolejny już znany mecz `NASTĘPNY`, a pozostałe gotowe spotkania `GOTOWY`;
+- logiczne numery meczów i zależności drabinki nie są zmieniane — zmienia się tylko sposób prezentacji terminarza;
+- hotfix zawiera także poprawki z Hotfix 15: godzina na osi historii w czasie polskim oraz mistrz przy `Pierwszy Double Elimination`.

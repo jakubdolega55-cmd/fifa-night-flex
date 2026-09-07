@@ -1896,6 +1896,34 @@ class Database:
                 return m
         return None
 
+    def live_schedule_from(self, matches: list[dict], extra: dict | None = None) -> list[dict]:
+        """Return matches in the order useful during a live tournament.
+
+        Logical ``match_no`` never changes because bracket dependencies refer to it.
+        The displayed schedule, however, should follow the preferred play order and
+        react when a previously locked match becomes ready after a result. Completed
+        matches stay at the top in their real played order, then currently ready
+        matches are shown, and unresolved/locked matches follow afterwards.
+        """
+        order=[int(x) for x in ((extra or {}).get("match_play_order") or [])]
+        rank={no:i for i,no in enumerate(order)}
+        def pref(m):
+            no=int(m.get("match_no") or 0)
+            return (rank.get(no,10_000+no),no)
+        def skipped(m):
+            return str(m.get("match_status") or "pending")=="skipped"
+        def done(m):
+            return m.get("home_score") is not None or skipped(m)
+
+        completed=[m for m in matches if done(m)]
+        # played_at is an UTC ISO timestamp for both played and skipped matches.
+        # Keep a deterministic fallback for legacy rows without a timestamp.
+        completed.sort(key=lambda m:(str(m.get("played_at") or "9999"),pref(m)))
+        pending=[m for m in matches if not done(m)]
+        ready=sorted([m for m in pending if m.get("home_player_id") and m.get("away_player_id")],key=pref)
+        locked=sorted([m for m in pending if not (m.get("home_player_id") and m.get("away_player_id"))],key=pref)
+        return completed+ready+locked
+
     def can_skip_match(self, tid: str, match_no: int) -> dict:
         """Return whether the current league match can be skipped without changing the finalist pair.
 
@@ -2586,7 +2614,9 @@ class Database:
         first_mass=next((m for m in matches if abs(int(m.get("home_score") or 0)-int(m.get("away_score") or 0))>=5),None)
         if first_mass:add("first_big_win","💥","Pierwsze zwycięstwo różnicą 5+",self._event_when_match(first_mass),first_mass["tournament_id"],first_mass["match_no"],mdetail(first_mass),"first",6)
         first_de=next((e for e in tournaments if str(e.get("format_key") or "").startswith("double")),None)
-        if first_de:add("first_de","⚔️","Pierwszy Double Elimination",first_de.get("completed_at") or first_de.get("created_at"),first_de["id"],None,f"FIFA Night #{tournament_no.get(str(first_de['id']),'?')}","first",7)
+        if first_de:
+            champ=str(first_de.get("champion_player_id") or "")
+            add("first_de","⚔️","Pierwszy Double Elimination",first_de.get("completed_at") or first_de.get("created_at"),first_de["id"],None,f"Mistrz: {names.get(champ,'?')}","first",7)
         first_duel=next((e for e in events_all if str(e.get("format_key"))=="duel1v1"),None)
         if first_duel:
             dm=next((m for m in matches if str(m.get("tournament_id"))==str(first_duel["id"])),None)

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import html
 import os
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
@@ -11,6 +12,23 @@ from export_utils import generate_summary_png, generate_settlement_png, generate
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal)
+
+
+
+def fmt_history_datetime(value):
+    """Format stored UTC ISO timestamps for the FIFA Night history timeline in Poland time."""
+    raw=str(value or "").strip()
+    if not raw:
+        return "—"
+    try:
+        dt=datetime.fromisoformat(raw.replace("Z","+00:00"))
+        if dt.tzinfo is None:
+            dt=dt.replace(tzinfo=timezone.utc)
+        dt=dt.astimezone(ZoneInfo("Europe/Warsaw"))
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        # Older/manual rows may contain only YYYY-MM-DD. Preserve them instead of failing the page.
+        return raw[:16].replace("T"," ") or "—"
 
 st.set_page_config(page_title="FIFA Night Flex",page_icon="⚽",layout="wide",initial_sidebar_state="collapsed")
 inject_css(); db=Database()
@@ -830,24 +848,38 @@ def live(tid:str):
 
 
 def render_schedule(t):
-    b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];st.subheader("📅 Terminarz")
+    b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];extra=b["meta"].get("extra") or {};st.subheader("📅 Terminarz")
+    matches=db.live_schedule_from(b["matches"],extra)
+    cur=db.current_match_from(b["matches"],extra)
+    cur_no=int(cur["match_no"]) if cur else None
+    ready_pending=[m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
+    next_no=int(ready_pending[1]["match_no"]) if len(ready_pending)>1 and cur_no is not None and int(ready_pending[0]["match_no"])==cur_no else None
+    if cur_no is not None:
+        st.caption("Kolejność jest aktualizowana po każdym wyniku. Gotowe mecze są ustawiane zgodnie z faktyczną kolejnością gry, a zablokowane spotkania przesuwają się po ustaleniu uczestników.")
     milestone_by_match={}
     if not int(t.get("is_test") or 0):
         for x in db.milestones_in_tournament(t["id"]):
             if x.get("match_no") is not None:
                 milestone_by_match.setdefault(int(x["match_no"]),[]).append(x)
-    for m in b["matches"]:
-        skipped=str(m.get("match_status") or "pending")=="skipped"
+    for m in matches:
+        no=int(m["match_no"]);skipped=str(m.get("match_status") or "pending")=="skipped"
+        played=m.get("home_score") is not None
+        ready=bool(m.get("home_player_id") and m.get("away_player_id")) and not played and not skipped
         if m.get("home_player_id"):
             names=f"{esc(m['home_name'])} — {esc(m['away_name'])}"
-            if skipped:result="POMINIĘTY";icon="⏭️"
-            else:result=result_text(m);icon="✅" if m.get("home_score") is not None else "▶️"
-        else:names=source_placeholder(fmt,int(m["match_no"]));result="—";icon="🔒"
+            if skipped:result="POMINIĘTY";icon="⏭️";live_tag=" • POMINIĘTY"
+            elif played:result=result_text(m);icon="✅";live_tag=""
+            elif no==cur_no:result="—";icon="▶️";live_tag=" • TERAZ"
+            elif no==next_no:result="—";icon="⏭️";live_tag=" • NASTĘPNY"
+            else:result="—";icon="⏳";live_tag=" • GOTOWY" if ready else ""
+        else:
+            names=source_placeholder(fmt,no);result="—";icon="🔒";live_tag=" • CZEKA NA ROZSTRZYGNIĘCIE"
         bonus=" • START 1:0 DLA WINNERS" if fmt in ("double4","double5","double6","double7","double8") and m["stage"]=="FINAL" else ""
-        tags=milestone_by_match.get(int(m["match_no"]),[])
+        tags=milestone_by_match.get(no,[])
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
-        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {no} • {stage_name(m)}{esc(live_tag)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
         if skipped:st.caption("Pominięty mecz nie jest zapisany jako 0:0 i nie wchodzi do żadnych statystyk.")
+
 
 
 def render_stats(t=None):
@@ -931,10 +963,10 @@ def render_stats(t=None):
             st.markdown("#### Oś historii")
             rows=[]
             for x in reversed(timeline):
-                date=str(x.get("earned_at") or "")[:10] or "—"
+                when=fmt_history_datetime(x.get("earned_at"))
                 where=(f"FIFA Night #{x.get('tournament_no')}" if x.get("tournament_no") else "")
                 if x.get("match_no") is not None:where+=(" • " if where else "")+f"mecz {x.get('match_no')}"
-                rows.append({"Data":date,"Kamień milowy":f"{x['icon']} {x['title']}","Gdzie":where or "—","Co się wydarzyło":x.get("detail") or "—"})
+                rows.append({"Data i godzina":when,"Kamień milowy":f"{x['icon']} {x['title']}","Gdzie":where or "—","Co się wydarzyło":x.get("detail") or "—"})
             st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
         else:st.info("Pierwsze kamienie milowe pojawią się po rozegraniu oficjalnych spotkań.")
         if ms.get("pending_goal_scorers"):
