@@ -2399,8 +2399,19 @@ class Database:
         items=[]
         for pid,v in ps.items():
             good=sum(1 for tv in v["teams"].values() if tv["m"]>=2 and tv["w"]/tv["m"]>=.4)
-            if len(v["teams"])>=2:items.append(cand(pid,good*12+len(v["teams"])*5+pc(pid,v)*.25,f"{len(v['teams'])} drużyn • {good} z dobrym wynikiem • W% {pc(pid,v)}"))
-        add("universal","🔄 Najbardziej Uniwersalny Gracz","Dobre wyniki wieloma różnymi drużynami.",items)
+            starts=len(participant_tournaments[pid])
+            if len(v["teams"])>=2:
+                items.append(cand(
+                    pid,
+                    good*12+len(v["teams"])*5+pc(pid,v)*.25,
+                    f"różne drużyny: {len(v['teams'])} • spełniają próg: {good} • starty: {starts} • W% {pc(pid,v)}"
+                ))
+        add(
+            "universal",
+            "🔄 Najbardziej Uniwersalny Gracz",
+            "Premia za dobre wyniki wieloma różnymi drużynami. Ranking nie liczy proporcji typu 2/2; premiuje liczbę różnych drużyn spełniających próg (min. 2 mecze i W% ≥ 40%), szerokość puli oraz ogólne W%. „Starty” to liczba rozegranych turniejów.",
+            items
+        )
         items=[]
         for (pid,sn),goals in scorer_by_player.items():
             scorer=scorer_pair_display.get((pid,sn),sn)

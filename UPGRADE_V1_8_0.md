@@ -42,3 +42,9 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - `Król Strzelców FIFA Night`: ranking jest liczony per **konkretny piłkarz + konkretny gracz**; np. 9 goli Ferrana Torresa dla Benia wyprzedza 8 goli Isaka dla Jarka.
 - `Supersnajper Roku` pozostaje rankingiem piłkarza liczonym globalnie we wszystkich wpisanych golach.
 - komunikat o decyzji organizatora został zmieniony na prześmiewczy tekst w stylu FIFA Night.
+
+
+### Awards hotfix 2 — Najbardziej Uniwersalny Gracz
+- doprecyzowano opis klasyfikacji, aby „2 drużyny / 2 dobre” nie wyglądało jak 100% udanych startów;
+- ranking nadal premiuje liczbę różnych drużyn spełniających próg, szerokość puli oraz ogólne W%;
+- w uzasadnieniu pokazujemy teraz osobno liczbę różnych drużyn, liczbę drużyn spełniających próg, liczbę startów i W%.
