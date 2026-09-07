@@ -121,3 +121,8 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - tabela `Najczęściej nominowani` wylicza nazwy kategorii TOP 2 bezpośrednio z aktualnych rankingów AWARDS, więc kolumna nie pozostaje pusta wskutek rozjazdu danych pomocniczych;
 - przy braku TOP 2 pokazujemy jednoznaczne `brak TOP 2` zamiast pustego pola;
 - widok Debiutu Roku ma fallback zgodności, aby nie zgłaszać fałszywie pustych tabel, jeśli ranking z informacją o oknie 5/10 meczów jest już dostępny.
+
+### Awards hotfix 13
+- uporządkowano i skrócono wszystkie opisy kategorii;
+- opisy nie pokazują wag ani procentowego podziału algorytmu, tylko jasno wyjaśniają, za co jest nagroda;
+- bez zmian w samych rankingach i punktacji.

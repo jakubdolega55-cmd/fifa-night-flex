@@ -239,3 +239,9 @@ Debiut Roku jest oceniany na podstawie początku kariery: AWARDS pokazuje osobno
 - gwarantowana widoczność `Najbardziej Widowiskowego Gracza` w kolejności AWARDS;
 - naprawione nazwy kategorii w kolumnie `Kategorie TOP 2` w podsumowaniu nominacji;
 - czytelne `brak TOP 2` zamiast pustej komórki oraz fallback widoku Debiutu Roku.
+
+#### Awards hotfix 13
+- uproszczono wszystkie opisy kategorii AWARDS;
+- opisy mówią teraz tylko, za co jest dana nagroda i jakie wyniki bierze pod uwagę;
+- usunięto z opisów techniczne wagi, procentowy podział algorytmów i sformułowania typu „premia” / „sensowna próba”;
+- sposób liczenia rankingów nie został zmieniony.
