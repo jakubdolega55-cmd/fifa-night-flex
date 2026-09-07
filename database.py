@@ -449,6 +449,18 @@ class Database:
                 if dirty:
                     self._setting_set_conn(conn,row["key"],json.dumps(data,ensure_ascii=False))
 
+            # Historical scorer selections for global goal milestones also keep a display snapshot.
+            milestone_raw=self._setting_get_conn(conn,"flex_global_goal_milestone_scorers")
+            if milestone_raw:
+                try: milestone_data=json.loads(milestone_raw)
+                except Exception: milestone_data={}
+                milestone_dirty=False
+                if isinstance(milestone_data,dict):
+                    for value in milestone_data.values():
+                        if isinstance(value,dict) and str(value.get("player_id") or "")==pid and value.get("player_name")!=clean:
+                            value["player_name"]=clean;milestone_dirty=True
+                if milestone_dirty:self._setting_set_conn(conn,"flex_global_goal_milestone_scorers",json.dumps(milestone_data,ensure_ascii=False))
+
         return {"id":pid,"old_name":old_name,"new_name":clean,"changed":True}
 
     def _get_or_create_player_conn(self, conn, name: str) -> str:
@@ -2310,6 +2322,385 @@ class Database:
         favorite=max((x for x in opp_rows if x["w"]>0),key=lambda x:(x["w"]-x["l"],x["w"],x["meetings"]),default=None)
         last_results=[self._result_for_player(m,pid) for m in own[-5:]]
         return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1]}
+
+
+    # ------------------------------------------------------------------
+    # Achievements & global FIFA Night milestones (v1.8.0 hotfix 14)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _event_when_match(m: dict) -> str:
+        return str(m.get("played_at") or m.get("completed_at") or m.get("created_at") or "")
+
+    @staticmethod
+    def _achievement_catalog() -> list[dict]:
+        return [
+            {"key":"first_blood","icon":"🥇","name":"Pierwsza krew","desc":"Pierwsze oficjalne zwycięstwo."},
+            {"key":"first_title","icon":"🏆","name":"Pierwszy skalp","desc":"Pierwszy wygrany turniej FIFA Night."},
+            {"key":"wins_10","icon":"🔟","name":"10 zwycięstw","desc":"10 oficjalnych zwycięstw."},
+            {"key":"wins_50","icon":"5️⃣0️⃣","name":"50 zwycięstw","desc":"50 oficjalnych zwycięstw."},
+            {"key":"matches_100","icon":"💯","name":"100 meczów","desc":"100 oficjalnych meczów."},
+            {"key":"goals_100","icon":"⚽","name":"100 goli","desc":"100 strzelonych goli w oficjalnych meczach."},
+            {"key":"titles_5","icon":"👑","name":"Pięciokrotny mistrz","desc":"5 wygranych turniejów FIFA Night."},
+            {"key":"on_fire","icon":"🔥","name":"On Fire","desc":"5 oficjalnych zwycięstw z rzędu."},
+            {"key":"unstoppable","icon":"🚀","name":"Nie do zatrzymania","desc":"10 oficjalnych zwycięstw z rzędu."},
+            {"key":"wall","icon":"🧱","name":"Mur","desc":"3 czyste konta z rzędu."},
+            {"key":"massacre","icon":"💥","name":"Masakra","desc":"Zwycięstwo różnicą co najmniej 5 goli."},
+            {"key":"thriller","icon":"🎬","name":"Thriller","desc":"Wygrany mecz jedną bramką, w którym padło co najmniej 7 goli."},
+            {"key":"ice_cold","icon":"🥶","name":"Ice Cold","desc":"Wygrana seria rzutów karnych."},
+            {"key":"many_clubs","icon":"🔄","name":"Człowiek wielu klubów","desc":"Zwycięstwo oficjalnego meczu pięcioma różnymi drużynami."},
+            {"key":"wild_one","icon":"🎲","name":"Wild One","desc":"Wygrany turniej drużyną z Wild Carda."},
+            {"key":"perfect_night","icon":"💯","name":"Perfect Night","desc":"Wygrany turniej bez ani jednej porażki."},
+            {"key":"from_the_dead","icon":"🐦‍🔥","name":"Powrót zza grobu","desc":"Wygrany Double Elimination po wcześniejszym spadku do Losers Bracket."},
+            {"key":"shark","icon":"🦈","name":"Rekin","desc":"Historyczny bilans finansowy osiąga co najmniej +250 zł."},
+            {"key":"sponsor","icon":"🤡","name":"Sponsor imprezy","desc":"Historyczny bilans finansowy spada do -250 zł lub niżej."},
+            {"key":"back_to_back","icon":"🏆","name":"Back to Back","desc":"Dwa tytuły FIFA Night z rzędu."},
+        ]
+
+    def achievement_center(self) -> dict:
+        """Return player badges with the historical moment each badge was first earned.
+
+        General match-based badges include every official match, including 1v1. Tournament
+        badges deliberately ignore 1v1. Once a historical sequence crosses a condition,
+        the first crossing is reported even if the player's current form/balance later changes.
+        """
+        catalog=self._achievement_catalog()
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+            names={str(r["id"]):str(r["name"]) for r in self._fetchall(conn,"SELECT id,name FROM players")}
+            events=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+                FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
+            tps=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,tp.team
+                FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
+                WHERE t.status='completed' AND t.is_test=0""")
+            ledger,_finance_names,_jackpot=self._finance_ledger_conn(conn)
+        team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
+        fixed={self._norm_team_name(x) for x in FIXED_TEAMS}
+        tournament_no={str(e["id"]):i+1 for i,e in enumerate(events)}
+        event_by={str(e["id"]):e for e in events}
+
+        unlocked=defaultdict(dict)
+        progress=defaultdict(lambda:{"wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,"pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,"title_streak":0,"max_title_streak":0})
+        win_streak=defaultdict(int);clean_streak=defaultdict(int)
+
+        def award(pid,key,when="",tid=None,match_no=None,detail=""):
+            pid=str(pid or "")
+            if not pid or key in unlocked[pid]: return
+            unlocked[pid][key]={"key":key,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
+                                "tournament_no":tournament_no.get(str(tid)) if tid else None,"match_no":int(match_no) if match_no is not None else None,
+                                "detail":str(detail or "")}
+
+        # Match achievements in true chronological order.
+        for m in matches:
+            tid=str(m.get("tournament_id") or "");no=int(m.get("match_no") or 0);when=self._event_when_match(m)
+            hs,ass=int(m.get("home_score") or 0),int(m.get("away_score") or 0)
+            fmt_here=str((event_by.get(tid) or {}).get("format_key") or "")
+            wb_bonus=1 if fmt_here.startswith("double") and str(m.get("stage") or "")=="FINAL" else 0
+            actual_hs=max(0,hs-wb_bonus)
+            for pid,home in ((str(m.get("home_player_id") or ""),True),(str(m.get("away_player_id") or ""),False)):
+                if not pid: continue
+                pr=progress[pid];pr["matches"]+=1
+                gf=(actual_hs if home else ass);ga=(ass if home else actual_hs);pr["goals"]+=gf
+                if pr["matches"]==100: award(pid,"matches_100",when,tid,no,f"100. mecz: {m.get('home_name')} {hs}:{ass} {m.get('away_name')}")
+                if pr["goals"]>=100 and "goals_100" not in unlocked[pid]: award(pid,"goals_100",when,tid,no,f"Próg 100 goli przekroczony w meczu {m.get('home_name')} {hs}:{ass} {m.get('away_name')}")
+                result=self._result_for_player(m,pid)
+                if result=="W":
+                    pr["wins"]+=1;win_streak[pid]+=1;clean_streak[pid]=clean_streak[pid]+1 if ga==0 else 0
+                    if pr["wins"]==1: award(pid,"first_blood",when,tid,no,f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}")
+                    if pr["wins"]==10: award(pid,"wins_10",when,tid,no,"10. oficjalne zwycięstwo")
+                    if pr["wins"]==50: award(pid,"wins_50",when,tid,no,"50. oficjalne zwycięstwo")
+                    if win_streak[pid]>=5: award(pid,"on_fire",when,tid,no,"5 zwycięstw z rzędu")
+                    if win_streak[pid]>=10: award(pid,"unstoppable",when,tid,no,"10 zwycięstw z rzędu")
+                    margin=gf-ga;pr["max_margin"]=max(pr["max_margin"],margin)
+                    if margin>=5: award(pid,"massacre",when,tid,no,f"Wygrana {gf}:{ga}")
+                    if margin==1 and gf+ga>=7: award(pid,"thriller",when,tid,no,f"Wygrana {gf}:{ga}")
+                    team=(m.get("home_team") if home else m.get("away_team")) or ""
+                    if str(team).strip():
+                        pr["win_teams"].add(self._norm_team_name(str(team)))
+                        if len(pr["win_teams"])>=5: award(pid,"many_clubs",when,tid,no,"Wygrana pięcioma różnymi drużynami")
+                else:
+                    win_streak[pid]=0
+                    clean_streak[pid]=clean_streak[pid]+1 if ga==0 else 0
+                pr["max_win_streak"]=max(pr["max_win_streak"],win_streak[pid]);pr["max_clean_streak"]=max(pr["max_clean_streak"],clean_streak[pid])
+                if clean_streak[pid]>=3: award(pid,"wall",when,tid,no,"3 czyste konta z rzędu")
+                if result=="W" and m.get("home_penalties") is not None and m.get("away_penalties") is not None:
+                    pr["pen_wins"]+=1;award(pid,"ice_cold",when,tid,no,f"Karne {m.get('home_penalties')}:{m.get('away_penalties')}")
+
+        # Tournament achievements.
+        previous_champ=None
+        for e in events:
+            tid=str(e["id"]);champ=str(e.get("champion_player_id") or "");when=str(e.get("completed_at") or e.get("created_at") or "")
+            if not champ:
+                previous_champ=None;continue
+            pr=progress[champ];pr["titles"]+=1
+            if pr["titles"]==1: award(champ,"first_title",when,tid,None,f"Mistrz FIFA Night #{tournament_no.get(tid,'?')}")
+            if pr["titles"]==5: award(champ,"titles_5",when,tid,None,"5. tytuł FIFA Night")
+            if previous_champ==champ:
+                pr["title_streak"]+=1
+            else:
+                pr["title_streak"]=1
+            pr["max_title_streak"]=max(pr["max_title_streak"],pr["title_streak"])
+            if pr["title_streak"]>=2: award(champ,"back_to_back",when,tid,None,"Dwa tytuły z rzędu")
+            previous_champ=champ
+            team=" ".join(str(team_by.get((tid,champ),"") or "").strip().split())
+            if team and self._norm_team_name(team) not in fixed:
+                award(champ,"wild_one",when,tid,None,f"Tytuł Wild Cardem: {team}")
+            own=[m for m in matches if str(m.get("tournament_id"))==tid and champ in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or ""))]
+            if own and not any(self._result_for_player(m,champ)=="L" for m in own):
+                award(champ,"perfect_night",when,tid,None,"Tytuł bez porażki")
+            fmt=str(e.get("format_key") or "")
+            if fmt.startswith("double") and any(self._result_for_player(m,champ)=="L" for m in own):
+                award(champ,"from_the_dead",when,tid,None,"Tytuł po spadku do Losers Bracket")
+
+        # Historical finance thresholds: simulate balance after each official cash event.
+        balances=defaultdict(int)
+        for e in ledger:
+            when=str(e.get("completed_at") or e.get("created_at") or "");tid=str(e.get("id") or "")
+            stake=int(e.get("stake_cents") or 0)
+            if stake>0:
+                for pid in e.get("cash_player_ids") or []: balances[str(pid)]-=stake
+            winner=str(e.get("prize_winner_player_id") or "");prize=int(e.get("prize_cents") or 0)
+            if winner and prize>0:balances[winner]+=prize
+            touched=set(str(x) for x in (e.get("cash_player_ids") or []))|({winner} if winner else set())
+            for pid in touched:
+                pr=progress[pid];pr["balance_cents"]=balances[pid];pr["max_balance_cents"]=max(pr["max_balance_cents"],balances[pid]);pr["min_balance_cents"]=min(pr["min_balance_cents"],balances[pid])
+                if balances[pid]>=25000:award(pid,"shark",when,tid,None,f"Bilans osiągnął {balances[pid]/100:.2f} zł")
+                if balances[pid]<=-25000:award(pid,"sponsor",when,tid,None,f"Bilans spadł do {balances[pid]/100:.2f} zł")
+
+        # Include every player with official history, even if no badge yet.
+        participant_ids=set()
+        for m in matches:
+            participant_ids|={str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")}
+        participant_ids.discard("")
+        out=[]
+        cat_by={x["key"]:x for x in catalog}
+        for pid in sorted(participant_ids,key=lambda x:names.get(x,"?").casefold()):
+            pr=progress[pid];earned=[];locked=[]
+            for c in catalog:
+                if c["key"] in unlocked[pid]: earned.append({**c,**unlocked[pid][c["key"]]})
+                else:
+                    k=c["key"]
+                    if k=="first_blood":pg=f"{pr['wins']}/1 zwycięstwo"
+                    elif k=="first_title":pg=f"{pr['titles']}/1 tytuł"
+                    elif k=="wins_10":pg=f"{min(pr['wins'],10)}/10 zwycięstw"
+                    elif k=="wins_50":pg=f"{min(pr['wins'],50)}/50 zwycięstw"
+                    elif k=="matches_100":pg=f"{min(pr['matches'],100)}/100 meczów"
+                    elif k=="goals_100":pg=f"{min(pr['goals'],100)}/100 goli"
+                    elif k=="titles_5":pg=f"{min(pr['titles'],5)}/5 tytułów"
+                    elif k=="on_fire":pg=f"najlepsza seria: {pr['max_win_streak']}/5"
+                    elif k=="unstoppable":pg=f"najlepsza seria: {pr['max_win_streak']}/10"
+                    elif k=="wall":pg=f"najlepsza seria czystych kont: {pr['max_clean_streak']}/3"
+                    elif k=="massacre":pg=f"największa przewaga: {pr['max_margin']}/5"
+                    elif k=="thriller":pg="czeka na thriller"
+                    elif k=="ice_cold":pg=f"wygrane karne: {pr['pen_wins']}"
+                    elif k=="many_clubs":pg=f"{min(len(pr['win_teams']),5)}/5 drużyn"
+                    elif k=="wild_one":pg="czeka na tytuł Wild Cardem"
+                    elif k=="perfect_night":pg="czeka na tytuł bez porażki"
+                    elif k=="from_the_dead":pg="czeka na mistrzowski powrót z LB"
+                    elif k=="shark":pg=f"bilans: {pr['balance_cents']/100:.2f} zł / +250 zł"
+                    elif k=="sponsor":pg=f"bilans: {pr['balance_cents']/100:.2f} zł / -250 zł"
+                    elif k=="back_to_back":pg=f"najlepsza seria tytułów: {pr['max_title_streak']}/2"
+                    else:pg="—"
+                    locked.append({**c,"progress":pg})
+            earned.sort(key=lambda x:(x.get("earned_at") or "",list(cat_by).index(x["key"])))
+            out.append({"player_id":pid,"name":names.get(pid,"?"),"unlocked":earned,"locked":locked,"count":len(earned),"total":len(catalog)})
+        return {"catalog":catalog,"players":out}
+
+    def achievements_unlocked_in_tournament(self, tid: str) -> list[dict]:
+        data=self.achievement_center();out=[]
+        for p in data.get("players",[]):
+            for a in p.get("unlocked",[]):
+                if str(a.get("tournament_id") or "")==str(tid):out.append({"player_id":p["player_id"],"player_name":p["name"],**a})
+        return out
+
+    def _goal_milestone_resolutions_conn(self, conn) -> dict:
+        raw=self._setting_get_conn(conn,"flex_global_goal_milestone_scorers")
+        try:return json.loads(raw) if raw else {}
+        except Exception:return {}
+
+    def set_goal_milestone_scorer(self, milestone_key: str, scorer_name: str, player_id: str | None = None, player_name: str | None = None) -> None:
+        key=str(milestone_key or "").strip();scorer=" ".join(str(scorer_name or "").strip().split())
+        if not key or not scorer:raise ValueError("Wybierz lub wpisz strzelca jubileuszowego gola.")
+        with self.connect() as conn:
+            data=self._goal_milestone_resolutions_conn(conn)
+            data[key]={"scorer_name":scorer,"player_id":str(player_id or ""),"player_name":str(player_name or ""),"resolved_at":now_iso()}
+            self._setting_set_conn(conn,"flex_global_goal_milestone_scorers",json.dumps(data,ensure_ascii=False))
+
+    def global_milestones(self) -> dict:
+        """Historical FIFA Night milestones plus the next counters.
+
+        Match/goal/win counters include all official matches, including 1v1. Tournament
+        numbers count only real tournaments. Goal-scorer identity is admin-resolved because
+        match_scorers stores totals, not chronological goal order inside a match.
+        """
+        with self.connect() as conn:
+            matches=self._official_matches_conn(conn)
+            events_all=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+                FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
+            tps=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,tp.team,p.name
+                FROM tournament_players tp JOIN players p ON p.id=tp.player_id
+                JOIN tournaments t ON t.id=tp.tournament_id WHERE t.status='completed' AND t.is_test=0""")
+            scorer_rows=self._fetchall(conn,"""SELECT ms.tournament_id,ms.match_no,ms.side,ms.scorer_name,ms.goals
+                FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
+                WHERE t.status='completed' AND t.is_test=0 ORDER BY ms.tournament_id,ms.match_no,ms.side,ms.scorer_name""")
+            resolutions=self._goal_milestone_resolutions_conn(conn)
+        names={str(r["player_id"]):str(r["name"]) for r in tps};team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
+        fixed={self._norm_team_name(x) for x in FIXED_TEAMS}
+        tournaments=[e for e in events_all if str(e.get("format_key"))!="duel1v1"]
+        event_fmt={str(e["id"]):str(e.get("format_key") or "") for e in events_all}
+        tournament_no={str(e["id"]):i+1 for i,e in enumerate(tournaments)}
+        def actual_goals_in_match(m):
+            bonus=1 if event_fmt.get(str(m.get("tournament_id") or ""),"").startswith("double") and str(m.get("stage") or "")=="FINAL" else 0
+            return max(0,int(m.get("home_score") or 0)-bonus)+int(m.get("away_score") or 0)
+        match_by={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
+        scorer_by=defaultdict(list)
+        for r in scorer_rows:scorer_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
+        timeline=[];pending=[]
+        def add(key,icon,title,when="",tid=None,match_no=None,detail="",kind="other",order=0,extra=None):
+            timeline.append({"key":key,"icon":icon,"title":title,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
+                             "tournament_no":tournament_no.get(str(tid)) if tid else None,"match_no":int(match_no) if match_no is not None else None,
+                             "detail":str(detail or ""),"kind":kind,"order":order,**(extra or {})})
+        def mdetail(m):
+            score=f"{m.get('home_name')} {int(m.get('home_score') or 0)}:{int(m.get('away_score') or 0)} {m.get('away_name')}"
+            if m.get("home_penalties") is not None:score+=f" (k. {m.get('home_penalties')}:{m.get('away_penalties')})"
+            return score
+
+        # First-time history moments that do not depend on a threshold series.
+        if matches:
+            m=matches[0];add("first_match","🌟","Pierwszy oficjalny mecz FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"first",1)
+        if tournaments:
+            e=tournaments[0];champ=str(e.get("champion_player_id") or "");add("first_champion","🏆","Pierwszy mistrz FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,names.get(champ,"?"),"first",2)
+        first_pen=next((m for m in matches if m.get("home_penalties") is not None and m.get("away_penalties") is not None),None)
+        if first_pen:add("first_penalties","🥅","Pierwsze karne",self._event_when_match(first_pen),first_pen["tournament_id"],first_pen["match_no"],mdetail(first_pen),"first",3)
+        first_cs=next((m for m in matches if int(m.get("home_score") or 0)==0 or int(m.get("away_score") or 0)==0),None)
+        if first_cs:
+            holders=[]
+            if int(first_cs.get("away_score") or 0)==0:holders.append(str(first_cs.get("home_name") or "?"))
+            if int(first_cs.get("home_score") or 0)==0:holders.append(str(first_cs.get("away_name") or "?"))
+            add("first_clean_sheet","🧱","Pierwsze czyste konto",self._event_when_match(first_cs),first_cs["tournament_id"],first_cs["match_no"],f"{', '.join(holders)} • {mdetail(first_cs)}","first",4)
+        first_ten=next((m for m in matches if int(m.get("home_score") or 0)+int(m.get("away_score") or 0)>=10),None)
+        if first_ten:add("first_10_goals_match","🔥","Pierwszy mecz z 10+ golami",self._event_when_match(first_ten),first_ten["tournament_id"],first_ten["match_no"],mdetail(first_ten),"first",5)
+        first_mass=next((m for m in matches if abs(int(m.get("home_score") or 0)-int(m.get("away_score") or 0))>=5),None)
+        if first_mass:add("first_big_win","💥","Pierwsze zwycięstwo różnicą 5+",self._event_when_match(first_mass),first_mass["tournament_id"],first_mass["match_no"],mdetail(first_mass),"first",6)
+        first_de=next((e for e in tournaments if str(e.get("format_key") or "").startswith("double")),None)
+        if first_de:add("first_de","⚔️","Pierwszy Double Elimination",first_de.get("completed_at") or first_de.get("created_at"),first_de["id"],None,f"FIFA Night #{tournament_no.get(str(first_de['id']),'?')}","first",7)
+        first_duel=next((e for e in events_all if str(e.get("format_key"))=="duel1v1"),None)
+        if first_duel:
+            dm=next((m for m in matches if str(m.get("tournament_id"))==str(first_duel["id"])),None)
+            add("first_duel","🥊","Pierwszy oficjalny 1 vs 1",first_duel.get("completed_at") or first_duel.get("created_at"),first_duel["id"],dm.get("match_no") if dm else None,mdetail(dm) if dm else "","first",8)
+        first_wc=None
+        for e in tournaments:
+            tid=str(e["id"]);champ=str(e.get("champion_player_id") or "");team=" ".join(str(team_by.get((tid,champ),"") or "").strip().split())
+            if champ and team and self._norm_team_name(team) not in fixed:first_wc=(e,champ,team);break
+        if first_wc:
+            e,champ,team=first_wc;add("first_wc_champion","🎲","Pierwszy mistrz Wild Cardem",e.get("completed_at") or e.get("created_at"),e["id"],None,f"{names.get(champ,'?')} • {team}","first",9)
+
+        # Match number milestones.
+        for idx,m in enumerate(matches,1):
+            if idx in (50,100,250,500):add(f"match_{idx}","💎",f"{idx}. mecz FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"match",idx)
+
+        # Global goals and manual scorer identity.
+        cumulative=0
+        goal_thresholds=(1,100,250,500,1000)
+        for m in matches:
+            before=cumulative;cumulative+=actual_goals_in_match(m)
+            crossed=[x for x in goal_thresholds if before<x<=cumulative]
+            for th in crossed:
+                key="first_goal" if th==1 else f"goal_{th}";title="Pierwszy gol FIFA Night" if th==1 else f"{th}. gol FIFA Night"
+                resolution=resolutions.get(key) or {};scorer=str(resolution.get("scorer_name") or "");owner=str(resolution.get("player_name") or "")
+                scorer_txt=(f"{scorer} dla {owner}" if scorer and owner else scorer)
+                detail=mdetail(m)+(f" • strzelec: {scorer_txt}" if scorer else " • strzelec do wskazania")
+                candidates=[]
+                for sr in scorer_by.get((str(m["tournament_id"]),int(m["match_no"])),[]):
+                    side=str(sr.get("side") or "");pid=str(m.get("home_player_id") if side=="home" else m.get("away_player_id") or "")
+                    pname=str(m.get("home_name") if side=="home" else m.get("away_name") or "?")
+                    team=str(m.get("home_team") if side=="home" else m.get("away_team") or "")
+                    candidates.append({"scorer_name":str(sr.get("scorer_name") or ""),"goals":int(sr.get("goals") or 0),"player_id":pid,"player_name":pname,"team":team})
+                extra={"threshold":th,"scorer_resolution":resolution,"scorer_candidates":candidates}
+                add(key,"⚽",title,self._event_when_match(m),m["tournament_id"],m["match_no"],detail,"goal",th,extra)
+                if not scorer:pending.append({"key":key,"title":title,"threshold":th,"match":m,"detail":mdetail(m),"candidates":candidates})
+
+        # Tournament number milestones.
+        for idx,e in enumerate(tournaments,1):
+            if idx in (10,25,50):
+                champ=str(e.get("champion_player_id") or "");add(f"tournament_{idx}","🏆",f"{idx}. FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,f"Mistrz: {names.get(champ,'?')}","tournament",idx)
+
+        # Global match wins (not player win badges). Draws do not advance this counter.
+        wins=0
+        for m in matches:
+            if self._result_for_player(m,str(m.get("home_player_id") or ""))=="D":continue
+            wins+=1
+            if wins in (100,250,500):
+                winner=str(m.get("winner_player_id") or (m.get("home_player_id") if int(m.get("home_score") or 0)>int(m.get("away_score") or 0) else m.get("away_player_id")) or "")
+                add(f"win_{wins}","🥇",f"{wins}. zwycięstwo w historii FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],f"{names.get(winner,m.get('home_name') if winner==m.get('home_player_id') else m.get('away_name'))} • {mdetail(m)}","win",wins)
+
+        # Penalty shootouts.
+        pen_count=0
+        for m in matches:
+            if m.get("home_penalties") is None or m.get("away_penalties") is None:continue
+            pen_count+=1
+            if pen_count in (10,25,50):add(f"penalties_{pen_count}","🥅",f"{pen_count}. seria rzutów karnych",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"penalties",pen_count)
+
+        # Clean sheets. A 0:0 creates two clean sheets in the same match.
+        cs_count=0
+        for m in matches:
+            holders=[]
+            if int(m.get("away_score") or 0)==0:holders.append((str(m.get("home_player_id") or ""),str(m.get("home_name") or "?")))
+            if int(m.get("home_score") or 0)==0:holders.append((str(m.get("away_player_id") or ""),str(m.get("away_name") or "?")))
+            for pid,pname in holders:
+                cs_count+=1
+                if cs_count in (25,50,100):add(f"clean_sheet_{cs_count}","🧱",f"{cs_count}. czyste konto w historii",self._event_when_match(m),m["tournament_id"],m["match_no"],f"{pname} • {mdetail(m)}","clean_sheet",cs_count)
+
+        # Hat-tricks from entered scorer rows.
+        hat_events=[]
+        for sr in scorer_rows:
+            if int(sr.get("goals") or 0)<3:continue
+            m=match_by.get((str(sr["tournament_id"]),int(sr["match_no"])))
+            if not m:continue
+            side=str(sr.get("side") or "");pname=str(m.get("home_name") if side=="home" else m.get("away_name") or "?")
+            hat_events.append((self._event_when_match(m),str(sr["tournament_id"]),int(sr["match_no"]),str(sr.get("scorer_name") or "?"),pname,m))
+        hat_events.sort(key=lambda x:(x[0],x[1],x[2],x[3].casefold()))
+        if hat_events:
+            when,tid,no,scorer,pname,m=hat_events[0];add("first_hattrick","🎩","Pierwszy hat-trick",when,tid,no,f"{scorer} dla {pname} • {mdetail(m)}","first",10)
+        for idx,item in enumerate(hat_events,1):
+            if idx in (25,50,100):
+                when,tid,no,scorer,pname,m=item;add(f"hattrick_{idx}","🎩",f"{idx}. hat-trick w historii",when,tid,no,f"{scorer} dla {pname} • {mdetail(m)}","hattrick",idx)
+
+        timeline.sort(key=lambda x:(x.get("earned_at") or "",x.get("order") or 0,x.get("title") or ""))
+
+        def next_target(current, thresholds):
+            return next((x for x in thresholds if current<x),None)
+        total_goals=sum(actual_goals_in_match(m) for m in matches)
+        total_wins=sum(1 for m in matches if self._result_for_player(m,str(m.get("home_player_id") or ""))!="D")
+        total_pens=sum(1 for m in matches if m.get("home_penalties") is not None and m.get("away_penalties") is not None)
+        total_cs=sum((1 if int(m.get("away_score") or 0)==0 else 0)+(1 if int(m.get("home_score") or 0)==0 else 0) for m in matches)
+        total_hats=len(hat_events)
+        counters=[
+            ("Mecze",len(matches),next_target(len(matches),(50,100,250,500,1000))),
+            ("Gole",total_goals,next_target(total_goals,(100,250,500,1000,2000))),
+            ("FIFA Night",len(tournaments),next_target(len(tournaments),(10,25,50,100))),
+            ("Zwycięstwa",total_wins,next_target(total_wins,(100,250,500,1000))),
+            ("Karne",total_pens,next_target(total_pens,(10,25,50,100))),
+            ("Czyste konta",total_cs,next_target(total_cs,(25,50,100,250))),
+            ("Hat-tricki",total_hats,next_target(total_hats,(25,50,100,250))),
+        ]
+        next_rows=[{"name":n,"current":cur,"target":target,"left":max(0,target-cur) if target else 0} for n,cur,target in counters if target]
+        return {"timeline":timeline,"pending_goal_scorers":pending,"next":next_rows,"totals":{"matches":len(matches),"goals":total_goals,"tournaments":len(tournaments),"wins":total_wins,"penalties":total_pens,"clean_sheets":total_cs,"hattricks":total_hats}}
+
+    def milestones_in_tournament(self, tid: str) -> list[dict]:
+        return [x for x in self.global_milestones().get("timeline",[]) if str(x.get("tournament_id") or "")==str(tid)]
+
+    def upcoming_global_match_milestone(self) -> dict | None:
+        """Milestone badge for the next official match, including matches already played in an active event."""
+        with self.connect() as conn:
+            row=self._fetchone(conn,"""SELECT COUNT(*) AS n FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+                WHERE t.is_test=0 AND m.home_score IS NOT NULL""")
+        no=int((row or {}).get("n") or 0)+1
+        if no in (50,100,250,500,1000):return {"number":no,"title":f"{no}. OFICJALNY MECZ FIFA NIGHT"}
+        return None
 
     def award_selections(self, year: int) -> dict:
         with self.connect() as conn:

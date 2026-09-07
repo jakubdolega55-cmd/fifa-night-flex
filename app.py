@@ -188,6 +188,48 @@ def render_duel_start(official_names:list[str]):
         except ValueError as e:st.error(str(e))
 
 
+
+def render_pending_goal_milestones(compact:bool=False):
+    data=db.global_milestones();pending=data.get("pending_goal_scorers") or []
+    if not pending:return
+    item=pending[0];m=item.get("match") or {};key=str(item.get("key") or "")
+    title=str(item.get("title") or "Jubileuszowy gol")
+    exp_label=f"⚽ Do uzupełnienia: {title}" if len(pending)==1 else f"⚽ Do uzupełnienia: {len(pending)} jubileuszowe gole"
+    with st.expander(exp_label,expanded=not compact):
+        st.warning(f"**{title}** padł w meczu **{item.get('detail','—')}**. W bazie znamy liczbę goli strzelców, ale nie kolejność bramek — wskaż autora jubileuszowego gola.")
+        candidates=item.get("candidates") or []
+        cand_map={}
+        for i,c in enumerate(candidates):
+            cid=f"cand_{i}"
+            cand_map[cid]=c
+        with st.form(f"goal_milestone_{key}"):
+            if cand_map:
+                choice=st.selectbox("Strzelec",list(cand_map),format_func=lambda x:f"{cand_map[x].get('scorer_name')} — {cand_map[x].get('player_name')} • {cand_map[x].get('team') or '—'} ({cand_map[x].get('goals')} goli w tym meczu)",key=f"gm_choice_{key}")
+                manual=st.text_input("Jeśli nie ma go na liście, wpisz ręcznie",key=f"gm_manual_{key}")
+                sides={str(m.get('home_player_id') or ''):str(m.get('home_name') or '?'),str(m.get('away_player_id') or ''):str(m.get('away_name') or '?')}
+                manual_pid=st.selectbox("Jeśli wpisujesz ręcznie — dla którego gracza strzelał?",list(sides),format_func=lambda x:sides.get(x,x),key=f"gm_manual_pid_{key}") if sides else None
+            else:
+                st.caption("W tym historycznym meczu nie zapisano strzelców. Możesz wpisać autora ręcznie, jeśli go pamiętasz.")
+                manual=st.text_input("Strzelec jubileuszowego gola",key=f"gm_manual_{key}")
+                sides={str(m.get('home_player_id') or ''):str(m.get('home_name') or '?'),str(m.get('away_player_id') or ''):str(m.get('away_name') or '?')}
+                manual_pid=st.selectbox("Dla którego gracza strzelał?",list(sides),format_func=lambda x:sides.get(x,x),key=f"gm_manual_pid_{key}") if sides else None
+                choice=None
+            pwd=st.text_input("Hasło administratora",type="password",key=f"gm_pwd_{key}")
+            go=st.form_submit_button("💾 ZAPISZ STRZELCA",use_container_width=True)
+        if go:
+            if not admin_ok(pwd):st.error("Nieprawidłowe hasło.")
+            else:
+                try:
+                    if str(manual or "").strip():
+                        pid=str(manual_pid or "");pname=sides.get(pid,"")
+                        db.set_goal_milestone_scorer(key,manual,pid,pname)
+                    elif cand_map and choice:
+                        c=cand_map[choice];db.set_goal_milestone_scorer(key,c.get("scorer_name"),c.get("player_id"),c.get("player_name"))
+                    else:raise ValueError("Wybierz lub wpisz strzelca.")
+                    st.success("Jubileuszowy strzelec zapisany.");rr()
+                except ValueError as e:st.error(str(e))
+        if len(pending)>1:st.caption(f"Po zapisaniu pojawi się kolejny brakujący jubileuszowy gol ({len(pending)-1} pozostałych).")
+
 def render_start():
     start_view=st.session_state.get("start_view","tournament")
     subtitles={
@@ -203,6 +245,7 @@ def render_start():
         with col:
             if st.button(label,type="primary" if start_view==key else "secondary",use_container_width=True,key=f"start_nav_{key}"):
                 st.session_state.start_view=key;st.rerun()
+    render_pending_goal_milestones(compact=start_view not in ("tournament","stats"))
     if start_view=="stats":
         render_stats();return
     if start_view=="awards":
@@ -730,6 +773,15 @@ def live(tid:str):
         if summary.get("new_records"):
             st.markdown("#### 🆕 Nowe rekordy")
             for r in summary["new_records"]:st.success(r)
+        if not int(t.get("is_test") or 0):
+            unlocked_now=db.achievements_unlocked_in_tournament(tid)
+            milestones_now=db.milestones_in_tournament(tid)
+            if unlocked_now:
+                st.markdown("#### 🔓 Odblokowane podczas tego FIFA Night")
+                for a in unlocked_now:st.success(f"{a.get('icon','🏅')} **{a.get('player_name')} — {a.get('name')}**{f' • {a.get("detail")}' if a.get('detail') else ''}")
+            if milestones_now:
+                st.markdown("#### 🏛️ Kamienie milowe tego FIFA Night")
+                for x in milestones_now:st.info(f"{x.get('icon','💎')} **{x.get('title')}**{f' • {x.get("detail")}' if x.get('detail') else ''}")
         st.markdown("### 🖼️ Eksport")
         e1,e2=st.columns(2)
         with e1:st.download_button("📸 Pobierz podsumowanie PNG",data=png_bytes,file_name=f"{file_tag}.png",mime="image/png",use_container_width=True,key=f"dl_png_{tid}")
@@ -743,6 +795,10 @@ def live(tid:str):
     b=db.bundle(tid);cur=db.current_match_from(b["matches"],meta.get("extra") or {})
     if not cur:st.info("Czekam na rozstrzygnięcie poprzedniego etapu…");return
     total=max_matches(fmt)
+    if not int(t.get("is_test") or 0):
+        global_jubilee=db.upcoming_global_match_milestone()
+        if global_jubilee:
+            st.markdown(f"<div class='winner' style='padding:18px;margin:8px 0 16px'><div class='match-no'>💎 MECZ JUBILEUSZOWY</div><div class='player-big' style='font-size:2rem'>{esc(global_jubilee['title'])}</div><div class='team-small'>Ten mecz zostanie zapisany w kamieniach milowych FIFA Night.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     if fmt in ("double4","double5","double6","double7","double8") and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
@@ -775,6 +831,11 @@ def live(tid:str):
 
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];st.subheader("📅 Terminarz")
+    milestone_by_match={}
+    if not int(t.get("is_test") or 0):
+        for x in db.milestones_in_tournament(t["id"]):
+            if x.get("match_no") is not None:
+                milestone_by_match.setdefault(int(x["match_no"]),[]).append(x)
     for m in b["matches"]:
         skipped=str(m.get("match_status") or "pending")=="skipped"
         if m.get("home_player_id"):
@@ -783,7 +844,9 @@ def render_schedule(t):
             else:result=result_text(m);icon="✅" if m.get("home_score") is not None else "▶️"
         else:names=source_placeholder(fmt,int(m["match_no"]));result="—";icon="🔒"
         bonus=" • START 1:0 DLA WINNERS" if fmt in ("double4","double5","double6","double7","double8") and m["stage"]=="FINAL" else ""
-        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{bonus}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
+        tags=milestone_by_match.get(int(m["match_no"]),[])
+        milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
+        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
         if skipped:st.caption("Pominięty mecz nie jest zapisany jako 0:0 i nie wchodzi do żadnych statystyk.")
 
 
@@ -792,7 +855,7 @@ def render_stats(t=None):
     st.caption("Oficjalne mecze, turnieje i 1 vs 1. Mecze 1v1 liczą się do statystyk meczowych, ale nie do tytułów i finałów.")
     stats=db.all_time_stats()
     if not stats:st.info("Brak zakończonych turniejów nietestowych.");return
-    tab1,tab_records,tab_teams,tab_players,tab_scorers,tab_finance=st.tabs(["🏆 Ranking","🏛️ Rekordy","👥 Drużyny","👤 Gracze","⚽ Strzelcy","💸 Rozliczenia"])
+    tab1,tab_records,tab_achievements,tab_teams,tab_players,tab_scorers,tab_finance=st.tabs(["🏆 Ranking","🏛️ Rekordy","🏅 Osiągnięcia","👥 Drużyny","👤 Gracze","⚽ Strzelcy","💸 Rozliczenia"])
     with tab1:
         leader=stats[0];c1,c2,c3,c4=st.columns(4);c1.metric("🐐 Lider",leader["name"]);c2.metric("🏆 Tytuły",leader["titles"]);tg=max(stats,key=lambda x:x["gf"]);c3.metric("⚽ Król bramek",tg["name"],f"{tg['gf']} goli");tw=max(stats,key=lambda x:x["w"]);c4.metric("🔥 Najwięcej wygranych",tw["name"],f"{tw['w']} W")
         df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"1v1":s.get("duels",0),"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
@@ -833,6 +896,52 @@ def render_stats(t=None):
             if r.get("balanced_rivalry"):p=r['balanced_rivalry'];add("Najbardziej wyrównana rywalizacja",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             if r.get("h2h_dominance"):p=r['h2h_dominance'];add("Największa dominacja H2H",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+    with tab_achievements:
+        st.markdown("### 🏅 Osiągnięcia graczy")
+        st.caption("Odznaki są częścią statystyk. Ogólne odznaki meczowe liczą oficjalne spotkania, także 1v1; tytuły i odznaki turniejowe dotyczą tylko FIFA Night.")
+        ach=db.achievement_center();players_ach=ach.get("players") or []
+        if not players_ach:st.info("Brak oficjalnej historii do osiągnięć.")
+        else:
+            ach_names={x["name"]:x for x in players_ach}
+            sel=st.selectbox("Gracz",list(ach_names),key="achievement_player")
+            pa=ach_names[sel]
+            c1,c2=st.columns(2);c1.metric("Odblokowane",f"{pa['count']}/{pa['total']}");c2.metric("Do zdobycia",pa['total']-pa['count'])
+            if pa.get("unlocked"):
+                st.markdown("#### ✅ Odblokowane")
+                cols=st.columns(2)
+                for i,a in enumerate(pa["unlocked"]):
+                    date=str(a.get("earned_at") or "")[:10] or "—";where=f"FIFA Night #{a.get('tournament_no')}" if a.get("tournament_no") else "oficjalny mecz"
+                    if a.get("match_no") is not None:where+=f" • mecz {a.get('match_no')}"
+                    with cols[i%2]:
+                        st.markdown(f"<div class='mini-card'><b>{esc(a['icon'])} {esc(a['name'])}</b><br><span>{esc(a['desc'])}</span><br><span class='team-small'>{esc(date)} • {esc(where)}{(' • '+esc(a.get('detail'))) if a.get('detail') else ''}</span></div>",unsafe_allow_html=True)
+            else:st.info("Ten gracz nie odblokował jeszcze żadnej odznaki.")
+            with st.expander("🔒 Jeszcze nieodblokowane",expanded=False):
+                st.dataframe(pd.DataFrame([{"Odznaka":f"{a['icon']} {a['name']}","Za co":a["desc"],"Postęp":a.get("progress","—")} for a in pa.get("locked",[])]),hide_index=True,use_container_width=True)
+
+        st.divider();st.markdown("### 🏛️ Kamienie milowe FIFA Night")
+        ms=db.global_milestones()
+        nxt=ms.get("next") or []
+        if nxt:
+            st.markdown("#### Następne jubileusze")
+            ncols=st.columns(min(4,len(nxt)))
+            for i,x in enumerate(nxt):
+                with ncols[i%len(ncols)]:st.metric(x["name"],f"{x['current']} / {x['target']}",f"zostało {x['left']}")
+        timeline=ms.get("timeline") or []
+        if timeline:
+            st.markdown("#### Oś historii")
+            rows=[]
+            for x in reversed(timeline):
+                date=str(x.get("earned_at") or "")[:10] or "—"
+                where=(f"FIFA Night #{x.get('tournament_no')}" if x.get("tournament_no") else "")
+                if x.get("match_no") is not None:where+=(" • " if where else "")+f"mecz {x.get('match_no')}"
+                rows.append({"Data":date,"Kamień milowy":f"{x['icon']} {x['title']}","Gdzie":where or "—","Co się wydarzyło":x.get("detail") or "—"})
+            st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+        else:st.info("Pierwsze kamienie milowe pojawią się po rozegraniu oficjalnych spotkań.")
+        if ms.get("pending_goal_scorers"):
+            st.markdown("#### ⚽ Jubileuszowe gole do uzupełnienia")
+            st.caption("Autorów historycznych goli możesz uzupełnić także na ekranie głównym. Zmiana jest chroniona hasłem administratora.")
+            render_pending_goal_milestones(compact=False)
+
     with tab_teams:
         team_stats=db.team_stats()
         if not team_stats:st.info("Brak danych o drużynach z oficjalnych turniejów.")
@@ -1345,6 +1454,7 @@ def render_live(t):
     hero(f"{title} • {FORMAT_LABELS[t['format_key']]}")
     st.markdown(f'<span class="status-chip">{"🧪 TEST" if t["is_test"] else "🏆 OFICJALNY"}</span>',unsafe_allow_html=True)
     render_tournament_status_control(t,"live")
+    if not int(t.get("is_test") or 0):render_pending_goal_milestones(compact=True)
     opts=["🏠 Ekran główny","📅 Terminarz","📊 Statystyki","🏆 AWARDS"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
     if view==opts[0]:live(t["id"]);reset_controls(t,"live")
     elif view==opts[1]:render_schedule(t)

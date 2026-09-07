@@ -126,3 +126,15 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - uporządkowano i skrócono wszystkie opisy kategorii;
 - opisy nie pokazują wag ani procentowego podziału algorytmu, tylko jasno wyjaśniają, za co jest nagroda;
 - bez zmian w samych rankingach i punktacji.
+
+### Hotfix 14 — Osiągnięcia i kamienie milowe
+- w `Statystyki` dodano zakładkę `Osiągnięcia`, bez tworzenia osobnego głównego modułu;
+- dodano 20 odznak graczy: Pierwsza krew, Pierwszy skalp, 10 zwycięstw, 50 zwycięstw, 100 meczów, 100 goli, Pięciokrotny mistrz, On Fire, Nie do zatrzymania, Mur, Masakra, Thriller, Ice Cold, Człowiek wielu klubów, Wild One, Perfect Night, Powrót zza grobu, Rekin, Sponsor imprezy i Back to Back;
+- odznaki są odtwarzane historycznie z istniejącej bazy, wraz z pierwszym momentem spełnienia warunku; profil pokazuje także postęp do nieodblokowanych odznak;
+- w podsumowaniu zakończonego oficjalnego turnieju pokazują się odznaki odblokowane właśnie podczas tego FIFA Night;
+- dodano ogólne kamienie milowe FIFA Night: mecze, gole, turnieje, globalne zwycięstwa, karne, czyste konta i hat-tricki oraz kronikę pierwszych wydarzeń;
+- licznik `100. zwycięstwo w historii` jest globalny i oznacza setny oficjalny mecz zakończony zwycięstwem któregoś gracza, więc przez remisy nie musi pokrywać się ze 100. meczem;
+- przed 50./100./250./500./1000. oficjalnym meczem aplikacja pokazuje specjalną otoczkę `Mecz jubileuszowy`, a po rozegraniu wydarzenie zostaje na osi kamieni milowych i w terminarzu;
+- historyczne jubileuszowe gole wykrywają konkretny mecz. Ponieważ baza nie zapisuje kolejności bramek w meczu, aplikacja prosi administratora o wskazanie strzelca z zapisanej listy lub ręczne wpisanie go; wybór jest chroniony `ADMIN_PASSWORD` i zapisywany w `app_settings`;
+- przy zmianie nazwy gracza odświeżany jest także zapis właściciela jubileuszowego gola;
+- bonusowe 1:0 dla Winners Bracket w finale Double Elimination nie jest liczone jako rzeczywiście strzelony gol do jubileuszy ani odznaki `100 goli`.
