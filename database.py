@@ -2265,7 +2265,7 @@ class Database:
         for r in tps:
             if str(r["tournament_id"]) in tournament_ids: participant_tournaments[str(r["player_id"])].add(str(r["tournament_id"]))
         fixed_norm={self._norm_team_name(x) for x in FIXED_TEAMS}
-        ps=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0,"finals":0,"clutch_m":0,"clutch_w":0,
+        ps=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"clean_sheets":0,"titles":0,"finals":0,"clutch_m":0,"clutch_w":0,
                                "pen":0,"pen_w":0,"big_wins":0,"max_margin":0,"one_goal_wins":0,"narrow_losses":0,
                                "teams":defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0}),"wc_m":0,"wc_w":0,"wc_gf":0,"wc_ga":0,
                                "result_points":[],"t_results":defaultdict(lambda:{"m":0,"pts":0,"gf":0,"ga":0}),"scorer_goals":0})
@@ -2307,7 +2307,7 @@ class Database:
                     nt=self._norm_team_name(team);tr=teamagg[nt];tr["display"]=tr["display"] or team;tr["m"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[r]]+=1
             if tid not in tournament_ids:continue
             for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,rh),(a,m.get("away_team"),ass,hs,ra)):
-                v=ps[pid];v["m"]+=1;v["gf"]+=gf;v["ga"]+=ga;v[{"W":"w","D":"d","L":"l"}[r]]+=1
+                v=ps[pid];v["m"]+=1;v["gf"]+=gf;v["ga"]+=ga;v["clean_sheets"]+=int(ga==0);v[{"W":"w","D":"d","L":"l"}[r]]+=1
                 pts=3 if r=="W" else (1 if r=="D" else 0);v["result_points"].append((pts,gf-ga))
                 tr=v["t_results"][tid];tr["m"]+=1;tr["pts"]+=pts;tr["gf"]+=gf;tr["ga"]+=ga
                 team=" ".join(str(team or "").split())
@@ -2366,10 +2366,15 @@ class Database:
             score=v["titles"]*32+v["finals"]*11+wp*.28+cl*.11+gdpm*4+len(participant_tournaments[pid])
             items.append(cand(pid,score,f"{v['titles']} tytuł(y), {v['finals']} finał(y), W% {wp}, bilans {v['gf']}:{v['ga']}"))
         add("player_year","🏆 Gracz Roku","Całokształt: tytuły, finały, wyniki, bilans, regularność i ważne mecze. 1v1 nie wchodzi do tej kategorii.",items)
-        items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} GF/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=2]
-        add("offensive","🔥 Ofensywny Gracz Roku","GF/mecz, łączna liczba goli, wysokie zwycięstwa i największe wygrane.",items)
-        items=[cand(pid,110-(v["ga"]/v["m"])*25+min(v["m"],20),f"{v['ga']/v['m']:.2f} GA/mecz • {v['ga']} straconych • {v['m']} meczów") for pid,v in ps.items() if v["m"]>=3]
-        add("defense","🧱 Beton Roku","Najlepsza defensywa: GA/mecz, stracone gole i wielkość próby.",items)
+        items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=2]
+        add("offensive","🔥 Ofensywny Gracz Roku","Gole strzelone na mecz, łączna liczba goli, wysokie zwycięstwa i największe wygrane.",items)
+        items=[]
+        for pid,v in ps.items():
+            if v["m"]<3:continue
+            ga_pm=v["ga"]/v["m"];cs_rate=v["clean_sheets"]/v["m"]*100
+            score=110-ga_pm*25+min(v["m"],20)+cs_rate*.18+v["clean_sheets"]*1.5
+            items.append(cand(pid,score,f"{ga_pm:.2f} gola straconego/mecz • {v['clean_sheets']} czystych kont • {v['ga']} straconych • {v['m']} meczów"))
+        add("defense","🧱 Beton Roku","Najlepsza defensywa: gole stracone na mecz, czyste konta, łączna liczba straconych goli i wielkość próby.",items)
         items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=2]
         add("clutch","🎯 Clutch Player Roku","Playoffy, półfinały, finały i mecze eliminacyjne Double Elimination.",items)
         items=[cand(pid,v["pen_w"]/v["pen"]*100+v["pen_w"]*3,f"{v['pen_w']}/{v['pen']} wygranych serii") for pid,v in ps.items() if v["pen"]>=3]
@@ -2382,7 +2387,7 @@ class Database:
             if len(seq)<6:continue
             mid=len(seq)//2;early=seq[:mid];late=seq[mid:]
             epts=sum(x[0] for x in early)/len(early);lpts=sum(x[0] for x in late)/len(late);egd=sum(x[1] for x in early)/len(early);lgd=sum(x[1] for x in late)/len(late)
-            items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • GD/mecz {egd:+.2f} → {lgd:+.2f}"))
+            items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • bilans bramek/mecz {egd:+.2f} → {lgd:+.2f}"))
         add("progress","📈 Największy Progres","Zmiana między wcześniejszą i późniejszą częścią roku; wymagana sensowna próba.",items)
         items=[]
         for pid,v in ps.items():
@@ -2464,10 +2469,49 @@ class Database:
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
         add("unlucky","🤕 Pechowiec Roku","Najwięcej minimalnych porażek jedną bramką lub po karnych.",items,award=False)
 
+        # Summary of participant nominations across individual award categories.
+        # Count a category at most once per player. Team/match/rivalry/EA-player
+        # categories are intentionally excluded because the nominee is not one FIFA Night participant.
+        direct_player_awards={
+            "player_year","offensive","defense","clutch","penalties","wildcards",
+            "progress","regular","debut","outsider","universal","finance","duel"
+        }
+        nomination_sets=defaultdict(lambda:{"top3":set(),"top5":set(),"first":set()})
+        nomination_titles=defaultdict(set)
+        for cat in cats:
+            if not cat.get("award"):continue
+            key=str(cat.get("key") or "")
+            candidates=cat.get("candidates") or []
+            mapped=[]
+            if key in direct_player_awards:
+                mapped=[(str(x.get("id") or ""),x) for x in candidates]
+            elif key=="player_scorers":
+                # Candidate is footballer + participant; credit the nomination to the FIFA Night participant.
+                mapped=[(str(x.get("id") or "").split("|",1)[0],x) for x in candidates]
+            else:
+                continue
+            for pos,(pid,x) in enumerate(mapped[:5],1):
+                if not pid or pid not in name_by:continue
+                nomination_sets[pid]["top5"].add(key)
+                nomination_titles[pid].add(str(cat.get("title") or key))
+                if pos<=3:nomination_sets[pid]["top3"].add(key)
+                if pos==1:nomination_sets[pid]["first"].add(key)
+        nomination_summary=[]
+        for pid,v in nomination_sets.items():
+            nomination_summary.append({
+                "player_id":pid,
+                "name":name_by.get(pid,"?"),
+                "top3":len(v["top3"]),
+                "top5":len(v["top5"]),
+                "first":len(v["first"]),
+                "categories":sorted(nomination_titles.get(pid,set())),
+            })
+        nomination_summary.sort(key=lambda x:(x["top3"],x["top5"],x["first"],x["name"]),reverse=True)
+
         overview={"tournaments":len(tournament_ids),"duels":len(duel_ids),"matches":len(matches),"goals":sum(int(m["home_score"])+int(m["away_score"]) for m in matches),
                   "players":len({str(r["player_id"]) for r in tps}),"titles":len(tournament_ids),"top_player":(cats[0]["candidates"][0]["name"] if cats and cats[0]["candidates"] else None),
                   "top_team":(next((c for c in cats if c["key"]=="team_best"),{}).get("candidates") or [{}])[0].get("name") if teamitems else None}
-        return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year)}
+        return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year),"nomination_summary":nomination_summary}
 
     def all_time_stats(self) -> list[dict]:
         """Shared official stats. Duels count as matches, never as tournament titles/finals."""

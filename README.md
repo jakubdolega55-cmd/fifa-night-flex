@@ -216,3 +216,9 @@ Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statysty
 - przyciski „🎮 NOWY TURNIEJ” i „📊 STATYSTYKI” zostały przeniesione pod główny baner FIFA NIGHT FLEX;
 - nie są już narażone na przycięcie przez górny obszar Streamlita;
 - brak zmian w bazie, statystykach i logice turniejów.
+
+### Drobne poprawki Awards po wydaniu v1.8.0
+- Beton Roku pokazuje i premiuje czyste konta.
+- Opisy statystyk używają polskich nazw zamiast skrótów GF/GA/GD.
+- Na końcu rankingów Awards znajduje się podsumowanie najczęściej nominowanych w TOP 3/TOP 5.
+- Wybór laureatów jest ułożony w 3 etapy od najważniejszych nagród do kategorii specjalnych; przy kandydacie widać, ile nagród ma już wybranych.

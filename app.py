@@ -1045,7 +1045,7 @@ def render_awards():
     st.info("📊 TOP 5 liczy algorytm. 🏆 Nagrody rozdaje organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano. 😎 Rankingi aktualizują się wraz z wynikami.")
     current_year=datetime.now().year
     year=int(st.number_input("Rok",min_value=2024,max_value=current_year+1,value=current_year,step=1,key="awards_year"))
-    data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {}
+    data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {};nomination_summary=data.get("nomination_summary") or []
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🏆 Turnieje",overview.get("tournaments",0));c2.metric("⚔️ 1v1",overview.get("duels",0));c3.metric("🎮 Mecze",overview.get("matches",0));c4.metric("⚽ Gole",overview.get("goals",0));c5.metric("👥 Gracze",overview.get("players",0))
     if not cats:
@@ -1083,6 +1083,15 @@ def render_awards():
                     st.dataframe(pd.DataFrame([{"#":i,"Gracz":x.get("name"),"Argument":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]),hide_index=True,use_container_width=True)
                 else: st.caption("Brak wystarczającej próby.")
 
+    if nomination_summary:
+        st.divider();st.markdown("### 🌟 Najczęściej nominowani")
+        st.caption("Ile różnych indywidualnych kategorii ma danego gracza w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
+        rows=[]
+        for i,x in enumerate(nomination_summary[:10],1):
+            cats_txt=", ".join(str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories") or []))
+            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w rankingu":x.get("first",0),"Kategorie TOP 5":cats_txt or "—"})
+        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+
     st.divider();st.markdown("### 🔐 Organizator — wybór laureatów")
     st.caption("W każdej kategorii możesz wybrać jedną osobę z TOP 2–3. Liczba już przyznanych nagród jest tylko informacją — nie ma twardego limitu.")
     secret_ready=bool(admin_password())
@@ -1096,25 +1105,91 @@ def render_awards():
             if admin_ok(pwd):st.session_state.awards_admin_ok=True;rr()
             else:st.error("Nieprawidłowe hasło.")
     else:
+        # Kategorie są wybierane w kolejności od najbardziej prestiżowych do bardziej
+        # specjalistycznych i zabawowych. Nie blokujemy organizatora: ranking jest
+        # podpowiedzią, a licznik nagród pomaga świadomie rozłożyć wyróżnienia.
+        direct_player_awards={
+            "player_year","offensive","defense","clutch","penalties","wildcards",
+            "progress","regular","debut","outsider","universal","finance","duel"
+        }
+
+        def award_owner_name(cat_key,candidate_id,candidate_name):
+            cat_key=str(cat_key or ""); candidate_name=str(candidate_name or "")
+            if cat_key in direct_player_awards:
+                return candidate_name
+            if cat_key=="player_scorers":
+                # Kandydat ma postać „Piłkarz — Gracz”; nagrodę liczymy do osoby,
+                # dla której dany piłkarz strzelał.
+                if " — " in candidate_name:
+                    return candidate_name.rsplit(" — ",1)[1].strip()
+            return None
+
         counts={}
-        for sel in selections.values():
-            name=str((sel or {}).get("name") or "")
-            if name:counts[name]=counts.get(name,0)+1
-        for cat in award_cats:
-            candidates=(cat.get("candidates") or [])[:3]
-            if not candidates:continue
-            selected=selections.get(cat["key"]) or {}
-            ids=[str(x.get("id")) for x in candidates]
-            current_id=str(selected.get("id") or "")
-            default_index=ids.index(current_id) if current_id in ids else 0
-            label_by={str(x.get("id")):f"{x.get('name')} • już wybrane nagrody: {counts.get(str(x.get('name') or ''),0)}" for x in candidates}
-            with st.form(f"award_pick_{year}_{cat['key']}"):
-                choice=st.selectbox(cat["title"],options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
-                save=st.form_submit_button("🏅 ZAPISZ LAUREATA",use_container_width=True)
-            if save:
-                cand=next(x for x in candidates if str(x.get("id"))==str(choice))
-                db.set_award_selection(year,cat["key"],str(cand.get("id")),str(cand.get("name")))
-                st.success(f"Zapisano: {cat['title']} — {cand.get('name')}");rr()
+        for key,sel in selections.items():
+            sel=sel or {}
+            owner=award_owner_name(key,sel.get("id"),sel.get("name"))
+            if owner:counts[owner]=counts.get(owner,0)+1
+
+        if counts:
+            spread_rows=[{"Gracz":name,"Wybrane nagrody":n} for name,n in sorted(counts.items(),key=lambda x:(-x[1],x[0]))]
+            st.markdown("#### 🎁 Rozkład nagród do tej pory")
+            st.dataframe(pd.DataFrame(spread_rows),hide_index=True,use_container_width=True)
+        else:
+            st.caption("🎁 Nikt nie ma jeszcze wybranej nagrody — zaczynamy od najważniejszych kategorii.")
+
+        st.caption("Kolejność poniżej jest celowa: najpierw wybierz główne nagrody. Przy kolejnych kategoriach zobaczysz, kto już coś dostał, więc przy zbliżonych kandydaturach możesz świadomie rozłożyć wyróżnienia szerzej. Nic nie jest wymuszane — organizator nadal może wybrać dowolną osobę z TOP 3.")
+
+        award_priority_groups=[
+            ("🥇 ETAP 1/3 — Główne nagrody",
+             "Najpierw najważniejsze sportowe wyróżnienia. Tu najlepiej trzymać się przede wszystkim rankingu.",
+             ["player_year","offensive","defense","player_scorers","clutch"]),
+            ("🥈 ETAP 2/3 — Nagrody specjalistyczne",
+             "Tu nadal liczy się ranking, ale warto już zerkać na rozkład nagród i TOP 3 kandydatów.",
+             ["regular","progress","penalties","duel","universal","wildcards","debut","outsider"]),
+            ("🥉 ETAP 3/3 — Nagrody specjalne i finał gali",
+             "Najbardziej elastyczny etap. Dobry moment, żeby przy zbliżonych wynikach docenić kogoś, kto jeszcze nic nie dostał.",
+             ["finance","rivalry","team_best","team_worst","superscorer","match_year"]),
+        ]
+        cat_by_key={str(c.get("key")):c for c in award_cats}
+        pick_no=0
+        for group_title,group_desc,keys in award_priority_groups:
+            group_cats=[cat_by_key[k] for k in keys if k in cat_by_key and (cat_by_key[k].get("candidates") or [])]
+            if not group_cats:continue
+            st.markdown(f"#### {group_title}")
+            st.caption(group_desc)
+            for cat in group_cats:
+                pick_no+=1
+                candidates=(cat.get("candidates") or [])[:3]
+                selected=selections.get(cat["key"]) or {}
+                ids=[str(x.get("id")) for x in candidates]
+                current_id=str(selected.get("id") or "")
+                default_index=ids.index(current_id) if current_id in ids else 0
+                label_by={}
+                for pos,x in enumerate(candidates,1):
+                    cid=str(x.get("id")); cname=str(x.get("name") or "")
+                    owner=award_owner_name(cat.get("key"),cid,cname)
+                    rank=f"#{pos}"
+                    if owner:
+                        won=counts.get(owner,0)
+                        award_note="🆕 bez nagrody" if won==0 else f"🏅 ma już {won}"
+                        if cat.get("key")=="player_scorers":
+                            label_by[cid]=f"{rank} {cname} • {owner}: {award_note}"
+                        else:
+                            label_by[cid]=f"{rank} {cname} • {award_note}"
+                    else:
+                        label_by[cid]=f"{rank} {cname}"
+                current_owner=award_owner_name(cat.get("key"),selected.get("id"),selected.get("name")) if selected else None
+                if selected.get("name"):
+                    extra=f" • {current_owner} ma łącznie {counts.get(current_owner,0)} nagr." if current_owner else ""
+                    st.caption(f"✅ Aktualnie wybrano: **{selected.get('name')}**{extra}")
+                with st.form(f"award_pick_{year}_{cat['key']}"):
+                    choice=st.selectbox(f"{pick_no}. {cat['title']}",options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
+                    save=st.form_submit_button("🏅 ZAPISZ LAUREATA",use_container_width=True)
+                if save:
+                    cand=next(x for x in candidates if str(x.get("id"))==str(choice))
+                    db.set_award_selection(year,cat["key"],str(cand.get("id")),str(cand.get("name")))
+                    st.success(f"Zapisano: {cat['title']} — {cand.get('name')}");rr()
+            st.divider()
         if st.button("🔒 Zablokuj wybór laureatów",use_container_width=True,key="awards_lock"):
             st.session_state.awards_admin_ok=False;rr()
 

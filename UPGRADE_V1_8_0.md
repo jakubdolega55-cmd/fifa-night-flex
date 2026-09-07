@@ -48,3 +48,12 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - doprecyzowano opis klasyfikacji, aby „2 drużyny / 2 dobre” nie wyglądało jak 100% udanych startów;
 - ranking nadal premiuje liczbę różnych drużyn spełniających próg, szerokość puli oraz ogólne W%;
 - w uzasadnieniu pokazujemy teraz osobno liczbę różnych drużyn, liczbę drużyn spełniających próg, liczbę startów i W%.
+
+### Awards hotfix 3 — defensywa, nominacje i kolejność gali
+- `Beton Roku` uwzględnia teraz czyste konta zarówno w punktacji, jak i w opisie kandydata;
+- w opisach Awards zrezygnowano ze skrótów GF/GA/GD na rzecz polskich określeń (np. „bilans bramek/mecz”);
+- pod rankingami dodano `Najczęściej nominowani`: liczba unikalnych kategorii TOP 3, TOP 5 oraz liczba pozycji #1; kategorie drużynowe/meczowe nie nabijają nominacji graczom;
+- wybór laureatów ma teraz trzy celowo ułożone etapy: główne nagrody, specjalistyczne oraz specjalne/finał gali;
+- przy każdym kandydacie z TOP 3 widać, ile nagród ma już wybranych; kandydat bez nagrody jest oznaczony jako `bez nagrody`, co ułatwia rozłożenie wyróżnień przy zbliżonych kandydaturach;
+- nad wyborem laureatów wyświetlany jest bieżący rozkład nagród per gracz;
+- `Król Strzelców FIFA Night` liczy nagrodę do właściwego gracza kontrolującego danego piłkarza, dzięki czemu licznik rozkładu nagród pozostaje poprawny.
