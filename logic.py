@@ -470,14 +470,18 @@ def winner_from_result(home_score:int,away_score:int,home_id:str,away_id:str,hom
     return home_id if home_pen>away_pen else away_id
 
 
-def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | None, rng: random.Random) -> list[dict]:
+def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> list[dict]:
     """Reorder only the independent opening games; never change the drawn pairings.
 
     Logical match numbers stay attached to their original pairings. The returned list
     only describes the preferred *play order*. Higher carry-over wait means an earlier
     first game is preferred, while back-to-back games and very long gaps are penalized.
+    A player who did not take part in the immediately previous tournament gets an
+    additional opening priority, so a newcomer/returning-after-a-break player is not
+    left waiting until match 5 or 6 when an equally safe earlier order exists.
     """
     priority = {str(k): max(0, int(v or 0)) for k, v in (start_priority or {}).items()}
+    newcomers = {str(x) for x in (new_player_ids or []) if x}
     if not plan:
         return plan
 
@@ -556,14 +560,20 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
         max_gap = max(gaps) if gaps else 0
         max_first = max(first.values()) if first else 0
 
+        # Players absent from the immediately previous tournament should start early.
+        # We minimise both the latest newcomer debut and their total waiting time.
+        newcomer_positions = [first.get(pid, len(seq)+1) for pid in newcomers if pid in first]
+        newcomer_latest = max(newcomer_positions) if newcomer_positions else 0
+        newcomer_delay = sum(max(0, pos-1) for pos in newcomer_positions)
+
         # A player from the very last match of the previous tournament should ideally
         # get one complete match of rest before starting again.
-        just_finished = {pid for pid,wait in priority.items() if wait == 0}
+        just_finished = {pid for pid,wait in priority.items() if wait == 0 and pid not in newcomers}
         immediate_restart = sum(1 for pid in just_finished if first.get(pid) == 1)
 
         # Long-waiting players are gently pulled towards an earlier opener.
         priority_cost = sum((first.get(pid, len(seq)+1)-1) * (1 + priority.get(pid, 0)*4) for pid in first)
-        return (back, max_gap, max_first, immediate_restart, priority_cost)
+        return (back, max_gap, max_first, newcomer_latest, newcomer_delay, immediate_restart, priority_cost)
 
     # Never buy cross-tournament fairness by making the current tournament's opening
     # schedule worse. The original schedule is always a candidate, so this set cannot
@@ -571,7 +581,7 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
     # who just played the previous final, then favour players who waited longer.
     base_q = quality(base_seq)
     safe = [seq for seq in candidates if quality(seq)[0] <= base_q[0] and quality(seq)[1] <= base_q[1] and quality(seq)[2] <= base_q[2]]
-    best = min(safe, key=lambda seq:(quality(seq)[0], quality(seq)[3], quality(seq)[1], quality(seq)[2], quality(seq)[4]))
+    best = min(safe, key=lambda seq:(quality(seq)[0], quality(seq)[3], quality(seq)[4], quality(seq)[5], quality(seq)[1], quality(seq)[2], quality(seq)[6]))
     reordered_opening = [opening[idx] for idx in best]
     out = [dict(x) for x in plan]
     # Only list order changes. Every item keeps its original match_no and sources.
@@ -580,7 +590,7 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
     return out
 
 
-def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | None, rng: random.Random) -> str | None:
+def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> str | None:
     """Random BYE draw with a soft handicap for at most two longest-waiting players.
 
     Nobody is excluded. Among the actual BYE candidates, the longest-waiting player
@@ -591,9 +601,10 @@ def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | 
     if not vals:
         return None
     priority = {str(k): max(0, int(v or 0)) for k, v in (start_priority or {}).items()}
-    ranked = [(priority.get(pid, 0), rng.random(), pid) for pid in vals]
+    newcomers = {str(x) for x in (new_player_ids or []) if x}
+    ranked = [(priority.get(pid, 0), rng.random(), pid) for pid in vals if pid not in newcomers]
     ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    discounted = {}
+    discounted = {pid: 0.15 for pid in vals if pid in newcomers}
     if ranked and ranked[0][0] > 0:
         discounted[ranked[0][2]] = 0.25
     if len(ranked) > 1 and ranked[1][0] > 0:
@@ -608,7 +619,7 @@ def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | 
             return pid
     return vals[-1]
 
-def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random) -> dict:
+def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> dict:
     """Softly weight the initial WB BYE while keeping all non-BYE pairings random."""
     if format_key not in ("double5", "double7") or not start_priority:
         return draw
@@ -616,7 +627,7 @@ def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_prior
     slots = dict(draw.get("slots") or {})
     if bye_slot not in slots:
         return draw
-    selected = weighted_bye_choice(list(slots.values()), start_priority, rng)
+    selected = weighted_bye_choice(list(slots.values()), start_priority, rng, new_player_ids)
     if not selected or selected == slots[bye_slot]:
         return draw
     selected_slot = next((slot for slot, pid in slots.items() if str(pid) == str(selected)), None)

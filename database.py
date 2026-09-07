@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 import json
 import os
 from pathlib import Path
@@ -24,10 +25,11 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 1741
+DB_API_VERSION = 1770
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
+LAST_STAKE_KEY = "flex_last_stake_pln"
 
 
 def now_iso() -> str:
@@ -248,6 +250,79 @@ class Database:
                 return [str(x) for x in vals][:count] if isinstance(vals, list) else []
             except Exception: return []
 
+    @staticmethod
+    def _stake_cents(value) -> int:
+        try:
+            dec = Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except Exception:
+            raise ValueError("Nieprawidłowa stawka.")
+        if dec < 0:
+            raise ValueError("Stawka nie może być ujemna.")
+        if dec > Decimal("100000"):
+            raise ValueError("Stawka jest zbyt wysoka.")
+        return int(dec * 100)
+
+    def last_stake(self) -> float:
+        with self.connect() as conn:
+            raw = self._setting_get_conn(conn, LAST_STAKE_KEY)
+            try:
+                return self._stake_cents(raw) / 100 if raw is not None else 0.0
+            except ValueError:
+                return 0.0
+
+    def set_tournament_finance(self, tid: str, stake_per_player: float, settled: bool | None = None) -> None:
+        """Update the stake and, optionally, the cash-settlement status of a completed official Flex tournament."""
+        cents = self._stake_cents(stake_per_player)
+        with self.connect() as conn:
+            t = self._fetchone(conn, "SELECT status,is_test FROM tournaments WHERE id=?", (tid,))
+            if not t or t.get("status") != "completed" or int(t.get("is_test") or 0) != 0:
+                raise ValueError("Rozliczenia można edytować tylko dla zakończonych oficjalnych turniejów.")
+            meta, extra = self._meta_extra_conn(conn, tid)
+            extra["stake_per_player"] = cents / 100
+            if settled is not None:
+                extra["cash_settled"] = bool(settled)
+                if settled:
+                    extra["cash_settled_at"] = now_iso()
+                else:
+                    extra.pop("cash_settled_at", None)
+            conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"), (json.dumps(extra, ensure_ascii=False), tid))
+
+    def set_tournament_stake(self, tid: str, stake_per_player: float) -> None:
+        self.set_tournament_finance(tid, stake_per_player, None)
+
+    def set_tournament_settled(self, tid: str, settled: bool) -> None:
+        with self.connect() as conn:
+            t = self._fetchone(conn, "SELECT status,is_test FROM tournaments WHERE id=?", (tid,))
+            if not t or t.get("status") != "completed" or int(t.get("is_test") or 0) != 0:
+                raise ValueError("Rozliczenia można zmieniać tylko dla zakończonych oficjalnych turniejów.")
+            meta, extra = self._meta_extra_conn(conn, tid)
+            extra["cash_settled"] = bool(settled)
+            if settled:
+                extra["cash_settled_at"] = now_iso()
+            else:
+                extra.pop("cash_settled_at", None)
+            conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"), (json.dumps(extra, ensure_ascii=False), tid))
+
+    def set_tournaments_settled(self, tournament_ids: list[str], settled: bool) -> int:
+        tids = list(dict.fromkeys(str(x) for x in (tournament_ids or []) if x))
+        if not tids:
+            return 0
+        changed = 0
+        with self.connect() as conn:
+            for tid in tids:
+                t = self._fetchone(conn, "SELECT status,is_test FROM tournaments WHERE id=?", (tid,))
+                if not t or t.get("status") != "completed" or int(t.get("is_test") or 0) != 0:
+                    continue
+                meta, extra = self._meta_extra_conn(conn, tid)
+                extra["cash_settled"] = bool(settled)
+                if settled:
+                    extra["cash_settled_at"] = now_iso()
+                else:
+                    extra.pop("cash_settled_at", None)
+                conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"), (json.dumps(extra, ensure_ascii=False), tid))
+                changed += 1
+        return changed
+
     def official_player_names(self) -> list[str]:
         """Nicki graczy, którzy wystąpili w co najmniej jednym zakończonym turnieju nietestowym."""
         with self.connect() as conn:
@@ -335,11 +410,13 @@ class Database:
         return order
 
     def _cross_tournament_priority_conn(self, conn, current_names: list[str], current_pids: list[str], is_test: bool) -> dict:
-        """Carry only exact-name matches from the immediately previous completed tournament.
+        """Fairness context from the immediately previous completed tournament.
 
-        The score is the number of already-played matches that happened after a player's
-        final appearance in that previous tournament. This works across different player
-        counts and formats because it is player-based, not bracket-based.
+        Exact-name matches receive their real wait (number of matches played after their
+        last appearance). A player absent from the immediately previous tournament is
+        treated as a newcomer/returning-after-a-break player and receives the strongest
+        opening priority, but only when at least one current player actually played in
+        that previous tournament. This keeps an all-new lineup fully random.
         """
         prev=self._fetchone(conn,"""
             SELECT id,completed_at,created_at
@@ -366,9 +443,6 @@ class Database:
         """,(prev["id"],))
         if not played:
             return {}
-        # Fairness must follow the real play sequence, because from v1.7.0 the app may
-        # play logical match numbers in a different order. Legacy rows without played_at
-        # naturally fall back to match_no through the ORDER BY above.
         last_pos={}
         for pos,m in enumerate(played):
             for pid in (m.get("home_player_id"),m.get("away_player_id")):
@@ -377,18 +451,32 @@ class Database:
         max_no=max(int(m["match_no"]) for m in played)
 
         current_by_name={name:pid for name,pid in zip(current_names,current_pids)}
-        matched=[];priority={}; placements={}
+        matched=[];priority={};placements={};newcomers=[]
         for name,pid in current_by_name.items():
             prev_pid=exact_prev.get(name)
             if not prev_pid:
+                newcomers.append({"name":name,"player_id":pid})
                 continue
             wait=int(wait_by_pid.get(prev_pid,0))
             priority[pid]=wait
             if prev_pid in placement_prev: placements[pid]=int(placement_prev[prev_pid])
             matched.append({"name":name,"wait_matches":wait,"place":placements.get(pid)})
+
+        # If nobody from the previous tournament is here, everybody is equally fresh.
+        # Don't manufacture a priority between a completely new lineup.
         if not matched:
             return {}
+
+        # New/returning-after-a-break players waited longer than anyone who just played
+        # the previous tournament. The value only ranks opening order; it is not shown.
+        newcomer_priority=len(played)+2
+        for item in newcomers:
+            priority[str(item["player_id"])]=newcomer_priority
+            item["wait_matches"]=newcomer_priority
+            item["place"]=None
+
         matched.sort(key=lambda x:(-int(x["wait_matches"]),x["name"]))
+        newcomers.sort(key=lambda x:x["name"])
         return {
             "source_tournament_id":prev["id"],
             "exact_name_match":True,
@@ -396,6 +484,8 @@ class Database:
             "placement_by_player_id":placements,
             "source_player_count":len(prev_players),
             "matched":matched,
+            "newcomers":newcomers,
+            "new_player_ids":[str(x["player_id"]) for x in newcomers],
             "source_last_match_no":max_no,
         }
 
@@ -410,7 +500,7 @@ class Database:
             return {"playoff_reveal_ack": False, "playoff_order": None}
         return {}
 
-    def create_tournament(self, player_names: list[str], player_count: int, format_key: str, teams: list[str], is_test: bool) -> str:
+    def create_tournament(self, player_names: list[str], player_count: int, format_key: str, teams: list[str], is_test: bool, stake_per_player: float = 0.0) -> str:
         if player_count not in (4,5,6,7,8): raise ValueError("Obsługiwane są turnieje 4–8 osobowe.")
         if len(player_names) != player_count: raise ValueError(f"Turniej wymaga dokładnie {player_count} graczy.")
         clean = [" ".join(str(x or "").strip().split()) for x in player_names]
@@ -426,6 +516,8 @@ class Database:
         if player_count == 7 and format_key not in ("double7", "groups7", "groups7_sf"): raise ValueError("Wybierz format turnieju 7-osobowego.")
         if player_count == 8 and format_key not in ("groups8_sf", "double8", "groups8_barrage"): raise ValueError("Wybierz format turnieju 8-osobowego.")
 
+        stake_cents=self._stake_cents(stake_per_player)
+        stake_value=stake_cents/100
         tid = str(uuid.uuid4()); rng = random.SystemRandom()
         with self.connect() as conn:
             pids = [self._get_or_create_player_conn(conn, n) for n in clean]
@@ -439,14 +531,16 @@ class Database:
                 reveal=pids.copy(); rng.shuffle(reveal)
             reveal_idx = {p:i+1 for i,p in enumerate(reveal)}
             draw = build_draw(pids, format_key, rng); extra = self._extra_for_format(format_key, rng)
+            extra["stake_per_player"]=stake_value
             if carry:
-                draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng)
+                draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 extra["cross_tournament_priority"]=carry
             if draft_mode:
                 extra.update({"draft_order_revealed":False,"draft_redraw_count":0})
             self._setting_set_conn(conn, CURRENT_KEY, tid)
             self._setting_set_conn(conn, LAST_COUNT_KEY, str(player_count))
             self._setting_set_conn(conn, f"flex_last_lineup_{player_count}", json.dumps(clean, ensure_ascii=False))
+            self._setting_set_conn(conn, LAST_STAKE_KEY, f"{stake_value:.2f}")
             # is_current intentionally remains 0. The classic 6-player app therefore never mistakes this for its live tournament.
             initial_phase = "draft_order" if draft_mode else "team_draw"
             conn.execute(self._sql("INSERT INTO tournaments (id,status,phase,is_test,is_current,groups_revealed,created_at) VALUES (?,'active',?, ?,0,0,?)"), (tid, initial_phase, int(is_test), now_iso()))
@@ -479,7 +573,8 @@ class Database:
                 return None
             meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id = ?", (tid,))
             if not meta: return None
-            t.update({"player_count": int(meta["player_count"]), "format_key": meta["format_key"], "draw_revealed": int(meta["draw_revealed"]), "redraw_count": int(meta["redraw_count"])})
+            extra=json.loads(meta.get("extra_json") or "{}")
+            t.update({"player_count": int(meta["player_count"]), "format_key": meta["format_key"], "draw_revealed": int(meta["draw_revealed"]), "redraw_count": int(meta["redraw_count"]), "stake_per_player": float(extra.get("stake_per_player") or 0)})
             return t
 
     def tournament_players(self, tid: str) -> list[dict]:
@@ -661,9 +756,11 @@ class Database:
             # status, so correcting a mistaken status before the start also corrects
             # the next reroll's BYE weighting and opening-order context.
             carry=self._cross_tournament_priority_conn(conn,names,pids,bool(int((t or {}).get("is_test") or 0)))
+            previous_extra=json.loads(meta.get("extra_json") or "{}")
             extra = self._extra_for_format(meta["format_key"], rng)
+            extra["stake_per_player"]=float(previous_extra.get("stake_per_player") or 0)
             if carry:
-                new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng)
+                new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 extra["cross_tournament_priority"]=carry
             conn.execute(self._sql("UPDATE flex_tournament_meta SET draw_json=?,extra_json=?,draw_revealed=1,redraw_count=redraw_count+1 WHERE tournament_id=?"), (json.dumps(new),json.dumps(extra),tid))
             # As above, defer group metadata writes until the draw is accepted.
@@ -685,7 +782,7 @@ class Database:
             else: extra.pop("cross_tournament_priority",None)
             plan = schedule_for_format(draw, meta["format_key"], extra, rng)
             carry=(carry_info.get("priority_by_player_id") or {}) if carry_info else {}
-            preferred=optimize_opening_order(plan,carry,rng) if carry else [dict(x) for x in plan]
+            preferred=optimize_opening_order(plan,carry,rng,(carry_info.get("new_player_ids") or []) if carry_info else []) if carry else [dict(x) for x in plan]
             extra["match_play_order"]=[int(x["match_no"]) for x in preferred]
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"), (tid,))
@@ -891,7 +988,8 @@ class Database:
             if not extra.get("d7_lb_bye_match"):
                 carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
                 loser_by_match={no:self._loser_of(mm.get(no)) for no in (1,2,3)}
-                chosen_pid=weighted_bye_choice([pid for pid in loser_by_match.values() if pid],carry,rng) if carry else None
+                new_ids=(extra.get("cross_tournament_priority") or {}).get("new_player_ids") or []
+                chosen_pid=weighted_bye_choice([pid for pid in loser_by_match.values() if pid],carry,rng,new_ids) if carry else None
                 chosen_no=next((no for no,pid in loser_by_match.items() if chosen_pid and pid==chosen_pid),None)
                 extra["d7_lb_bye_match"]=int(chosen_no or rng.choice([1,2,3]))
                 extra["d7_pairing"]=None
@@ -1003,7 +1101,8 @@ class Database:
             if not extra.get("d7_lb_bye_match"):
                 carry=(extra.get("cross_tournament_priority") or {}).get("priority_by_player_id") or {}
                 loser_by_match={no:self._loser_of(mm.get(no)) for no in (1,2,3)}
-                chosen_pid=weighted_bye_choice([pid for pid in loser_by_match.values() if pid],carry,rng) if carry else None
+                new_ids=(extra.get("cross_tournament_priority") or {}).get("new_player_ids") or []
+                chosen_pid=weighted_bye_choice([pid for pid in loser_by_match.values() if pid],carry,rng,new_ids) if carry else None
                 chosen_no=next((no for no,pid in loser_by_match.items() if chosen_pid and pid==chosen_pid),None)
                 extra["d7_lb_bye_match"]=int(chosen_no or rng.choice([1,2,3])); extra["d7_lb_draw_ack"]=False; extra["d7_pairing"]=None
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
@@ -1635,6 +1734,163 @@ class Database:
     def set_history_locked(self, locked: bool) -> None:
         with self.connect() as conn:
             self._setting_set_conn(conn,"fifa_history_locked","1" if locked else "0")
+
+    def settlement_tournaments(self, limit: int = 20) -> list[dict]:
+        """Recent completed official tournaments available for cash settlement."""
+        limit=max(1,min(100,int(limit or 20)))
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""
+                SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name AS champion_name,
+                       fm.player_count,fm.format_key,fm.extra_json
+                FROM tournaments t
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                LEFT JOIN players p ON p.id=t.champion_player_id
+                WHERE t.status='completed' AND t.is_test=0
+                ORDER BY COALESCE(t.completed_at,t.created_at) DESC,t.created_at DESC
+                LIMIT ?
+            """,(limit,))
+            official=self._fetchall(conn,"""
+                SELECT id FROM tournaments
+                WHERE status='completed' AND is_test=0
+                ORDER BY COALESCE(completed_at,created_at),created_at,id
+            """)
+            numbers={str(r["id"]):i+1 for i,r in enumerate(official)}
+        out=[]
+        for r in rows:
+            try: extra=json.loads(r.get("extra_json") or "{}")
+            except Exception: extra={}
+            stake_cents=self._stake_cents(extra.get("stake_per_player") or 0)
+            out.append({
+                "id":str(r["id"]),"official_no":numbers.get(str(r["id"])),
+                "created_at":r.get("created_at"),"completed_at":r.get("completed_at"),
+                "champion_player_id":r.get("champion_player_id"),"champion_name":r.get("champion_name"),
+                "player_count":int(r.get("player_count") or 0),"format_key":r.get("format_key"),
+                "stake_cents":stake_cents,"stake_per_player":stake_cents/100,
+                "settled":bool(extra.get("cash_settled") or False),
+                "settled_at":extra.get("cash_settled_at"),
+            })
+        return out
+
+    def financial_ranking(self) -> list[dict]:
+        """All-time money balance for completed official Flex tournaments with a positive stake.
+
+        Settled tournaments remain part of this historical ranking; the settled flag only
+        controls whether a tournament still needs a real-world transfer.
+        """
+        with self.connect() as conn:
+            rows = self._fetchall(conn, """
+                SELECT t.id AS tournament_id,t.champion_player_id,fm.extra_json,
+                       tp.player_id,p.name
+                FROM tournaments t
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                JOIN tournament_players tp ON tp.tournament_id=t.id
+                JOIN players p ON p.id=tp.player_id
+                WHERE t.status='completed' AND t.is_test=0
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id
+            """)
+        by_tid=defaultdict(list); champions={}; stakes={}
+        for r in rows:
+            tid=str(r["tournament_id"]); pid=str(r["player_id"]); name=str(r.get("name") or "?")
+            if tid not in stakes:
+                try: extra=json.loads(r.get("extra_json") or "{}")
+                except Exception: extra={}
+                stakes[tid]=self._stake_cents(extra.get("stake_per_player") or 0)
+                champions[tid]=str(r.get("champion_player_id") or "")
+            by_tid[tid].append((pid,name))
+        stats={}
+        for tid,members in by_tid.items():
+            stake=int(stakes.get(tid) or 0)
+            if stake<=0 or not members:
+                continue
+            unique=[]; seen=set()
+            for pid,name in members:
+                if pid in seen: continue
+                seen.add(pid); unique.append((pid,name))
+            champ=champions.get(tid,"")
+            if champ not in seen:
+                continue
+            for pid,name in unique:
+                row=stats.setdefault(pid,{"player_id":pid,"name":name,"paid_cents":0,"won_cents":0,"paid_tournaments":0,"wins":0})
+                row["name"]=name
+                row["paid_cents"]+=stake
+                row["paid_tournaments"]+=1
+            pot=stake*len(unique)
+            stats[champ]["won_cents"]+=pot
+            stats[champ]["wins"]+=1
+        out=[]
+        for row in stats.values():
+            item=dict(row)
+            item["balance_cents"]=int(item["won_cents"])-int(item["paid_cents"])
+            out.append(item)
+        out.sort(key=lambda x:(-int(x["balance_cents"]),-int(x["won_cents"]),str(x["name"])))
+        return out
+
+    def settlement_summary(self, tournament_ids: list[str]) -> dict:
+        """Net several winner-takes-pool tournaments into a short transfer list.
+
+        For each selected tournament every participant contributes the same per-person
+        stake and the champion receives the full pot. Across tournaments we then net
+        balances, so reciprocal debts cancel before transfer instructions are produced.
+        """
+        tids=list(dict.fromkeys(str(x) for x in (tournament_ids or []) if x))
+        if not tids:
+            return {"tournaments":[],"balances":[],"transfers":[],"total_pot_cents":0}
+        qmarks=','.join('?' for _ in tids)
+        with self.connect() as conn:
+            rows=self._fetchall(conn,f"""
+                SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name AS champion_name,
+                       fm.player_count,fm.format_key,fm.extra_json
+                FROM tournaments t
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                LEFT JOIN players p ON p.id=t.champion_player_id
+                WHERE t.id IN ({qmarks}) AND t.status='completed' AND t.is_test=0
+            """,tuple(tids))
+            participants=self._fetchall(conn,f"""
+                SELECT tp.tournament_id,tp.player_id,p.name
+                FROM tournament_players tp JOIN players p ON p.id=tp.player_id
+                WHERE tp.tournament_id IN ({qmarks})
+            """,tuple(tids))
+        by_tid={str(r["id"]):r for r in rows}
+        players_by_tid=defaultdict(list)
+        names={}
+        for r in participants:
+            tid=str(r["tournament_id"]);pid=str(r["player_id"]);name=str(r.get("name") or "?")
+            players_by_tid[tid].append(pid);names[pid]=name
+        balances=defaultdict(int);used=[];total_pot=0
+        for tid in tids:
+            r=by_tid.get(tid)
+            if not r or not r.get("champion_player_id"): continue
+            try: extra=json.loads(r.get("extra_json") or "{}")
+            except Exception: extra={}
+            stake=self._stake_cents(extra.get("stake_per_player") or 0)
+            pids=players_by_tid.get(tid,[])
+            champ=str(r.get("champion_player_id") or "")
+            if stake<=0 or not pids or champ not in pids: continue
+            for pid in pids: balances[pid]-=stake
+            balances[champ]+=stake*len(pids)
+            total_pot+=stake*len(pids)
+            used.append({
+                "id":tid,"completed_at":r.get("completed_at"),"created_at":r.get("created_at"),
+                "champion_name":r.get("champion_name") or names.get(champ,"?"),
+                "player_count":int(r.get("player_count") or len(pids)),"format_key":r.get("format_key"),
+                "stake_cents":stake,"settled":bool(extra.get("cash_settled") or False),
+            })
+        debtors=[[pid,-amount] for pid,amount in balances.items() if amount<0]
+        creditors=[[pid,amount] for pid,amount in balances.items() if amount>0]
+        debtors.sort(key=lambda x:(-x[1],names.get(x[0],x[0])))
+        creditors.sort(key=lambda x:(-x[1],names.get(x[0],x[0])))
+        transfers=[];i=j=0
+        while i<len(debtors) and j<len(creditors):
+            amount=min(debtors[i][1],creditors[j][1])
+            if amount>0:
+                transfers.append({"from_player_id":debtors[i][0],"from_name":names.get(debtors[i][0],"?"),
+                                  "to_player_id":creditors[j][0],"to_name":names.get(creditors[j][0],"?"),"amount_cents":amount})
+            debtors[i][1]-=amount;creditors[j][1]-=amount
+            if debtors[i][1]==0:i+=1
+            if creditors[j][1]==0:j+=1
+        balance_rows=[{"player_id":pid,"name":names.get(pid,"?"),"balance_cents":amount} for pid,amount in balances.items()]
+        balance_rows.sort(key=lambda x:(-x["balance_cents"],x["name"]))
+        return {"tournaments":used,"balances":balance_rows,"transfers":transfers,"total_pot_cents":total_pot}
 
     def last_completed_tournament(self) -> dict | None:
         with self.connect() as conn:

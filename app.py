@@ -19,6 +19,10 @@ if not st.session_state.get("_flex_schema_ready"):
 
 def esc(x):return html.escape(str(x or ""))
 def format_option(x):return f"{FORMAT_LABELS[x]} • {FORMAT_MATCH_COUNTS[x]}"
+def pln_cents(cents:int)->str:
+    return f"{int(cents or 0)/100:.2f}".replace(".",",")
+def pln_value(value:float)->str:
+    return f"{float(value or 0):.2f}".replace(".",",")
 def rr():st.rerun()
 def rf():st.rerun(scope="fragment")
 
@@ -38,7 +42,9 @@ def render_tournament_status_control(t:dict, loc:str):
     is_test=bool(int(t.get("is_test") or 0))
     current="🧪 Testowy" if is_test else "🏆 Oficjalny"
     target="oficjalny" if is_test else "testowy"
-    with st.expander(f"⚙️ Status turnieju • {current}",expanded=False):
+    stake=float(t.get("stake_per_player") or 0)
+    stake_label=f" • 💰 {pln_value(stake)} zł/os." if stake>0 else ""
+    with st.expander(f"⚙️ Status turnieju • {current}{stake_label}",expanded=False):
         st.caption("Możesz zmienić status bez resetowania turnieju. Wyniki, drabinka i strzelcy zostają bez zmian. Po zakończeniu status decyduje, czy turniej liczy się do statystyk oficjalnych.")
         if st.button(f"Zmień na {target}",use_container_width=True,key=f"mode_{loc}_{t['id']}_{int(is_test)}"):
             db.set_test_mode(t["id"],not is_test)
@@ -125,9 +131,31 @@ def start_defaults(count:int, official_names:list[str]):
 
 
 def render_start():
-    start_opts=["🎮 Nowy turniej","📊 Statystyki"]
-    start_view=st.segmented_control("Widok",start_opts,default=start_opts[0],key="start_view",label_visibility="collapsed") or start_opts[0]
-    if start_view==start_opts[1]:
+    # Start navigation deliberately uses regular buttons instead of
+    # st.segmented_control. On some Streamlit/theme combinations the
+    # segmented-control labels can render invisibly (only the underline is
+    # visible), which made the Statistics entry look as if it wasn't there.
+    start_view=st.session_state.get("start_view","tournament")
+    nav1,nav2=st.columns(2)
+    with nav1:
+        if st.button(
+            "🎮 NOWY TURNIEJ",
+            type="primary" if start_view=="tournament" else "secondary",
+            use_container_width=True,
+            key="start_nav_tournament",
+        ):
+            st.session_state.start_view="tournament"
+            start_view="tournament"
+    with nav2:
+        if st.button(
+            "📊 STATYSTYKI",
+            type="primary" if start_view=="stats" else "secondary",
+            use_container_width=True,
+            key="start_nav_stats",
+        ):
+            st.session_state.start_view="stats"
+            start_view="stats"
+    if start_view=="stats":
         hero("Statystyki i historia oficjalnych turniejów.")
         render_stats()
         return
@@ -148,6 +176,8 @@ def render_start():
         st.session_state.format8=st.radio("Format dla 8 graczy",["groups8_sf","double8","groups8_barrage"],format_func=format_option,horizontal=False,key="format8_radio")
     fmt=format_for(count)
     st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}  \n**Łącznie:** {FORMAT_MATCH_COUNTS[fmt]}")
+    if "stake_per_player" not in st.session_state:
+        st.session_state.stake_per_player=float(db.last_stake())
     with st.form(f"create_{count}_{fmt}"):
         st.caption("Nicki z oficjalnych statystyk są podpowiadane podczas wpisywania. Możesz też wpisać nowego gracza.")
         cols=st.columns(2); names=[]
@@ -171,10 +201,12 @@ def render_start():
             teams=SEVEN_TEAMS.copy(); st.caption("Pula drużyn: 5 klubów + 2 dzikie karty. Real Madryt banned.")
         else:
             teams=EIGHT_TEAMS.copy(); st.caption("Pula drużyn: 5 klubów + 3 dzikie karty. Real Madryt banned.")
+        stake=st.number_input("💰 Stawka na osobę (zł)",min_value=0.0,step=5.0,format="%.2f",key="stake_per_player")
+        st.caption("Rozliczenie: każdy uczestnik wpłaca tę samą stawkę, a zwycięzca bierze całą pulę. Po kilku turniejach aplikacja skompensuje należności.")
         test=st.toggle("🧪 Tryb testowy",value=True,key=f"test_{count}")
         go=st.form_submit_button("🎮 UTWÓRZ TURNIEJ",type="primary",use_container_width=True)
     if go:
-        try:db.create_tournament(names,count,fmt,teams,test);st.session_state.pop("last_spin",None);rr()
+        try:db.create_tournament(names,count,fmt,teams,test,stake);st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
     with st.expander("⚙️ Historia i baza"):
         render_history_admin()
@@ -608,6 +640,9 @@ def live(tid:str):
         st.markdown(f'<div class="winner"><div class="match-no">MISTRZ TURNIEJU</div><div style="font-size:3rem">🏆</div><div class="player-big">{esc(champ)}</div></div>',unsafe_allow_html=True)
         if st.session_state.get("celebrated")!=tid:st.balloons();st.session_state.celebrated=tid
         st.markdown("### 📋 Podsumowanie turnieju")
+        stake=float((b.get("meta",{}).get("extra") or {}).get("stake_per_player") or 0)
+        if stake>0:
+            st.info(f"💰 **Stawka:** {pln_value(stake)} zł / osoba • **pula:** {pln_value(stake*len(b.get('players',[])))} zł")
         champ_record=summary.get("champion_record") or {}
         champ_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==champ),"—")
         st.success(
@@ -689,7 +724,7 @@ def render_stats(t=None):
     st.caption("Wszystkie zakończone turnieje nietestowe zapisane w bazie.")
     stats=db.all_time_stats()
     if not stats:st.info("Brak zakończonych turniejów nietestowych.");return
-    tab1,tab2,tab3,tab4,tab5,tab6=st.tabs(["🏆 Ranking","⚔️ H2H","🏛️ Rekordy","👥 Drużyny","👤 Gracze","⚽ Strzelcy"])
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs(["🏆 Ranking","⚔️ H2H","🏛️ Rekordy","👥 Drużyny","👤 Gracze","⚽ Strzelcy","💸 Rozliczenia"])
     with tab1:
         leader=stats[0];c1,c2,c3,c4=st.columns(4);c1.metric("🐐 Lider",leader["name"]);c2.metric("🏆 Tytuły",leader["titles"]);tg=max(stats,key=lambda x:x["gf"]);c3.metric("⚽ Król bramek",tg["name"],f"{tg['gf']} goli");tw=max(stats,key=lambda x:x["w"]);c4.metric("🔥 Najwięcej wygranych",tw["name"],f"{tw['w']} W")
         df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
@@ -814,6 +849,147 @@ def render_stats(t=None):
                     if n:st.success(f"Dodano {n} zawodników do {selected_team}.");rf()
                     else:st.info("Wszyscy wpisani zawodnicy byli już na liście.")
                 except ValueError as e:st.error(str(e))
+
+    with tab7:
+        st.markdown("### 💸 Rozliczenia turniejów")
+        st.caption("Każdy uczestnik wpłaca stawkę na osobę, zwycięzca bierze pulę. Status rozliczenia mówi tylko, czy przelewy zostały już wykonane — historyczny bilans finansowy zawsze zachowuje wszystkie płatne oficjalne turnieje.")
+
+        st.markdown("#### 📈 Ranking finansowy")
+        finance=db.financial_ranking()
+        if finance:
+            best=finance[0]
+            worst=min(finance,key=lambda x:(int(x.get("balance_cents") or 0),str(x.get("name") or "")))
+            c1,c2=st.columns(2)
+            best_amount=int(best.get("balance_cents") or 0); worst_amount=int(worst.get("balance_cents") or 0)
+            best_sign="+" if best_amount>0 else ""; worst_sign="+" if worst_amount>0 else ""
+            c1.metric("💰 Najbardziej na plus",f"{best.get('name')} • {best_sign}{pln_cents(best_amount)} zł")
+            c2.metric("📉 Najbardziej na minus",f"{worst.get('name')} • {worst_sign}{pln_cents(worst_amount)} zł")
+            finance_rows=[]
+            for i,row in enumerate(finance,1):
+                amount=int(row.get("balance_cents") or 0); sign="+" if amount>0 else ""
+                finance_rows.append({
+                    "#":i,
+                    "Gracz":row.get("name"),
+                    "Bilans":f"{sign}{pln_cents(amount)} zł",
+                    "Wygrane":f"{pln_cents(row.get('won_cents') or 0)} zł",
+                    "Wpłacone":f"{pln_cents(row.get('paid_cents') or 0)} zł",
+                    "Płatne turnieje":int(row.get("paid_tournaments") or 0),
+                    "Wygrane turnieje":int(row.get("wins") or 0),
+                })
+            st.dataframe(pd.DataFrame(finance_rows),hide_index=True,use_container_width=True)
+            st.caption("Ranking liczy wszystkie zakończone oficjalne turnieje z dodatnią stawką — także te oznaczone już jako rozliczone.")
+        else:
+            st.info("Ranking finansowy pojawi się po zakończeniu pierwszego oficjalnego turnieju z wpisaną stawką.")
+
+        st.divider()
+        st.markdown("#### 💳 Bieżące rozliczenie")
+        st.caption("Wybierz kilka nierozliczonych turniejów, a aplikacja skompensuje wzajemne należności i poda najkrótszą listę końcowych przelewów.")
+        recent=db.settlement_tournaments(100)
+        if not recent:
+            st.info("Brak zakończonych oficjalnych turniejów do rozliczenia.")
+        else:
+            by_id={x["id"]:x for x in recent}
+            def settle_label(tid):
+                x=by_id[tid]; raw=x.get("completed_at") or x.get("created_at") or ""; date=str(raw)[:10] or "—"
+                no=f"#{x.get('official_no')}" if x.get("official_no") else "turniej"
+                status="✅ rozliczony" if x.get("settled") else "🟠 nierozliczony"
+                return f"{no} • {date} • {x['player_count']} graczy • 🏆 {x.get('champion_name') or '?'} • {pln_cents(x['stake_cents'])} zł/os. • {status}"
+
+            show_settled=st.toggle("Pokaż także rozliczone turnieje",value=False,key="settlement_show_settled")
+            available=[x for x in recent if show_settled or not x.get("settled")]
+            allowed_ids={x["id"] for x in available}
+            positive_unsettled=[x["id"] for x in available if int(x.get("stake_cents") or 0)>0 and not x.get("settled")]
+            default_ids=positive_unsettled[:min(4,len(positive_unsettled))]
+            select_key="settlement_tournaments_select"
+            if select_key not in st.session_state:
+                st.session_state[select_key]=default_ids
+            else:
+                current=st.session_state.get(select_key) or []
+                st.session_state[select_key]=[tid for tid in current if tid in allowed_ids]
+
+            if available:
+                selected=st.multiselect(
+                    "Turnieje do wspólnego rozliczenia",
+                    options=[x["id"] for x in available],
+                    format_func=settle_label,
+                    key=select_key,
+                    placeholder="Wybierz 2, 3, 4 lub więcej turniejów",
+                )
+                st.caption("Domyślnie zaznaczam maksymalnie 4 ostatnie nierozliczone turnieje z wpisaną stawką. Możesz wybrać dowolny zestaw.")
+            else:
+                selected=[]
+                st.success("✅ Wszystkie widoczne turnieje są już rozliczone.")
+
+            with st.expander("✏️ Ustaw stawkę lub zmień status starego turnieju"):
+                edit_tid=st.selectbox("Turniej",options=[x["id"] for x in recent],format_func=settle_label,key="settlement_edit_tid")
+                current_stake=float(by_id[edit_tid].get("stake_per_player") or 0)
+                current_settled=bool(by_id[edit_tid].get("settled"))
+                with st.form(f"settlement_edit_form_{edit_tid}"):
+                    edit_stake=st.number_input("Stawka na osobę (zł)",min_value=0.0,value=current_stake,step=5.0,format="%.2f",key=f"settlement_edit_value_{edit_tid}")
+                    edit_settled=st.checkbox("✅ Ten turniej jest już rozliczony",value=current_settled,key=f"settlement_edit_settled_{edit_tid}")
+                    st.caption("Możesz więc uzupełnić stawkę starego turnieju i od razu zaznaczyć, że pieniądze za niego zostały już rozliczone.")
+                    save_finance=st.form_submit_button("💾 ZAPISZ",use_container_width=True)
+                if save_finance:
+                    try:
+                        db.set_tournament_finance(edit_tid,edit_stake,edit_settled)
+                        st.success("Stawka i status rozliczenia zostały zapisane.")
+                        rr()
+                    except ValueError as e: st.error(str(e))
+
+            if selected:
+                settlement=db.settlement_summary(selected)
+                used=settlement.get("tournaments") or []
+                if not used:
+                    st.warning("Wybrane turnieje nie mają jeszcze wpisanej dodatniej stawki.")
+                else:
+                    st.markdown("#### 📋 Wybrane turnieje")
+                    used_ids={x["id"] for x in used}
+                    for tid in selected:
+                        if tid in used_ids:
+                            st.write(f"• **{settle_label(tid)}**")
+                    st.metric("Łączna suma wszystkich wpisowych",f"{pln_cents(settlement.get('total_pot_cents',0))} zł")
+
+                    st.markdown("#### 💳 Kto komu przelewa")
+                    transfers=settlement.get("transfers") or []
+                    if transfers:
+                        lines=[]
+                        for tr in transfers:
+                            text=f"{tr['from_name']} → {tr['to_name']}: {pln_cents(tr['amount_cents'])} zł"
+                            st.success(f"💸 **{text}**")
+                            lines.append(text)
+                        st.caption("Wzajemne należności są kompensowane — nie trzeba rozliczać każdego turnieju osobno.")
+                        st.code("\n".join(lines),language=None)
+                        export_lines=["FIFA NIGHT — ROZLICZENIE","","TURNIEJE:"]
+                        for tid in selected:
+                            if tid in used_ids: export_lines.append(f"- {settle_label(tid)}")
+                        export_lines += ["","PRZELEWY:"] + [f"- {line}" for line in lines] + ["","BILANS:"]
+                        for row in settlement.get("balances") or []:
+                            amount=int(row.get("balance_cents") or 0); sign="+" if amount>0 else ""
+                            export_lines.append(f"- {row.get('name')}: {sign}{pln_cents(amount)} zł")
+                        st.download_button("⬇️ Pobierz rozliczenie TXT",data="\n".join(export_lines),file_name="fifa-night-rozliczenie.txt",mime="text/plain",use_container_width=True,key="settlement_txt_download")
+                    else:
+                        st.success("✅ Po wybranych turniejach nikt nikomu nic nie jest winien.")
+
+                    st.markdown("#### ⚖️ Bilans wybranych turniejów")
+                    balance_rows=[]
+                    for row in settlement.get("balances") or []:
+                        amount=int(row.get("balance_cents") or 0)
+                        sign="+" if amount>0 else ""
+                        balance_rows.append({"Gracz":row.get("name"),"Bilans":f"{sign}{pln_cents(amount)} zł"})
+                    if balance_rows: st.dataframe(pd.DataFrame(balance_rows),hide_index=True,use_container_width=True)
+
+                    unsettled_used=[tid for tid in used_ids if not by_id.get(tid,{}).get("settled")]
+                    if unsettled_used:
+                        st.caption("Gdy przelewy są już wykonane, oznacz te turnieje jako rozliczone. Znikną z domyślnej listy, ale nadal zostaną w rankingu finansowym.")
+                        if st.button("✅ OZNACZ WYBRANE TURNIEJE JAKO ROZLICZONE",use_container_width=True,key="settlement_mark_selected_paid"):
+                            changed=db.set_tournaments_settled(unsettled_used,True)
+                            if changed: st.success(f"Oznaczono jako rozliczone: {changed} turniej(e).")
+                            rr()
+                    else:
+                        st.info("Te turnieje są już oznaczone jako rozliczone.")
+            elif available:
+                st.info("Wybierz turnieje, które chcesz razem rozliczyć.")
+
 
 
 def reset_controls(t,loc):

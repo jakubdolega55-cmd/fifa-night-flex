@@ -1,4 +1,4 @@
-# FIFA Night Flex v1.7.5
+# FIFA Night Flex v1.7.7
 
 Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
@@ -162,3 +162,31 @@ Priorytet z poprzedniego turnieju nie jest pokazywany na ekranie losowania. Algo
 ## v1.7.5 — statystyki bez rozpoczynania turnieju
 
 Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statystyki`. Statystyki wszech czasów można przeglądać od razu po otwarciu aplikacji, bez tworzenia bieżącego turnieju. Widok korzysta z tego samego modułu statystyk co podczas aktywnego turnieju, więc ranking, H2H, rekordy, drużyny, profile graczy i strzelcy pozostają spójne.
+
+## v1.7.5.1
+- Hotfix nawigacji startowej: widoczne przyciski `NOWY TURNIEJ` i `STATYSTYKI` zamiast niewidocznie renderującego się segmented control.
+
+
+## v1.7.6 — priorytet nowego gracza i rozliczenia stawek
+
+- Gracz, który nie wystąpił w bezpośrednio poprzednim turnieju tej samej klasy (oficjalny/testowy), dostaje najwyższy miękki priorytet na wcześniejszy pierwszy mecz. Dotyczy to zarówno całkiem nowej osoby, jak i gracza wracającego po przerwie.
+- Pary, grupy i drabinka nadal są losowane normalnie — zmienia się wyłącznie kolejność rozegrania już wylosowanych niezależnych meczów, jeśli można to zrobić bez pogorszenia bezpieczeństwa bieżącego terminarza.
+- W DE 5 i DE 7 nowy gracz ma mocno obniżoną, ale nadal niezerową szansę na `Szczęśliwy los` (waga 0.15). Dzięki temu wejście do turnieju nie powinno kończyć się czekaniem do 5.–6. meczu tylko dlatego, że gracz dostał wolny slot.
+- W pełni nowym składzie, w którym nikt nie grał poprzedniego turnieju, nie ma sztucznego priorytetu — wszyscy pozostają równi.
+- Przy tworzeniu turnieju można wpisać `Stawkę na osobę (zł)`. Ostatnia wpisana stawka jest pamiętana jako domyślna na kolejny turniej.
+- Model rozliczenia: każdy uczestnik wpłaca tę samą stawkę, zwycięzca bierze całą pulę.
+- `Statystyki → Rozliczenia` pozwalają wybrać kilka zakończonych oficjalnych turniejów i skompensować wzajemne należności do krótkiej listy końcowych przelewów.
+- Stawkę zakończonego turnieju można poprawić również później, więc starsze turnieje można uzupełnić retroaktywnie.
+- Rozliczenie pokazuje bilans każdego gracza, gotową listę `kto → komu → ile`, tekst do skopiowania i plik TXT do pobrania.
+
+
+## v1.7.7 — status rozliczeń i ranking finansowy
+
+- Każdy zakończony oficjalny turniej może mieć status `🟠 nierozliczony` albo `✅ rozliczony`.
+- Przy retroaktywnym wpisywaniu stawki można od razu zaznaczyć, że stary turniej został już rozliczony; status można później cofnąć.
+- Domyślna lista wspólnego rozliczenia pokazuje tylko nierozliczone turnieje. Opcja `Pokaż także rozliczone turnieje` udostępnia pełną historię.
+- Po wygenerowaniu listy przelewów można jednym przyciskiem oznaczyć wszystkie użyte turnieje jako rozliczone.
+- `Statystyki → Rozliczenia` zawierają ranking finansowy wszech czasów: bilans, łączne wygrane, łączne wpłaty, liczbę płatnych turniejów i zwycięstw.
+- Kafelki pokazują osobę najbardziej na plus i najbardziej na minus.
+- Turnieje oznaczone jako rozliczone nadal liczą się do historycznego rankingu finansowego; status wpływa wyłącznie na listę bieżących należności.
+- Nie ma migracji schematu: status jest przechowywany w istniejącym `extra_json`, więc starsze turnieje pozostają kompatybilne.
