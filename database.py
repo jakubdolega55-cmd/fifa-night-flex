@@ -20,12 +20,12 @@ except ImportError:  # Safe fallback if an old Streamlit build has not installed
 import streamlit as st
 
 from logic import (
-    BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
-    schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_draft_order, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, weighted_bye_choice,
+    BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FIXED_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
+    schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_draft_order, reveal_order_with_previous_finalists, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, weighted_bye_choice,
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 1770
+DB_API_VERSION = 1800
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -164,8 +164,23 @@ class Database:
         ]
         with self.connect() as conn:
             for s in stmts: conn.execute(s)
+            self._ensure_match_status_column_conn(conn)
             self._seed_scorers_conn(conn)
             self._migrate_double_elim_single_final_conn(conn)
+
+    def _ensure_match_status_column_conn(self, conn) -> None:
+        """Add a lightweight terminal status for skipped matches without breaking old databases."""
+        if self.is_postgres:
+            exists=self._fetchone(conn,
+                "SELECT 1 AS ok FROM information_schema.columns WHERE table_name='matches' AND column_name='match_status' LIMIT 1")
+            if not exists:
+                conn.execute("ALTER TABLE matches ADD COLUMN match_status TEXT NOT NULL DEFAULT 'pending'")
+        else:
+            cols=[dict(r) for r in conn.execute("PRAGMA table_info(matches)").fetchall()]
+            if not any(str(c.get("name"))=="match_status" for c in cols):
+                conn.execute("ALTER TABLE matches ADD COLUMN match_status TEXT NOT NULL DEFAULT 'pending'")
+        # Backfill old played rows. Pending rows remain pending.
+        conn.execute(self._sql("UPDATE matches SET match_status='played' WHERE home_score IS NOT NULL AND COALESCE(match_status,'pending')<>'played'"))
 
     def _migrate_double_elim_single_final_conn(self, conn) -> None:
         """Migruje tylko aktywne stare DE do jednego finału; historii nie zmienia."""
@@ -203,7 +218,7 @@ class Database:
                              (str(uuid.uuid4()),team,nt,clean,ns,rank,now_iso()))
 
     def wildcard_team_suggestions(self) -> list[str]:
-        fixed={self._norm_team_name(x) for x in BASE_TEAMS+SEVEN_TEAMS+EIGHT_TEAMS if "Dowolna drużyna" not in x}
+        fixed={self._norm_team_name(x) for x in BASE_TEAMS+SIX_TEAMS+SEVEN_TEAMS+EIGHT_TEAMS if "Dowolna drużyna" not in x}
         with self.connect() as conn:
             rows=self._fetchall(conn,"SELECT team,COUNT(*) AS c FROM tournament_players WHERE team<>'' GROUP BY team ORDER BY c DESC,team")
         out=[]; seen=set()
@@ -387,11 +402,15 @@ class Database:
             if pid and pid not in order: order.append(pid)
         add(champ); add(runner)
 
-        if fmt in ("league4_final","league5_final"):
+        if fmt in ("league3_final","league4_final","league5_final"):
             table=self._table_from_conn(conn,tid,"L")
             for row in table: add(row.get("player_id"))
+        elif fmt=="double4":
+            for no in (5,3): add(loser(no))
         elif fmt=="double5":
             for no in (7,6,4): add(loser(no))
+        elif fmt=="double6":
+            for no in (9,8,6,5): add(loser(no))
         elif fmt=="double7":
             for no in (11,10,8,7,6): add(loser(no))
         elif fmt=="double8":
@@ -419,22 +438,23 @@ class Database:
         that previous tournament. This keeps an all-new lineup fully random.
         """
         prev=self._fetchone(conn,"""
-            SELECT id,completed_at,created_at
-            FROM tournaments
-            WHERE status='completed' AND is_test=?
-            ORDER BY COALESCE(completed_at,created_at) DESC, created_at DESC
+            SELECT t.id,t.completed_at,t.created_at
+            FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+            WHERE t.status='completed' AND t.is_test=? AND fm.format_key<>'duel1v1'
+            ORDER BY COALESCE(t.completed_at,t.created_at) DESC, t.created_at DESC
             LIMIT 1
         """,(int(is_test),))
         if not prev:
             return {}
         prev_players=self._fetchall(conn,"""
-            SELECT tp.player_id,p.name
+            SELECT tp.player_id,p.name,tp.team
             FROM tournament_players tp JOIN players p ON p.id=tp.player_id
             WHERE tp.tournament_id=?
         """,(prev["id"],))
         placement_order=self._placement_order_conn(conn,prev["id"])
         placement_prev={str(pid):i+1 for i,pid in enumerate(placement_order)}
         exact_prev={str(r.get("name") or ""):str(r.get("player_id") or "") for r in prev_players}
+        prev_team_by_pid={str(r.get("player_id") or ""):str(r.get("team") or "") for r in prev_players}
         played=self._fetchall(conn,"""
             SELECT match_no,played_at,home_player_id,away_player_id
             FROM matches
@@ -451,7 +471,7 @@ class Database:
         max_no=max(int(m["match_no"]) for m in played)
 
         current_by_name={name:pid for name,pid in zip(current_names,current_pids)}
-        matched=[];priority={};placements={};newcomers=[]
+        matched=[];priority={};placements={};previous_teams={};newcomers=[]
         for name,pid in current_by_name.items():
             prev_pid=exact_prev.get(name)
             if not prev_pid:
@@ -460,7 +480,8 @@ class Database:
             wait=int(wait_by_pid.get(prev_pid,0))
             priority[pid]=wait
             if prev_pid in placement_prev: placements[pid]=int(placement_prev[prev_pid])
-            matched.append({"name":name,"wait_matches":wait,"place":placements.get(pid)})
+            if prev_team_by_pid.get(prev_pid): previous_teams[pid]=prev_team_by_pid[prev_pid]
+            matched.append({"name":name,"wait_matches":wait,"place":placements.get(pid),"previous_team":previous_teams.get(pid)})
 
         # If nobody from the previous tournament is here, everybody is equally fresh.
         # Don't manufacture a priority between a completely new lineup.
@@ -482,6 +503,7 @@ class Database:
             "exact_name_match":True,
             "priority_by_player_id":priority,
             "placement_by_player_id":placements,
+            "previous_team_by_player_id":previous_teams,
             "source_player_count":len(prev_players),
             "matched":matched,
             "newcomers":newcomers,
@@ -500,38 +522,114 @@ class Database:
             return {"playoff_reveal_ack": False, "playoff_order": None}
         return {}
 
-    def create_tournament(self, player_names: list[str], player_count: int, format_key: str, teams: list[str], is_test: bool, stake_per_player: float = 0.0) -> str:
-        if player_count not in (4,5,6,7,8): raise ValueError("Obsługiwane są turnieje 4–8 osobowe.")
+    def _live_team_ratings_conn(self, conn) -> dict[str,float]:
+        """Shrink noisy team results toward 50 and update automatically with history.
+
+        Result component uses W=1/D=.5/L=0 with eight neutral pseudo-matches. Goal
+        difference per match contributes only a small bounded correction, so a short hot
+        streak never permanently brands a club as overpowered.
+        """
+        rows=self._fetchall(conn,"""
+            SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score
+            FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+            LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
+            LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
+            WHERE t.status='completed' AND t.is_test=0 AND m.home_score IS NOT NULL
+        """)
+        stats=defaultdict(lambda:{"m":0,"points":0.0,"gf":0,"ga":0})
+        for r in rows:
+            ht=str(r.get("home_team") or "").strip(); at=str(r.get("away_team") or "").strip()
+            if not ht or not at: continue
+            hs=int(r.get("home_score") or 0); ass=int(r.get("away_score") or 0)
+            stats[ht]["m"]+=1;stats[at]["m"]+=1
+            stats[ht]["gf"]+=hs;stats[ht]["ga"]+=ass;stats[at]["gf"]+=ass;stats[at]["ga"]+=hs
+            if hs>ass: stats[ht]["points"]+=1.0
+            elif hs<ass: stats[at]["points"]+=1.0
+            else: stats[ht]["points"]+=0.5;stats[at]["points"]+=0.5
+        out={}
+        for team,v in stats.items():
+            m=int(v["m"]); result=(float(v["points"])+4.0)/(m+8.0)
+            gdpm=((int(v["gf"])-int(v["ga"]))/m) if m else 0.0
+            gdpm=max(-2.0,min(2.0,gdpm))
+            rating=50.0+(result-0.5)*60.0+gdpm*5.0
+            out[team]=round(max(20.0,min(80.0,rating)),2)
+        return out
+
+    def live_team_ratings(self) -> list[dict]:
+        with self.connect() as conn:
+            ratings=self._live_team_ratings_conn(conn)
+            stats=self.team_stats() if False else None
+            rows=self._fetchall(conn,"""
+                SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score
+                FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+                LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
+                LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
+                WHERE t.status='completed' AND t.is_test=0 AND m.home_score IS NOT NULL
+            """)
+        agg=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
+        for r in rows:
+            ht=str(r.get("home_team") or "").strip();at=str(r.get("away_team") or "").strip()
+            if not ht or not at: continue
+            hs=int(r.get("home_score") or 0);ass=int(r.get("away_score") or 0)
+            for team,gf,ga in ((ht,hs,ass),(at,ass,hs)):
+                agg[team]["m"]+=1;agg[team]["gf"]+=gf;agg[team]["ga"]+=ga
+            if hs>ass:agg[ht]["w"]+=1;agg[at]["l"]+=1
+            elif hs<ass:agg[at]["w"]+=1;agg[ht]["l"]+=1
+            else:agg[ht]["d"]+=1;agg[at]["d"]+=1
+        out=[]
+        for team,v in agg.items():
+            out.append({"team":team,"rating":float(ratings.get(team,50.0)),**v,"matches":int(v["m"]),"gd":int(v["gf"])-int(v["ga"]),"win_pct":round(v["w"]/v["m"]*100,1) if v["m"] else 0.0})
+        out.sort(key=lambda x:(x["rating"],x["m"]),reverse=True)
+        return out
+
+    def create_tournament(self, player_names: list[str], player_count: int, format_key: str, teams: list[str], is_test: bool,
+                          stake_per_player: float = 0.0, cash_flags: list[bool] | None = None) -> str:
+        if player_count not in (3,4,5,6,7,8): raise ValueError("Obsługiwane są turnieje 3–8 osobowe.")
         if len(player_names) != player_count: raise ValueError(f"Turniej wymaga dokładnie {player_count} graczy.")
         clean = [" ".join(str(x or "").strip().split()) for x in player_names]
         if any(not x for x in clean): raise ValueError("Wpisz nick każdego gracza.")
         if len({x.casefold() for x in clean}) != player_count: raise ValueError("Nicki w jednym turnieju muszą być unikalne.")
-        if player_count in (4,5):
+        draft_mode = player_count in (3,4,5)
+        if draft_mode:
             if len(teams) < player_count or len(set(teams)) != len(teams): raise ValueError("Pula draftu drużyn jest nieprawidłowa.")
         elif len(teams) != player_count or len(set(teams)) != player_count:
             raise ValueError(f"Turniej wymaga dokładnie {player_count} różnych drużyn/slotów.")
-        if player_count == 4 and format_key != "league4_final": raise ValueError("Nieprawidłowy format dla 4 graczy.")
-        if player_count == 5 and format_key not in ("double5", "league5_final"): raise ValueError("Nieprawidłowy format dla 5 graczy.")
-        if player_count == 6 and format_key not in ("groups6", "groups6_full"): raise ValueError("Nieprawidłowy format dla 6 graczy.")
-        if player_count == 7 and format_key not in ("double7", "groups7", "groups7_sf"): raise ValueError("Wybierz format turnieju 7-osobowego.")
-        if player_count == 8 and format_key not in ("groups8_sf", "double8", "groups8_barrage"): raise ValueError("Wybierz format turnieju 8-osobowego.")
+        allowed={
+            3:("league3_final",),
+            4:("league4_final","double4"),
+            5:("double5","league5_final"),
+            6:("groups6","groups6_full","double6"),
+            7:("double7","groups7","groups7_sf"),
+            8:("groups8_sf","double8","groups8_barrage"),
+        }
+        if format_key not in allowed[player_count]: raise ValueError(f"Nieprawidłowy format dla {player_count} graczy.")
 
-        stake_cents=self._stake_cents(stake_per_player)
-        stake_value=stake_cents/100
+        stake_cents=self._stake_cents(stake_per_player); stake_value=stake_cents/100
+        flags=list(cash_flags) if cash_flags is not None else [True]*player_count
+        if len(flags)!=player_count: flags=[True]*player_count
+        flags=[bool(x) for x in flags]
+        if stake_cents>0 and sum(flags)<2:
+            raise ValueError("Przy dodatniej stawce co najmniej 2 graczy musi grać za kasę.")
+
         tid = str(uuid.uuid4()); rng = random.SystemRandom()
         with self.connect() as conn:
             pids = [self._get_or_create_player_conn(conn, n) for n in clean]
+            cash_pids=[pid for pid,flag in zip(pids,flags) if flag]
             carry=self._cross_tournament_priority_conn(conn,clean,pids,is_test)
             placements=(carry or {}).get("placement_by_player_id") or {}
-            draft_mode = player_count in (4,5)
-            assignments = {} if draft_mode else weighted_team_assignments(pids, teams, placements, rng)
+            ratings=self._live_team_ratings_conn(conn)
+            previous_teams=(carry or {}).get("previous_team_by_player_id") or {}
+            assignments = {} if draft_mode else weighted_team_assignments(pids, teams, placements, rng, ratings, previous_teams)
             if draft_mode:
                 reveal=weighted_draft_order(pids,placements,(carry or {}).get("source_player_count"),player_count,rng)
             else:
-                reveal=pids.copy(); rng.shuffle(reveal)
+                reveal=reveal_order_with_previous_finalists(pids,placements,rng)
             reveal_idx = {p:i+1 for i,p in enumerate(reveal)}
             draw = build_draw(pids, format_key, rng); extra = self._extra_for_format(format_key, rng)
             extra["stake_per_player"]=stake_value
+            extra["cash_player_ids"]=cash_pids
+            extra["cash_player_names"]=[name for name,flag in zip(clean,flags) if flag]
+            extra["team_rating_snapshot"]={k:float(v) for k,v in ratings.items()}
             if carry:
                 draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 extra["cross_tournament_priority"]=carry
@@ -541,14 +639,45 @@ class Database:
             self._setting_set_conn(conn, LAST_COUNT_KEY, str(player_count))
             self._setting_set_conn(conn, f"flex_last_lineup_{player_count}", json.dumps(clean, ensure_ascii=False))
             self._setting_set_conn(conn, LAST_STAKE_KEY, f"{stake_value:.2f}")
-            # is_current intentionally remains 0. The classic 6-player app therefore never mistakes this for its live tournament.
             initial_phase = "draft_order" if draft_mode else "team_draw"
             conn.execute(self._sql("INSERT INTO tournaments (id,status,phase,is_test,is_current,groups_revealed,created_at) VALUES (?,'active',?, ?,0,0,?)"), (tid, initial_phase, int(is_test), now_iso()))
-            # Temporary group_name is always non-null for compatibility with the classic schema.
             for p in pids:
                 team = "" if draft_mode else assignments[p]
                 conn.execute(self._sql("INSERT INTO tournament_players (tournament_id,player_id,team,team_reveal_order,team_revealed,group_name,tie_order) VALUES (?,?,?,?,0,'',?)"), (tid,p,team,reveal_idx[p],reveal_idx[p]))
-            conn.execute(self._sql("INSERT INTO flex_tournament_meta (tournament_id,player_count,format_key,team_pool_json,draw_json,extra_json,draw_revealed,redraw_count) VALUES (?,?,?,?,?,?,0,0)"), (tid,player_count,format_key,json.dumps(teams,ensure_ascii=False),json.dumps(draw),json.dumps(extra)))
+            conn.execute(self._sql("INSERT INTO flex_tournament_meta (tournament_id,player_count,format_key,team_pool_json,draw_json,extra_json,draw_revealed,redraw_count) VALUES (?,?,?,?,?,?,0,0)"), (tid,player_count,format_key,json.dumps(teams,ensure_ascii=False),json.dumps(draw),json.dumps(extra,ensure_ascii=False)))
+        return tid
+
+    def create_duel(self, player_names: list[str], team_names: list[str], is_test: bool, stake_per_player: float = 0.0,
+                    cash_flags: list[bool] | None = None) -> str:
+        clean=[" ".join(str(x or "").strip().split()) for x in player_names]
+        if len(clean)!=2 or any(not x for x in clean): raise ValueError("Wybierz dwóch graczy.")
+        if clean[0].casefold()==clean[1].casefold(): raise ValueError("Wybierz dwóch różnych graczy.")
+        teams=[" ".join(str(x or "").strip().split()) for x in team_names]
+        if len(teams)!=2 or any(not x for x in teams): raise ValueError("Wybierz drużynę dla obu graczy.")
+        norms=[self._norm_team_name(x) for x in teams]
+        if any(x in {"real","real madrid","real madryt","rma"} or "real madrid" in x or "real madryt" in x for x in norms):
+            raise ValueError("Real Madryt jest banned 🚫")
+        if norms[0]==norms[1]: raise ValueError("W meczu 1 vs 1 wybierz dwie różne drużyny.")
+        flags=list(cash_flags) if cash_flags is not None else [True,True]
+        if len(flags)!=2: flags=[True,True]
+        # If either player opts out, the duel is automatically free. No one-sided stake.
+        effective_stake=float(stake_per_player or 0) if all(bool(x) for x in flags) else 0.0
+        tid=str(uuid.uuid4());rng=random.SystemRandom()
+        with self.connect() as conn:
+            pids=[self._get_or_create_player_conn(conn,n) for n in clean]
+            draw={"slots":{"A":pids[0],"B":pids[1]}}
+            extra={"stake_per_player":self._stake_cents(effective_stake)/100,"cash_player_ids":pids if effective_stake>0 else [],
+                   "cash_player_names":clean if effective_stake>0 else [],"is_duel":True}
+            self._setting_set_conn(conn,CURRENT_KEY,tid); self._setting_set_conn(conn,LAST_STAKE_KEY,f"{extra['stake_per_player']:.2f}")
+            conn.execute(self._sql("INSERT INTO tournaments (id,status,phase,is_test,is_current,groups_revealed,created_at) VALUES (?,'active','active',?,0,0,?)"),(tid,int(is_test),now_iso()))
+            for i,(pid,team) in enumerate(zip(pids,teams),1):
+                conn.execute(self._sql("INSERT INTO tournament_players (tournament_id,player_id,team,team_reveal_order,team_revealed,group_name,tie_order) VALUES (?,?,?,?,1,'',?)"),(tid,pid,team,i,i))
+            conn.execute(self._sql("INSERT INTO flex_tournament_meta (tournament_id,player_count,format_key,team_pool_json,draw_json,extra_json,draw_revealed,redraw_count) VALUES (?,?,?,?,?,?,1,0)"),(tid,2,'duel1v1',json.dumps(teams,ensure_ascii=False),json.dumps(draw),json.dumps(extra,ensure_ascii=False)))
+            plan=schedule_for_format(draw,'duel1v1',extra,rng)
+            for item in plan:
+                conn.execute(self._sql("INSERT INTO matches (id,tournament_id,match_no,stage,group_name) VALUES (?,?,?,?,?)"),(str(uuid.uuid4()),tid,item['match_no'],item['stage'],item['group_name']))
+                conn.execute(self._sql("INSERT INTO flex_match_sources (tournament_id,match_no,home_source,away_source) VALUES (?,?,?,?)"),(tid,item['match_no'],item['home'],item['away']))
+            self._resolve_all_conn(conn,tid,'duel1v1')
         return tid
 
     def set_test_mode(self, tid: str, is_test: bool) -> None:
@@ -639,6 +768,14 @@ class Database:
     def _norm_team_name(value: str) -> str:
         return " ".join(str(value or "").strip().casefold().replace("ł","l").split())
 
+    def available_wildcard_suggestions(self, tid: str) -> list[str]:
+        """Unused concrete Wild Card clubs for this tournament, ordered by global popularity."""
+        suggestions=self.wildcard_team_suggestions()
+        with self.connect() as conn:
+            picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team<>''",(tid,))
+        used={self._norm_team_name(r.get("team") or "") for r in picked}
+        return [x for x in suggestions if self._norm_team_name(x) not in used]
+
     def available_draft_teams(self, tid: str) -> list[str]:
         with self.connect() as conn:
             meta=self._fetchone(conn,"SELECT team_pool_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
@@ -648,9 +785,9 @@ class Database:
             picked_names=[r["team"] for r in picked]
             fixed_norm={self._norm_team_name(x):x for x in fixed}; used_fixed={self._norm_team_name(x) for x in picked_names if self._norm_team_name(x) in fixed_norm}
             out=[x for x in fixed if self._norm_team_name(x) not in used_fixed]
-            wildcard_used=any(self._norm_team_name(x) not in fixed_norm for x in picked_names)
-            wildcard=next((x for x in pool if "Dowolna drużyna" in x),None)
-            if wildcard and not wildcard_used: out.append(wildcard)
+            # Wild Card is deliberately reusable in 3–5 player drafts. The concrete
+            # chosen club must still be unique and then disappears from suggestions.
+            out.append("🃏 Wild Card")
             return out
 
     def draft_pick(self, tid: str, player_id: str, slot: str, wildcard_name: str = "") -> bool:
@@ -661,11 +798,11 @@ class Database:
             if not current: return True
             if current["player_id"]!=player_id: raise ValueError("Teraz wybiera inny gracz.")
             meta=self._fetchone(conn,"SELECT team_pool_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); pool=json.loads(meta["team_pool_json"])
-            fixed=[x for x in pool if "Dowolna drużyna" not in x]; wildcard=next((x for x in pool if "Dowolna drużyna" in x),None)
+            fixed=[x for x in pool if "Dowolna drużyna" not in x]
             picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team_revealed=1",(tid,)); picked_names=[r["team"] for r in picked]
-            fixed_norm={self._norm_team_name(x):x for x in fixed}; picked_norm={self._norm_team_name(x) for x in picked_names}
-            if slot==wildcard:
-                if any(self._norm_team_name(x) not in fixed_norm for x in picked_names): raise ValueError("Wild Card został już wykorzystany.")
+            picked_norm={self._norm_team_name(x) for x in picked_names}
+            is_wild=(str(slot)=="🃏 Wild Card" or "Dowolna drużyna" in str(slot))
+            if is_wild:
                 team=self._validate_wildcard_team_conn(conn,tid,wildcard_name,player_id)
             else:
                 if slot not in fixed: raise ValueError("Nieprawidłowy wybór drużyny.")
@@ -729,7 +866,7 @@ class Database:
                 members = group_members(draw, g)
                 for i,pid in enumerate(members,1):
                     conn.execute(self._sql("UPDATE tournament_players SET group_name=?, tie_order=? WHERE tournament_id=? AND player_id=?"), (g,i,tid,pid))
-        elif format_key in ("league4_final", "league5_final"):
+        elif format_key in ("league3_final", "league4_final", "league5_final"):
             for i,pid in enumerate(draw["slots"].values(),1):
                 conn.execute(self._sql("UPDATE tournament_players SET group_name='L', tie_order=? WHERE tournament_id=? AND player_id=?"), (i,tid,pid))
 
@@ -758,6 +895,8 @@ class Database:
             carry=self._cross_tournament_priority_conn(conn,names,pids,bool(int((t or {}).get("is_test") or 0)))
             previous_extra=json.loads(meta.get("extra_json") or "{}")
             extra = self._extra_for_format(meta["format_key"], rng)
+            for key in ("stake_per_player","cash_player_ids","cash_player_names","team_rating_snapshot","cash_settled","cash_settled_at"):
+                if key in previous_extra: extra[key]=previous_extra.get(key)
             extra["stake_per_player"]=float(previous_extra.get("stake_per_player") or 0)
             if carry:
                 new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
@@ -1405,14 +1544,18 @@ class Database:
         if not matches:return {}
         tids=sorted({m["tournament_id"] for m in matches})
         qmarks=','.join('?' for _ in tids)
-        trs=self._fetchall(conn,f"SELECT id,champion_player_id,completed_at,created_at FROM tournaments WHERE id IN ({qmarks}) ORDER BY COALESCE(completed_at,created_at)",tuple(tids))
+        trs=self._fetchall(conn,f"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+            FROM tournaments t LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+            WHERE t.id IN ({qmarks}) ORDER BY COALESCE(t.completed_at,t.created_at)""",tuple(tids))
+        tournament_ids={str(r["id"]) for r in trs if str(r.get("format_key") or "")!='duel1v1'}
         tps=self._fetchall(conn,f"SELECT tournament_id,player_id FROM tournament_players WHERE tournament_id IN ({qmarks})",tuple(tids))
         players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
-        finals=[m for m in matches if m["stage"]=="FINAL"]
+        finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in tournament_ids]
         ps=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
-        for tp in tps: ps[tp["player_id"]]["tournaments"]+=1
+        for tp in tps:
+            if str(tp["tournament_id"]) in tournament_ids: ps[tp["player_id"]]["tournaments"]+=1
         for t in trs:
-            if t.get("champion_player_id"): ps[t["champion_player_id"]]["titles"]+=1
+            if str(t["id"]) in tournament_ids and t.get("champion_player_id"): ps[t["champion_player_id"]]["titles"]+=1
         for m in finals:
             for pid in (m.get("home_player_id"),m.get("away_player_id")):
                 if pid: ps[pid]["finals"]+=1
@@ -1451,7 +1594,7 @@ class Database:
         one_t=max(((g,pid,tid) for tid,d in per_t.items() for pid,g in d.items()),default=(0,None,None))
         # consecutive championship streak across chronological official tournaments
         title_best=(0,None); cur_pid=None;cur=0
-        for t in trs:
+        for t in [x for x in trs if str(x["id"]) in tournament_ids]:
             pid=t.get("champion_player_id")
             if pid and pid==cur_pid:cur+=1
             elif pid:cur_pid=pid;cur=1
@@ -1560,7 +1703,7 @@ class Database:
             return clean
 
         third_pid=fourth_pid=None
-        if fmt in ("league4_final","league5_final"):
+        if fmt in ("league3_final","league4_final","league5_final"):
             ids=list(players.keys());ties={pid:int(players[pid].get("tie_order") or 9999) for pid in ids}
             league_matches=[m for m in played if m.get("stage")=="LEAGUE"]
             table=group_table(ids,league_matches,ties)
@@ -1570,8 +1713,12 @@ class Database:
             sf_losers=rank_same_stage([self._loser_of(m) for m in played if m.get("stage")=="SF"])
             if sf_losers: third_pid=sf_losers[0]
             if len(sf_losers)>1: fourth_pid=sf_losers[1]
+        elif fmt=="double4":
+            third_pid=self._loser_of(by_no.get(5)); fourth_pid=self._loser_of(by_no.get(3))
         elif fmt=="double5":
             third_pid=self._loser_of(by_no.get(7)); fourth_pid=self._loser_of(by_no.get(6))
+        elif fmt=="double6":
+            third_pid=self._loser_of(by_no.get(9)); fourth_pid=self._loser_of(by_no.get(8))
         elif fmt=="double7":
             third_pid=self._loser_of(by_no.get(11)); fourth_pid=self._loser_of(by_no.get(10))
         elif fmt=="double8":
@@ -1600,9 +1747,9 @@ class Database:
             official_no=None
             if not int(t.get("is_test") or 0):
                 rows=self._fetchall(conn,"""
-                    SELECT id FROM tournaments
-                    WHERE status='completed' AND is_test=0
-                    ORDER BY COALESCE(completed_at,created_at), created_at, id
+                    SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                    WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                    ORDER BY COALESCE(t.completed_at,t.created_at), t.created_at, t.id
                 """)
                 for i,row in enumerate(rows,1):
                     if row.get("id")==tid:
@@ -1622,7 +1769,7 @@ class Database:
         rank={no:i for i,no in enumerate(order)}
         ordered=sorted(matches,key=lambda m:(rank.get(int(m.get("match_no") or 0),10_000+int(m.get("match_no") or 0)),int(m.get("match_no") or 0)))
         for m in ordered:
-            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None:
+            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped":
                 return m
         return None
 
@@ -1633,9 +1780,57 @@ class Database:
         ordered=sorted(matches,key=lambda m:(rank.get(int(m.get("match_no") or 0),10_000+int(m.get("match_no") or 0)),int(m.get("match_no") or 0)))
         later=[m for m in ordered if rank.get(int(m.get("match_no") or 0),10_000+int(m.get("match_no") or 0))>current_rank]
         for m in later:
-            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None:
+            if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped":
                 return m
         return None
+
+    def can_skip_match(self, tid: str, match_no: int) -> dict:
+        """Return whether the current league match can be skipped without changing the finalist pair.
+
+        For safety this is intentionally limited to league+final formats and to the last
+        still-pending league match. Scores in the app are bounded to 0..99, so checking
+        all 10,000 possible scorelines is exact for the UI's result domain.
+        """
+        with self.connect() as conn:
+            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+            if not meta or meta.get("format_key") not in ("league3_final","league4_final","league5_final"):
+                return {"allowed":False,"reason":"Pomijanie jest dostępne tylko w lidze + finał."}
+            m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,int(match_no)))
+            if not m or m.get("stage")!="LEAGUE" or m.get("home_score") is not None or str(m.get("match_status") or "pending")=="skipped":
+                return {"allowed":False,"reason":"Ten mecz nie jest oczekującym meczem ligowym."}
+            if not m.get("home_player_id") or not m.get("away_player_id"):
+                return {"allowed":False,"reason":"Nie ustalono jeszcze obu graczy."}
+            league=self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? AND stage='LEAGUE' ORDER BY match_no",(tid,))
+            other_pending=[x for x in league if int(x["match_no"])!=int(match_no) and x.get("home_score") is None and str(x.get("match_status") or "pending")!="skipped"]
+            if other_pending:
+                return {"allowed":False,"reason":"To nie jest ostatni nierozstrzygnięty mecz ligowy."}
+            prows=self._fetchall(conn,"SELECT player_id,tie_order FROM tournament_players WHERE tournament_id=? AND group_name='L'",(tid,))
+            ids=[str(x["player_id"]) for x in prows];ties={str(x["player_id"]):int(x.get("tie_order") or 9999) for x in prows}
+            played=[x for x in league if x.get("home_score") is not None]
+            finalists=None
+            for hs in range(100):
+                for ass in range(100):
+                    fake=dict(m);fake["home_score"]=hs;fake["away_score"]=ass
+                    fake["home_penalties"]=None;fake["away_penalties"]=None
+                    fake["winner_player_id"]=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"])
+                    table=group_table(ids,played+[fake],ties)
+                    pair=frozenset(str(x["player_id"]) for x in table[:2])
+                    if finalists is None: finalists=pair
+                    elif pair!=finalists:
+                        return {"allowed":False,"reason":"Wynik może jeszcze zmienić parę finalistów."}
+            names={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
+            return {"allowed":True,"reason":"Para finalistów jest już matematycznie pewna.",
+                    "finalists":[names.get(pid,"?") for pid in (finalists or [])]}
+
+    def skip_match(self, tid: str, match_no: int) -> None:
+        check=self.can_skip_match(tid,match_no)
+        if not check.get("allowed"):
+            raise ValueError(check.get("reason") or "Tego meczu nie można bezpiecznie pominąć.")
+        with self.connect() as conn:
+            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,));fmt=meta["format_key"]
+            conn.execute(self._sql("""UPDATE matches SET match_status='skipped',played_at=?,home_score=NULL,away_score=NULL,
+                home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL WHERE tournament_id=? AND match_no=?"""),(now_iso(),tid,int(match_no)))
+            self._resolve_all_conn(conn,tid,fmt)
 
     def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None) -> None:
         with self.connect() as conn:
@@ -1643,13 +1838,13 @@ class Database:
             if not m or not m.get("home_player_id") or not m.get("away_player_id"): raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
             if hs<0 or ass<0: raise ValueError("Wynik nie może być ujemny.")
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
-            if fmt in ("double5","double7","double8") and m["stage"]=="FINAL" and hs<1:
+            if fmt in ("double4","double5","double6","double7","double8") and m["stage"]=="FINAL" and hs<1:
                 raise ValueError("Zwycięzca Winners Bracket zaczyna finał od 1:0.")
             knockout = m["stage"] not in ("GROUP","LEAGUE")
             if knockout and hs==ass and (hp is None or ap is None or hp==ap): raise ValueError("W fazie pucharowej remis wymaga karnych.")
             winner=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"],hp,ap)
             self._save_scorers_conn(conn,tid,match_no,hs,ass,scorers)
-            conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=? WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
+            conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=?,match_status='played' WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
             if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"): self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
@@ -1658,10 +1853,14 @@ class Database:
     def _maybe_finish_conn(self, conn, tid: str, fmt: str) -> None:
         rows=self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,)); mm={int(m["match_no"]):m for m in rows}
         champion=None
-        if fmt=="league4_final": champion=mm[7].get("winner_player_id")
+        if fmt=="duel1v1": champion=mm[1].get("winner_player_id")
+        elif fmt=="league3_final": champion=mm[4].get("winner_player_id")
+        elif fmt=="league4_final": champion=mm[7].get("winner_player_id")
+        elif fmt=="double4": champion=mm[6].get("winner_player_id")
         elif fmt=="league5_final": champion=mm[11].get("winner_player_id")
         elif fmt=="groups6": champion=mm[9].get("winner_player_id")
         elif fmt=="groups6_full": champion=mm[11].get("winner_player_id")
+        elif fmt=="double6": champion=mm[10].get("winner_player_id")
         elif fmt=="groups7": champion=mm[14].get("winner_player_id")
         elif fmt=="groups7_sf": champion=mm[12].get("winner_player_id")
         elif fmt=="groups8_sf": champion=mm[15].get("winner_player_id")
@@ -1676,14 +1875,14 @@ class Database:
         # Undo the match actually played last, not the numerically highest match.
         # This is required because cross-tournament fairness may change play order.
         with self.connect() as conn:
-            last=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND home_score IS NOT NULL ORDER BY played_at DESC,match_no DESC LIMIT 1",(tid,))
+            last=self._fetchone(conn,"""SELECT * FROM matches WHERE tournament_id=? AND (home_score IS NOT NULL OR match_status='skipped')
+                ORDER BY played_at DESC,match_no DESC LIMIT 1""",(tid,))
             if not last:return None
             no=int(last["match_no"])
             conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,no))
-            conn.execute(self._sql("UPDATE matches SET home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL WHERE tournament_id=? AND match_no=?"),(tid,no))
-            # Rebuild participants only for unplayed games. Earlier played games are left untouched,
-            # even when their logical match number is higher than the match being undone.
-            conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL WHERE tournament_id=? AND home_score IS NULL"),(tid,))
+            conn.execute(self._sql("UPDATE matches SET home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL,match_status='pending' WHERE tournament_id=? AND match_no=?"),(tid,no))
+            # Rebuild participants only for genuinely pending games. Skipped league matches stay terminal.
+            conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL WHERE tournament_id=? AND home_score IS NULL AND COALESCE(match_status,'pending')='pending'"),(tid,))
             conn.execute(self._sql("UPDATE tournaments SET status='active',phase='active',champion_player_id=NULL,completed_at=NULL WHERE id=?"),(tid,))
             meta,extra=self._meta_extra_conn(conn,tid);fmt=meta["format_key"]
             if fmt=="double5" and no<=2:
@@ -1708,7 +1907,7 @@ class Database:
     def standings(self, tid: str) -> dict[str,list[dict]]:
         with self.connect() as conn:
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
-            if fmt in ("league4_final", "league5_final"): return {"L":self._table_from_conn(conn,tid,"L")}
+            if fmt in ("league3_final", "league4_final", "league5_final"): return {"L":self._table_from_conn(conn,tid,"L")}
             if fmt in ("groups6", "groups6_full", "groups7", "groups7_sf", "groups8_sf", "groups8_barrage"): return {"A":self._table_from_conn(conn,tid,"A"),"B":self._table_from_conn(conn,tid,"B")}
             return {}
 
@@ -1735,168 +1934,162 @@ class Database:
         with self.connect() as conn:
             self._setting_set_conn(conn,"fifa_history_locked","1" if locked else "0")
 
-    def settlement_tournaments(self, limit: int = 20) -> list[dict]:
-        """Recent completed official tournaments available for cash settlement."""
-        limit=max(1,min(100,int(limit or 20)))
-        with self.connect() as conn:
-            rows=self._fetchall(conn,"""
-                SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name AS champion_name,
-                       fm.player_count,fm.format_key,fm.extra_json
-                FROM tournaments t
-                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                LEFT JOIN players p ON p.id=t.champion_player_id
-                WHERE t.status='completed' AND t.is_test=0
-                ORDER BY COALESCE(t.completed_at,t.created_at) DESC,t.created_at DESC
-                LIMIT ?
-            """,(limit,))
-            official=self._fetchall(conn,"""
-                SELECT id FROM tournaments
-                WHERE status='completed' AND is_test=0
-                ORDER BY COALESCE(completed_at,created_at),created_at,id
-            """)
-            numbers={str(r["id"]):i+1 for i,r in enumerate(official)}
-        out=[]
-        for r in rows:
+    def _finance_ledger_conn(self, conn) -> tuple[list[dict],dict[str,str],int]:
+        """Replay official cash events chronologically, including tournament jackpots.
+
+        Old tournaments without cash_player_ids are treated as if everybody played for
+        money, preserving v1.7.x behaviour. 1v1 events never consume or create the
+        tournament jackpot; if either duelist opted out their stored stake is zero.
+        """
+        events=self._fetchall(conn,"""
+            SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,fm.player_count,fm.format_key,fm.extra_json
+            FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+            WHERE t.status='completed' AND t.is_test=0
+            ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id
+        """)
+        parts=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,p.name
+            FROM tournament_players tp JOIN players p ON p.id=tp.player_id
+            JOIN tournaments t ON t.id=tp.tournament_id
+            WHERE t.status='completed' AND t.is_test=0""")
+        by_tid=defaultdict(list); names={}
+        for r in parts:
+            tid=str(r["tournament_id"]);pid=str(r["player_id"]);name=str(r.get("name") or "?")
+            by_tid[tid].append(pid);names[pid]=name
+        ledger=[];jackpot=0;carry_sources=[]
+        for r in events:
+            tid=str(r["id"]);pids=list(dict.fromkeys(by_tid.get(tid,[])));champ=str(r.get("champion_player_id") or "")
             try: extra=json.loads(r.get("extra_json") or "{}")
             except Exception: extra={}
-            stake_cents=self._stake_cents(extra.get("stake_per_player") or 0)
-            out.append({
-                "id":str(r["id"]),"official_no":numbers.get(str(r["id"])),
-                "created_at":r.get("created_at"),"completed_at":r.get("completed_at"),
-                "champion_player_id":r.get("champion_player_id"),"champion_name":r.get("champion_name"),
-                "player_count":int(r.get("player_count") or 0),"format_key":r.get("format_key"),
-                "stake_cents":stake_cents,"stake_per_player":stake_cents/100,
-                "settled":bool(extra.get("cash_settled") or False),
-                "settled_at":extra.get("cash_settled_at"),
-            })
+            stake=self._stake_cents(extra.get("stake_per_player") or 0);fmt=str(r.get("format_key") or "")
+            if "cash_player_ids" in extra:
+                cash=[str(x) for x in (extra.get("cash_player_ids") or []) if str(x) in pids]
+            else:
+                cash=pids.copy()
+            entry={
+                "id":tid,"created_at":r.get("created_at"),"completed_at":r.get("completed_at"),
+                "champion_player_id":champ,"champion_name":names.get(champ,"?"),"player_count":int(r.get("player_count") or len(pids)),
+                "format_key":fmt,"stake_cents":stake,"cash_player_ids":cash,"cash_count":len(cash),
+                "settled":bool(extra.get("cash_settled") or False),"settled_at":extra.get("cash_settled_at"),
+                "contribution_cents":0,"jackpot_in_cents":0,"jackpot_out_cents":jackpot,"prize_cents":0,
+                "prize_winner_player_id":None,"prize_winner_name":None,"jackpot_source_ids":[],
+            }
+            if fmt=="duel1v1":
+                if stake>0 and len(cash)==2 and champ in cash:
+                    entry["contribution_cents"]=stake*2
+                    entry["prize_cents"]=stake*2
+                    entry["prize_winner_player_id"]=champ;entry["prize_winner_name"]=names.get(champ,"?")
+                entry["jackpot_out_cents"]=jackpot
+                ledger.append(entry);continue
+            if stake>0 and len(cash)>=2:
+                contribution=stake*len(cash);entry["contribution_cents"]=contribution;entry["jackpot_in_cents"]=jackpot
+                total=contribution+jackpot
+                if champ in cash:
+                    entry["prize_cents"]=total;entry["prize_winner_player_id"]=champ;entry["prize_winner_name"]=names.get(champ,"?")
+                    entry["jackpot_source_ids"]=carry_sources.copy()
+                    jackpot=0;carry_sources=[]
+                else:
+                    jackpot=total;carry_sources=carry_sources+[tid]
+                entry["jackpot_out_cents"]=jackpot
+            ledger.append(entry)
+        return ledger,names,jackpot
+
+    def finance_event(self, tid: str) -> dict | None:
+        with self.connect() as conn:
+            ledger,_names,_jackpot=self._finance_ledger_conn(conn)
+        return next((dict(x) for x in ledger if str(x.get("id"))==str(tid)),None)
+
+    def current_jackpot_cents(self) -> int:
+        with self.connect() as conn:
+            _ledger,_names,jackpot=self._finance_ledger_conn(conn)
+            return int(jackpot)
+
+    def settlement_tournaments(self, limit: int = 100) -> list[dict]:
+        limit=max(1,min(200,int(limit or 100)))
+        with self.connect() as conn:
+            ledger,_names,_jackpot=self._finance_ledger_conn(conn)
+            official=self._fetchall(conn,"""SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
+            numbers={str(r["id"]):i+1 for i,r in enumerate(official)}
+        rows=list(reversed(ledger))[:limit]
+        out=[]
+        for r in rows:
+            item=dict(r);item["official_no"]=numbers.get(str(r["id"]));item["stake_per_player"]=int(r.get("stake_cents") or 0)/100
+            out.append(item)
         return out
 
     def financial_ranking(self) -> list[dict]:
-        """All-time money balance for completed official Flex tournaments with a positive stake.
-
-        Settled tournaments remain part of this historical ranking; the settled flag only
-        controls whether a tournament still needs a real-world transfer.
-        """
         with self.connect() as conn:
-            rows = self._fetchall(conn, """
-                SELECT t.id AS tournament_id,t.champion_player_id,fm.extra_json,
-                       tp.player_id,p.name
-                FROM tournaments t
-                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                JOIN tournament_players tp ON tp.tournament_id=t.id
-                JOIN players p ON p.id=tp.player_id
-                WHERE t.status='completed' AND t.is_test=0
-                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id
-            """)
-        by_tid=defaultdict(list); champions={}; stakes={}
-        for r in rows:
-            tid=str(r["tournament_id"]); pid=str(r["player_id"]); name=str(r.get("name") or "?")
-            if tid not in stakes:
-                try: extra=json.loads(r.get("extra_json") or "{}")
-                except Exception: extra={}
-                stakes[tid]=self._stake_cents(extra.get("stake_per_player") or 0)
-                champions[tid]=str(r.get("champion_player_id") or "")
-            by_tid[tid].append((pid,name))
+            ledger,names,_jackpot=self._finance_ledger_conn(conn)
         stats={}
-        for tid,members in by_tid.items():
-            stake=int(stakes.get(tid) or 0)
-            if stake<=0 or not members:
-                continue
-            unique=[]; seen=set()
-            for pid,name in members:
-                if pid in seen: continue
-                seen.add(pid); unique.append((pid,name))
-            champ=champions.get(tid,"")
-            if champ not in seen:
-                continue
-            for pid,name in unique:
-                row=stats.setdefault(pid,{"player_id":pid,"name":name,"paid_cents":0,"won_cents":0,"paid_tournaments":0,"wins":0})
-                row["name"]=name
-                row["paid_cents"]+=stake
-                row["paid_tournaments"]+=1
-            pot=stake*len(unique)
-            stats[champ]["won_cents"]+=pot
-            stats[champ]["wins"]+=1
+        for e in ledger:
+            stake=int(e.get("stake_cents") or 0)
+            if stake<=0: continue
+            for pid in e.get("cash_player_ids") or []:
+                row=stats.setdefault(pid,{"player_id":pid,"name":names.get(pid,"?"),"paid_cents":0,"won_cents":0,"paid_tournaments":0,"wins":0})
+                row["paid_cents"]+=stake;row["paid_tournaments"]+=1
+            winner=e.get("prize_winner_player_id");prize=int(e.get("prize_cents") or 0)
+            if winner and prize>0:
+                row=stats.setdefault(winner,{"player_id":winner,"name":names.get(winner,"?"),"paid_cents":0,"won_cents":0,"paid_tournaments":0,"wins":0})
+                row["won_cents"]+=prize;row["wins"]+=1
         out=[]
         for row in stats.values():
-            item=dict(row)
-            item["balance_cents"]=int(item["won_cents"])-int(item["paid_cents"])
-            out.append(item)
+            item=dict(row);item["balance_cents"]=int(item["won_cents"])-int(item["paid_cents"]);out.append(item)
         out.sort(key=lambda x:(-int(x["balance_cents"]),-int(x["won_cents"]),str(x["name"])))
         return out
 
     def settlement_summary(self, tournament_ids: list[str]) -> dict:
-        """Net several winner-takes-pool tournaments into a short transfer list.
-
-        For each selected tournament every participant contributes the same per-person
-        stake and the champion receives the full pot. Across tournaments we then net
-        balances, so reciprocal debts cancel before transfer instructions are produced.
-        """
-        tids=list(dict.fromkeys(str(x) for x in (tournament_ids or []) if x))
-        if not tids:
-            return {"tournaments":[],"balances":[],"transfers":[],"total_pot_cents":0}
-        qmarks=','.join('?' for _ in tids)
+        requested=list(dict.fromkeys(str(x) for x in (tournament_ids or []) if x))
+        if not requested:return {"tournaments":[],"balances":[],"transfers":[],"total_pot_cents":0,"pending_jackpot_cents":0}
         with self.connect() as conn:
-            rows=self._fetchall(conn,f"""
-                SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name AS champion_name,
-                       fm.player_count,fm.format_key,fm.extra_json
-                FROM tournaments t
-                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                LEFT JOIN players p ON p.id=t.champion_player_id
-                WHERE t.id IN ({qmarks}) AND t.status='completed' AND t.is_test=0
-            """,tuple(tids))
-            participants=self._fetchall(conn,f"""
-                SELECT tp.tournament_id,tp.player_id,p.name
-                FROM tournament_players tp JOIN players p ON p.id=tp.player_id
-                WHERE tp.tournament_id IN ({qmarks})
-            """,tuple(tids))
-        by_tid={str(r["id"]):r for r in rows}
-        players_by_tid=defaultdict(list)
-        names={}
-        for r in participants:
-            tid=str(r["tournament_id"]);pid=str(r["player_id"]);name=str(r.get("name") or "?")
-            players_by_tid[tid].append(pid);names[pid]=name
-        balances=defaultdict(int);used=[];total_pot=0
-        for tid in tids:
-            r=by_tid.get(tid)
-            if not r or not r.get("champion_player_id"): continue
-            try: extra=json.loads(r.get("extra_json") or "{}")
-            except Exception: extra={}
-            stake=self._stake_cents(extra.get("stake_per_player") or 0)
-            pids=players_by_tid.get(tid,[])
-            champ=str(r.get("champion_player_id") or "")
-            if stake<=0 or not pids or champ not in pids: continue
-            for pid in pids: balances[pid]-=stake
-            balances[champ]+=stake*len(pids)
-            total_pot+=stake*len(pids)
-            used.append({
-                "id":tid,"completed_at":r.get("completed_at"),"created_at":r.get("created_at"),
-                "champion_name":r.get("champion_name") or names.get(champ,"?"),
-                "player_count":int(r.get("player_count") or len(pids)),"format_key":r.get("format_key"),
-                "stake_cents":stake,"settled":bool(extra.get("cash_settled") or False),
-            })
+            ledger,names,current_jackpot=self._finance_ledger_conn(conn)
+        by={str(e["id"]):e for e in ledger};selected=set(x for x in requested if x in by)
+        # If a selected tournament receives a carried jackpot, include the source events
+        # automatically so debtors and the final creditor balance to zero.
+        changed=True
+        while changed:
+            changed=False
+            for tid in list(selected):
+                e=by.get(tid) or {}
+                for src in e.get("jackpot_source_ids") or []:
+                    if src not in selected:
+                        selected.add(src);changed=True
+        ordered=[e for e in ledger if str(e["id"]) in selected]
+        balances=defaultdict(int);total_contrib=0;pending=0
+        for e in ordered:
+            stake=int(e.get("stake_cents") or 0)
+            if stake<=0:continue
+            for pid in e.get("cash_player_ids") or []:balances[pid]-=stake
+            total_contrib+=int(e.get("contribution_cents") or 0)
+            winner=e.get("prize_winner_player_id");prize=int(e.get("prize_cents") or 0)
+            if winner and prize>0:balances[str(winner)]+=prize
+        # A selected unresolved rollover legitimately has no creditor yet. Surface it
+        # instead of creating impossible transfers.
+        if ordered:
+            latest=ordered[-1]
+            if int(latest.get("jackpot_out_cents") or 0)>0 and not latest.get("prize_winner_player_id"):
+                pending=int(latest.get("jackpot_out_cents") or 0)
         debtors=[[pid,-amount] for pid,amount in balances.items() if amount<0]
         creditors=[[pid,amount] for pid,amount in balances.items() if amount>0]
-        debtors.sort(key=lambda x:(-x[1],names.get(x[0],x[0])))
-        creditors.sort(key=lambda x:(-x[1],names.get(x[0],x[0])))
+        debtors.sort(key=lambda x:(-x[1],names.get(x[0],x[0])));creditors.sort(key=lambda x:(-x[1],names.get(x[0],x[0])))
         transfers=[];i=j=0
         while i<len(debtors) and j<len(creditors):
             amount=min(debtors[i][1],creditors[j][1])
-            if amount>0:
-                transfers.append({"from_player_id":debtors[i][0],"from_name":names.get(debtors[i][0],"?"),
-                                  "to_player_id":creditors[j][0],"to_name":names.get(creditors[j][0],"?"),"amount_cents":amount})
+            if amount>0:transfers.append({"from_player_id":debtors[i][0],"from_name":names.get(debtors[i][0],"?"),"to_player_id":creditors[j][0],"to_name":names.get(creditors[j][0],"?"),"amount_cents":amount})
             debtors[i][1]-=amount;creditors[j][1]-=amount
             if debtors[i][1]==0:i+=1
             if creditors[j][1]==0:j+=1
         balance_rows=[{"player_id":pid,"name":names.get(pid,"?"),"balance_cents":amount} for pid,amount in balances.items()]
         balance_rows.sort(key=lambda x:(-x["balance_cents"],x["name"]))
-        return {"tournaments":used,"balances":balance_rows,"transfers":transfers,"total_pot_cents":total_pot}
+        return {"tournaments":ordered,"balances":balance_rows,"transfers":transfers,"total_pot_cents":total_contrib,
+                "pending_jackpot_cents":pending,"current_jackpot_cents":current_jackpot,"expanded_ids":[e["id"] for e in ordered]}
 
     def last_completed_tournament(self) -> dict | None:
         with self.connect() as conn:
             t=self._fetchone(conn,"""SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
                 FROM tournaments t LEFT JOIN players p ON p.id=t.champion_player_id
                 WHERE t.status='completed' AND t.is_test=0
+                  AND EXISTS (SELECT 1 FROM flex_tournament_meta fm WHERE fm.tournament_id=t.id AND fm.format_key<>'duel1v1')
                 ORDER BY COALESCE(t.completed_at,t.created_at) DESC LIMIT 1""")
             if not t: return None
             meta=self._fetchone(conn,"SELECT player_count,format_key FROM flex_tournament_meta WHERE tournament_id=?",(t["id"],))
@@ -1945,9 +2138,10 @@ class Database:
             matches=self._official_matches_conn(conn)
             champions=self._fetchall(conn,"""SELECT tp.team,tp.player_id,p.name
                 FROM tournaments t
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
                 JOIN tournament_players tp ON tp.tournament_id=t.id AND tp.player_id=t.champion_player_id
                 JOIN players p ON p.id=tp.player_id
-                WHERE t.status='completed' AND t.is_test=0 AND tp.team<>''""")
+                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1' AND tp.team<>''""")
         agg=defaultdict(lambda:{"display":None,"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0,"players":set()})
         by_player=defaultdict(lambda:{"display":None,"player_name":None,"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
         for m in matches:
@@ -2017,25 +2211,258 @@ class Database:
         last_results=[self._result_for_player(m,pid) for m in own[-5:]]
         return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1]}
 
-    def all_time_stats(self) -> list[dict]:
-        # Intentionally the same source tables as the classic app: stats are shared across both links.
+    def award_selections(self, year: int) -> dict:
         with self.connect() as conn:
-            trs=self._fetchall(conn,"SELECT id,champion_player_id FROM tournaments WHERE status='completed' AND is_test=0")
-            if not trs: return []
-            tids={r["id"] for r in trs}; players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
+            raw=self._setting_get_conn(conn,f"flex_award_selections_{int(year)}")
+        try:return json.loads(raw) if raw else {}
+        except Exception:return {}
+
+    def set_award_selection(self, year: int, category_key: str, candidate_id: str, candidate_name: str) -> None:
+        data=self.award_selections(year)
+        data[str(category_key)]={"id":str(candidate_id),"name":str(candidate_name),"selected_at":now_iso()}
+        with self.connect() as conn:
+            self._setting_set_conn(conn,f"flex_award_selections_{int(year)}",json.dumps(data,ensure_ascii=False))
+
+    def annual_awards(self, year: int) -> dict:
+        """Live statistical TOP5 for the annual Awards screen.
+
+        Tournament-style individual awards deliberately ignore 1v1 matches. Duels are
+        used only by shared H2H/rivalry/team context and the dedicated King 1v1 award.
+        """
+        import math, statistics
+        year=int(year); like=f"{year}-%"
+        with self.connect() as conn:
+            events=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+                FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""",(like,))
+            if not events:
+                return {"year":year,"categories":[],"overview":{"tournaments":0,"duels":0,"matches":0,"goals":0,"players":0}}
+            tids=[str(x["id"]) for x in events]; q=','.join('?' for _ in tids)
+            matches=self._fetchall(conn,f"""SELECT m.*,t.completed_at,t.created_at,hp.name home_name,ap.name away_name,
+                htp.team home_team,atp.team away_team
+                FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+                LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
+                LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
+                LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
+                WHERE m.tournament_id IN ({q}) AND m.home_score IS NOT NULL
+                ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no""",tuple(tids))
+            tps=self._fetchall(conn,f"""SELECT tp.tournament_id,tp.player_id,tp.team,p.name
+                FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id IN ({q})""",tuple(tids))
+            scorer_rows=self._fetchall(conn,f"""SELECT ms.tournament_id,ms.match_no,ms.side,ms.scorer_name,ms.goals
+                FROM match_scorers ms WHERE ms.tournament_id IN ({q})""",tuple(tids))
+            first_dates=self._fetchall(conn,"""SELECT tp.player_id,MIN(COALESCE(t.completed_at,t.created_at)) AS first_date
+                FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
+                WHERE t.status='completed' AND t.is_test=0 GROUP BY tp.player_id""")
+            finance_ledger,finance_names,_jp=self._finance_ledger_conn(conn)
+            placements={tid:self._placement_order_conn(conn,tid) for tid in tids}
+
+        event_by={str(e["id"]):e for e in events}; tournament_ids={tid for tid,e in event_by.items() if str(e.get("format_key"))!='duel1v1'}
+        duel_ids=set(tids)-tournament_ids
+        name_by={str(r["player_id"]):str(r["name"]) for r in tps}
+        team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
+        participant_tournaments=defaultdict(set)
+        for r in tps:
+            if str(r["tournament_id"]) in tournament_ids: participant_tournaments[str(r["player_id"])].add(str(r["tournament_id"]))
+        fixed_norm={self._norm_team_name(x) for x in FIXED_TEAMS}
+        ps=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0,"finals":0,"clutch_m":0,"clutch_w":0,
+                               "pen":0,"pen_w":0,"big_wins":0,"max_margin":0,"one_goal_wins":0,"narrow_losses":0,
+                               "teams":defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0}),"wc_m":0,"wc_w":0,"wc_gf":0,"wc_ga":0,
+                               "result_points":[],"t_results":defaultdict(lambda:{"m":0,"pts":0,"gf":0,"ga":0}),"scorer_goals":0})
+        clutch_stages={"QF","BARRAGE","SF","WB","WB_FINAL","LB","LB_FINAL","FINAL"}
+        pair=defaultdict(lambda:{"n":0,"aw":0,"bw":0,"d":0,"important":0,"names":None})
+        teamagg=defaultdict(lambda:{"display":None,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0})
+        match_candidates=[]
+        match_map={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
+
+        for e in events:
+            tid=str(e["id"]); champ=str(e.get("champion_player_id") or "")
+            if tid in tournament_ids and champ: ps[champ]["titles"]+=1
+        for tid in tournament_ids:
+            finals=[m for m in matches if str(m["tournament_id"])==tid and m.get("stage")=="FINAL"]
+            if finals:
+                f=finals[-1]
+                for pid in (f.get("home_player_id"),f.get("away_player_id")):
+                    if pid:ps[str(pid)]["finals"]+=1
+
+        for m in matches:
+            tid=str(m["tournament_id"]);h=str(m.get("home_player_id") or "");a=str(m.get("away_player_id") or "")
+            if not h or not a:continue
+            hs,ass=int(m["home_score"]),int(m["away_score"]); stage=str(m.get("stage") or "")
+            rh=self._result_for_player(m,h);ra=self._result_for_player(m,a)
+            # Rivalry uses all official matches including duels.
+            k=tuple(sorted((h,a)));rec=pair[k];rec["n"]+=1;rec["names"]=(name_by.get(k[0],m.get("home_name") or "?"),name_by.get(k[1],m.get("away_name") or "?"))
+            rk=self._result_for_player(m,k[0])
+            if rk=="W":rec["aw"]+=1
+            elif rk=="L":rec["bw"]+=1
+            else:rec["d"]+=1
+            rec["important"]+=4 if stage=="FINAL" else (3 if stage in ("SF","WB_FINAL","LB_FINAL") else (2 if stage in ("QF","BARRAGE","WB","LB") else 0))
+            # Team awards/rating also use all official matches.
+            for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,rh),(a,m.get("away_team"),ass,hs,ra)):
+                team=" ".join(str(team or "").split())
+                if team:
+                    nt=self._norm_team_name(team);tr=teamagg[nt];tr["display"]=tr["display"] or team;tr["m"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[r]]+=1
+            if tid not in tournament_ids:continue
+            for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,rh),(a,m.get("away_team"),ass,hs,ra)):
+                v=ps[pid];v["m"]+=1;v["gf"]+=gf;v["ga"]+=ga;v[{"W":"w","D":"d","L":"l"}[r]]+=1
+                pts=3 if r=="W" else (1 if r=="D" else 0);v["result_points"].append((pts,gf-ga))
+                tr=v["t_results"][tid];tr["m"]+=1;tr["pts"]+=pts;tr["gf"]+=gf;tr["ga"]+=ga
+                team=" ".join(str(team or "").split())
+                if team:
+                    nt=self._norm_team_name(team);tv=v["teams"][nt];tv["m"]+=1;tv["gf"]+=gf;tv["ga"]+=ga;tv["w"]+=int(r=="W")
+                    if nt not in fixed_norm:v["wc_m"]+=1;v["wc_w"]+=int(r=="W");v["wc_gf"]+=gf;v["wc_ga"]+=ga
+                if stage in clutch_stages:v["clutch_m"]+=1;v["clutch_w"]+=int(r=="W")
+                if r=="W":
+                    margin=gf-ga;v["max_margin"]=max(v["max_margin"],margin);v["big_wins"]+=int(margin>=3);v["one_goal_wins"]+=int(margin==1)
+                if r=="L":v["narrow_losses"]+=int((ga-gf)==1 or m.get("home_penalties") is not None)
+                if m.get("home_penalties") is not None and m.get("away_penalties") is not None:v["pen"]+=1;v["pen_w"]+=int(m.get("winner_player_id")==pid)
+            weight={"FINAL":8,"SF":6,"WB_FINAL":6,"LB_FINAL":6,"QF":4,"BARRAGE":4,"WB":2,"LB":2}.get(stage,0)
+            margin=abs(hs-ass);pens=8 if m.get("home_penalties") is not None else 0;close=5 if margin<=1 else (2 if margin==2 else 0)
+            match_candidates.append({"id":f"{tid}:{m['match_no']}","name":f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}","score":(hs+ass)*2+pens+close+weight,
+                                     "reason":f"{stage} • {hs+ass} goli"})
+        # tournament champion clubs
+        for e in events:
+            tid=str(e["id"]);champ=str(e.get("champion_player_id") or "")
+            if tid in tournament_ids and champ:
+                team=team_by.get((tid,champ),"");nt=self._norm_team_name(team)
+                if nt:teamagg[nt]["display"]=teamagg[nt]["display"] or team;teamagg[nt]["titles"]+=1
+        # scorer goals attributed to the player controlling the side
+        scorer_totals=defaultdict(int)
+        for r in scorer_rows:
+            m=match_map.get((str(r["tournament_id"]),int(r["match_no"])))
+            if not m:continue
+            scorer_totals[str(r["scorer_name"])]+=int(r.get("goals") or 0)
+            if str(r["tournament_id"]) in tournament_ids:
+                pid=m.get("home_player_id") if str(r.get("side"))=="home" else m.get("away_player_id")
+                if pid:ps[str(pid)]["scorer_goals"]+=int(r.get("goals") or 0)
+
+        def pc(pid,v):return round(v["w"]/v["m"]*100,1) if v["m"] else 0.0
+        def cand(pid,score,reason):return {"id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(float(score),2),"reason":reason}
+        def top(items,n=5):return sorted(items,key=lambda x:(float(x.get("score") or 0),str(x.get("name") or "")),reverse=True)[:n]
+        cats=[]
+        def add(key,title,desc,items,award=True,secondary=None):cats.append({"key":key,"title":title,"description":desc,"award":award,"candidates":top(items),"secondary":secondary})
+
+        # 1 player of year
+        items=[]
+        for pid,v in ps.items():
+            if v["m"]<2:continue
+            wp=pc(pid,v);cl=(v["clutch_w"]/v["clutch_m"]*100 if v["clutch_m"] else 0);gdpm=(v["gf"]-v["ga"])/v["m"]
+            score=v["titles"]*32+v["finals"]*11+wp*.28+cl*.11+gdpm*4+len(participant_tournaments[pid])
+            items.append(cand(pid,score,f"{v['titles']} tytuł(y), {v['finals']} finał(y), W% {wp}, bilans {v['gf']}:{v['ga']}"))
+        add("player_year","🏆 Gracz Roku","Całokształt: tytuły, finały, wyniki, bilans, regularność i ważne mecze. 1v1 nie wchodzi do tej kategorii.",items)
+        items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} GF/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=2]
+        add("offensive","🔥 Ofensywny Gracz Roku","GF/mecz, łączna liczba goli, wysokie zwycięstwa i największe wygrane.",items)
+        items=[cand(pid,110-(v["ga"]/v["m"])*25+min(v["m"],20),f"{v['ga']/v['m']:.2f} GA/mecz • {v['ga']} straconych • {v['m']} meczów") for pid,v in ps.items() if v["m"]>=3]
+        add("defense","🧱 Beton Roku","Najlepsza defensywa: GA/mecz, stracone gole i wielkość próby.",items)
+        items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=2]
+        add("clutch","🎯 Clutch Player Roku","Playoffy, półfinały, finały i mecze eliminacyjne Double Elimination.",items)
+        items=[cand(pid,v["pen_w"]/v["pen"]*100+v["pen_w"]*3,f"{v['pen_w']}/{v['pen']} wygranych serii") for pid,v in ps.items() if v["pen"]>=3]
+        add("penalties","🥅 Król Karnych","Tylko serie rzutów karnych; minimum 3 serie w roku.",items)
+        items=[cand(pid,(v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["titles"]*5,f"WC: {v['wc_w']}/{v['wc_m']} W • bilans {v['wc_gf']}:{v['wc_ga']}") for pid,v in ps.items() if v["wc_m"]>=3]
+        add("wildcards","🎲 Król Wild Cardów","W%, bilans i sukcesy podczas gry klubami z Wild Card.",items)
+        items=[]
+        for pid,v in ps.items():
+            seq=v["result_points"]
+            if len(seq)<6:continue
+            mid=len(seq)//2;early=seq[:mid];late=seq[mid:]
+            epts=sum(x[0] for x in early)/len(early);lpts=sum(x[0] for x in late)/len(late);egd=sum(x[1] for x in early)/len(early);lgd=sum(x[1] for x in late)/len(late)
+            items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • GD/mecz {egd:+.2f} → {lgd:+.2f}"))
+        add("progress","📈 Największy Progres","Zmiana między wcześniejszą i późniejszą częścią roku; wymagana sensowna próba.",items)
+        items=[]
+        for pid,v in ps.items():
+            vals=[tr["pts"]/tr["m"] for tr in v["t_results"].values() if tr["m"]]
+            if len(vals)<3:continue
+            avg=sum(vals)/len(vals);sd=statistics.pstdev(vals) if len(vals)>1 else 0
+            items.append(cand(pid,avg*25-sd*14+len(vals),f"{len(vals)} turniejów • średnio {avg:.2f} pkt/mecz • odchylenie {sd:.2f}"))
+        add("regular","🎯 Najbardziej Regularny","Stabilność wyników turniej po turnieju, z premią za dobry poziom.",items)
+        first_by={str(x["player_id"]):str(x.get("first_date") or "") for x in first_dates}
+        items=[cand(pid,v["w"]*4+pc(pid,v)*.4+v["titles"]*15,f"debiut {first_by.get(pid,'')[:10]} • {v['w']} W • W% {pc(pid,v)}") for pid,v in ps.items() if first_by.get(pid,"").startswith(str(year)) and len(participant_tournaments[pid])>=2]
+        add("debut","🚀 Debiut Roku","Nowi uczestnicy, którzy zaczęli oficjalną historię w tym roku i zebrali wystarczającą próbę.",items)
+        items=[cand(pid,pc(pid,v)+v["w"]*2+(v["gf"]-v["ga"])*.4,f"maks. 1 tytuł • W% {pc(pid,v)} • {v['w']} W") for pid,v in ps.items() if v["m"]>=3 and v["titles"]<=1]
+        add("outsider","🏅 Najlepszy spoza dominatorów","Ranking graczy z maksymalnie jednym wygranym turniejem.",items)
+        items=[]
+        for pid,v in ps.items():
+            good=sum(1 for tv in v["teams"].values() if tv["m"]>=2 and tv["w"]/tv["m"]>=.4)
+            if len(v["teams"])>=2:items.append(cand(pid,good*12+len(v["teams"])*5+pc(pid,v)*.25,f"{len(v['teams'])} drużyn • {good} z dobrym wynikiem • W% {pc(pid,v)}"))
+        add("universal","🔄 Najbardziej Uniwersalny Gracz","Dobre wyniki wieloma różnymi drużynami.",items)
+        items=[cand(pid,v["scorer_goals"],f"{v['scorer_goals']} goli wpisanych strzelców") for pid,v in ps.items() if v["scorer_goals"]>0]
+        add("player_scorers","👟 Król Strzelców FIFA Night","Uczestnik, którego wpisani strzelcy zdobyli łącznie najwięcej bramek.",items)
+        # finance for events completed this year
+        finance=defaultdict(lambda:{"paid":0,"won":0})
+        year_ids=set(tids)
+        for e in finance_ledger:
+            if str(e.get("id")) not in year_ids:continue
+            stake=int(e.get("stake_cents") or 0)
+            for pid in e.get("cash_player_ids") or []:finance[str(pid)]["paid"]+=stake
+            if e.get("prize_winner_player_id"):finance[str(e["prize_winner_player_id"])]["won"]+=int(e.get("prize_cents") or 0)
+        fin_items=[]
+        for pid,v in finance.items():
+            bal=v["won"]-v["paid"];fin_items.append(cand(pid,bal/100,f"bilans {(bal/100):+.2f} zł • wygrane {v['won']/100:.2f} zł • wpłaty {v['paid']/100:.2f} zł"))
+        sponsor=min(fin_items,key=lambda x:x["score"],default=None)
+        add("finance","🦈 Rekin Finansowy","Największy dodatni bilans finansowy roku. Sponsor FIFA Night jest pokazany dodatkowo jako największy bilans ujemny.",fin_items,secondary=sponsor)
+        # duel king
+        dv=defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0})
+        for m in matches:
+            if str(m["tournament_id"]) not in duel_ids:continue
+            for pid,gf,ga in ((str(m["home_player_id"]),int(m["home_score"]),int(m["away_score"])),(str(m["away_player_id"]),int(m["away_score"]),int(m["home_score"]))):
+                dv[pid]["m"]+=1;dv[pid]["gf"]+=gf;dv[pid]["ga"]+=ga;dv[pid]["w"]+=int(m.get("winner_player_id")==pid)
+        items=[cand(pid,v["w"]/v["m"]*100+v["w"]*3+(v["gf"]-v["ga"])/v["m"]*2,f"{v['w']}/{v['m']} W • bilans {v['gf']}:{v['ga']}") for pid,v in dv.items() if v["m"]>=5]
+        add("duel","⚔️ Król 1 vs 1","Wyłącznie oficjalne mecze 1v1; minimum 5 spotkań.",items)
+        # non-individual categories
+        rivalry=[]
+        for (a,b),v in pair.items():
+            if v["n"]<3:continue
+            balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"]);score=v["n"]*5+balance*20+v["important"]*2
+            na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"));rivalry.append({"id":f"{a}|{b}","name":f"{na} vs {nb}","score":round(score,2),"reason":f"{v['n']} meczów • {v['aw']}:{v['bw']} w zwycięstwach • ważne mecze {v['important']}"})
+        add("rivalry","⚔️ Rywalizacja Roku","Dużo i wyrównanych H2H plus znaczenie spotkań.",rivalry)
+        teamitems=[]
+        for nt,v in teamagg.items():
+            if not v["m"]:continue
+            raw=(v["w"]*3+v["d"])/(v["m"]*3);shrink=v["m"]/(v["m"]+6);gdpm=(v["gf"]-v["ga"])/v["m"]
+            rating=50+(raw*100-50)*shrink*.8+max(-10,min(10,gdpm*3))*shrink+v["titles"]*3
+            teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}"})
+        add("team_best","🏟️ Drużyna Roku","Najlepszy klub wg wyników, próby, bilansu i tytułów.",teamitems)
+        worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
+        add("team_worst","📉 Najgorsza Drużyna Roku","Najsłabszy klub wg tej samej bazy danych co Drużyna Roku.",worst)
+        scorer_items=[{"id":name.casefold(),"name":name,"score":goals,"reason":f"{goals} wpisanych goli"} for name,goals in scorer_totals.items() if goals>=5]
+        add("superscorer","⚡ Supersnajper Roku","Konkretny piłkarz z EA FC z największą liczbą wpisanych goli; kategoria pojawia się przy sensownej próbie.",scorer_items)
+        add("match_year","🎬 Mecz Roku","Znaczenie meczu, bliskość wyniku, gole i ewentualne karne.",match_candidates)
+        items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
+        add("minimalist","📐 Król Minimalistów","Najwięcej zwycięstw dokładnie jedną bramką.",items,award=False)
+        items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
+        add("unlucky","🤕 Pechowiec Roku","Najwięcej minimalnych porażek jedną bramką lub po karnych.",items,award=False)
+
+        overview={"tournaments":len(tournament_ids),"duels":len(duel_ids),"matches":len(matches),"goals":sum(int(m["home_score"])+int(m["away_score"]) for m in matches),
+                  "players":len({str(r["player_id"]) for r in tps}),"titles":len(tournament_ids),"top_player":(cats[0]["candidates"][0]["name"] if cats and cats[0]["candidates"] else None),
+                  "top_team":(next((c for c in cats if c["key"]=="team_best"),{}).get("candidates") or [{}])[0].get("name") if teamitems else None}
+        return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year)}
+
+    def all_time_stats(self) -> list[dict]:
+        """Shared official stats. Duels count as matches, never as tournament titles/finals."""
+        with self.connect() as conn:
+            events=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,fm.format_key
+                FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0""")
+            if not events: return []
+            all_ids={str(r["id"]) for r in events}
+            tournament_ids={str(r["id"]) for r in events if str(r.get("format_key") or "")!='duel1v1'}
+            players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
             tps=self._fetchall(conn,"SELECT tournament_id,player_id FROM tournament_players")
             matches=self._fetchall(conn,"SELECT * FROM matches WHERE home_score IS NOT NULL ORDER BY tournament_id,match_no")
-        finals=[m for m in matches if m["stage"]=="FINAL" and m["tournament_id"] in tids]
-        stats=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"pen_wins":0})
+        finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in tournament_ids]
+        stats=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"pen_wins":0,"duels":0,"duel_wins":0})
         for tp in tps:
-            if tp["tournament_id"] in tids: stats[tp["player_id"]]["tournaments"]+=1
-        for t in trs:
-            if t["champion_player_id"]: stats[t["champion_player_id"]]["titles"]+=1
+            tid=str(tp["tournament_id"]); pid=tp["player_id"]
+            if tid in tournament_ids: stats[pid]["tournaments"]+=1
+            if tid in all_ids and tid not in tournament_ids: stats[pid]["duels"]+=1
+        for t in events:
+            if str(t["id"]) in tournament_ids and t.get("champion_player_id"): stats[t["champion_player_id"]]["titles"]+=1
         for m in finals:
             if m.get("home_player_id"): stats[m["home_player_id"]]["finals"]+=1
             if m.get("away_player_id"): stats[m["away_player_id"]]["finals"]+=1
         for m in matches:
-            if m["tournament_id"] not in tids: continue
+            tid=str(m["tournament_id"])
+            if tid not in all_ids: continue
             h,a=m["home_player_id"],m["away_player_id"]; hs,ass=int(m["home_score"]),int(m["away_score"])
             if not h or not a: continue
             stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
@@ -2044,9 +2471,12 @@ class Database:
             else:
                 stats[h]["d"]+=1; stats[a]["d"]+=1
                 if m.get("winner_player_id"): stats[m["winner_player_id"]]["pen_wins"]+=1
+            if tid not in tournament_ids and m.get("winner_player_id"):
+                stats[m["winner_player_id"]]["duel_wins"]+=1
         out=[]
         for pid,v in stats.items():
-            if not v["tournaments"]: continue
             played=v["w"]+v["d"]+v["l"]
+            if not played: continue
             out.append({"player_id":pid,"name":players.get(pid,"?"),**v,"gd":v["gf"]-v["ga"],"matches":played,"win_pct":round(v["w"]/played*100,1) if played else 0.0})
         out.sort(key=lambda x:(x["titles"],x["w"],x["gd"],x["gf"]),reverse=True); return out
+

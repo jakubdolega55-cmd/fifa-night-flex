@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import html
 import os
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 
 from database import Database
-from export_utils import generate_summary_png
-from logic import BASE_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
+from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
+from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal)
 
@@ -108,7 +109,8 @@ def render_history_admin():
         else: db.clear_all_history();st.success("Historia wszystkich turniejów została wyczyszczona. Zapamiętane nicki zostały zachowane.");rr()
 
 def format_for(count:int)->str:
-    if count==4:return "league4_final"
+    if count==3:return "league3_final"
+    if count==4:return st.session_state.get("format4","league4_final")
     if count==5:return st.session_state.get("format5","double5")
     if count==6:return st.session_state.get("format6","groups6")
     if count==7:return st.session_state.get("format7","double7")
@@ -122,101 +124,112 @@ def start_defaults(count:int, official_names:list[str]):
     for i in range(count):
         field_key=f"p_{count}_{i}"
         remembered=vals[i] if i<len(vals) else ""
-        # Automatycznie przywracamy tylko zweryfikowane nicki z oficjalnych statystyk.
-        # Nazwę spoza statystyk nadal można normalnie wpisać jako nową.
         matched=canonical.get(remembered.casefold()) if remembered else None
         if matched: st.session_state[field_key]=matched
         else: st.session_state.pop(field_key,None)
+        st.session_state.setdefault(f"cash_{count}_{i}",True)
     st.session_state[key]=True
 
 
+def render_duel_start(official_names:list[str]):
+    st.markdown("### ⚔️ Mecz 1 vs 1")
+    st.caption("Ręczny wybór graczy i drużyn. 1v1 liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów ani statystyk turniejowych.")
+    team_options=list(dict.fromkeys(FIXED_TEAMS + wildcard_team_suggestions_cached()))
+    with st.form("create_duel_form"):
+        c1,c2=st.columns(2)
+        with c1:
+            p1=st.selectbox("Gracz 1",official_names,index=None,accept_new_options=True,placeholder="Wpisz nick lub wybierz",key="duel_p1")
+            t1=st.selectbox("Drużyna gracza 1",team_options,index=None,accept_new_options=True,placeholder="Wpisz lub wybierz drużynę",key="duel_t1")
+            cash1=st.checkbox("💰 Gra za kasę",value=True,key="duel_cash1")
+        with c2:
+            p2=st.selectbox("Gracz 2",official_names,index=None,accept_new_options=True,placeholder="Wpisz nick lub wybierz",key="duel_p2")
+            t2=st.selectbox("Drużyna gracza 2",team_options,index=None,accept_new_options=True,placeholder="Wpisz lub wybierz drużynę",key="duel_t2")
+            cash2=st.checkbox("💰 Gra za kasę",value=True,key="duel_cash2")
+        stake=st.number_input("💰 Stawka na osobę (zł)",min_value=0.0,step=5.0,format="%.2f",value=float(db.last_stake()),key="duel_stake")
+        st.caption("Jeśli choć jedna osoba odznaczy „Gra za kasę”, mecz automatycznie będzie bezpłatny.")
+        test=st.toggle("🧪 Tryb testowy",value=False,key="duel_test")
+        go=st.form_submit_button("⚔️ UTWÓRZ MECZ 1 VS 1",type="primary",use_container_width=True)
+    if go:
+        try:
+            db.create_duel([p1,p2],[t1,t2],test,stake,[cash1,cash2])
+            st.session_state.pop("last_spin",None);rr()
+        except ValueError as e:st.error(str(e))
+
+
 def render_start():
-    # Start navigation deliberately uses regular buttons instead of
-    # st.segmented_control. On some Streamlit/theme combinations the
-    # segmented-control labels can render invisibly (only the underline is
-    # visible), which made the Statistics entry look as if it wasn't there.
-    # Keep the navigation BELOW the hero so Streamlit's top chrome never
-    # clips the buttons on desktop/mobile.
     start_view=st.session_state.get("start_view","tournament")
-    hero(
-        "Statystyki i historia oficjalnych turniejów."
-        if start_view=="stats"
-        else "Wybierz liczbę graczy i format turnieju."
-    )
-    nav1,nav2=st.columns(2)
-    with nav1:
-        if st.button(
-            "🎮 NOWY TURNIEJ",
-            type="primary" if start_view=="tournament" else "secondary",
-            use_container_width=True,
-            key="start_nav_tournament",
-        ):
-            st.session_state.start_view="tournament"
-            start_view="tournament"
-            st.rerun()
-    with nav2:
-        if st.button(
-            "📊 STATYSTYKI",
-            type="primary" if start_view=="stats" else "secondary",
-            use_container_width=True,
-            key="start_nav_stats",
-        ):
-            st.session_state.start_view="stats"
-            start_view="stats"
-            st.rerun()
+    subtitles={
+        "tournament":"Wybierz liczbę graczy i format turnieju.",
+        "duel":"Szybki mecz dwóch graczy z ręcznym wyborem drużyn.",
+        "stats":"Statystyki i historia oficjalnych rozgrywek.",
+        "awards":"Live rankingi rocznych FIFA Night Awards.",
+    }
+    hero(subtitles.get(start_view,subtitles["tournament"]))
+    cols=st.columns(4)
+    nav=[("tournament","🎮 TURNIEJ"),("duel","⚔️ 1 VS 1"),("stats","📊 STATYSTYKI"),("awards","🏆 AWARDS")]
+    for col,(key,label) in zip(cols,nav):
+        with col:
+            if st.button(label,type="primary" if start_view==key else "secondary",use_container_width=True,key=f"start_nav_{key}"):
+                st.session_state.start_view=key;st.rerun()
     if start_view=="stats":
-        render_stats()
+        render_stats();return
+    if start_view=="awards":
+        render_awards();return
+    official_names=official_player_names_cached()
+    if start_view=="duel":
+        render_duel_start(official_names)
         return
     if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud podłącz DATABASE_URL z Neon.")
     default=db.last_player_count() if "player_count" not in st.session_state else st.session_state.player_count
-    if default not in (4,5,6,7,8):default=6
-    count=st.segmented_control("Liczba graczy",[4,5,6,7,8],default=default,key="player_count") or default
-    official_names=official_player_names_cached()
+    if default not in (3,4,5,6,7,8):default=6
+    count=st.segmented_control("Liczba graczy",[3,4,5,6,7,8],default=default,key="player_count") or default
     start_defaults(count,official_names)
-    if count==5:
+    if count==4:
+        st.session_state.format4=st.radio("Format dla 4 graczy",["league4_final","double4"],format_func=format_option,horizontal=False,key="format4_radio")
+    elif count==5:
         st.session_state.format5=st.radio("Format dla 5 graczy",["double5","league5_final"],format_func=format_option,horizontal=False,key="format5_radio")
     elif count==6:
-        st.session_state.format6=st.radio("Format dla 6 graczy",["groups6","groups6_full"],format_func=format_option,horizontal=False,key="format6_radio")
+        st.session_state.format6=st.radio("Format dla 6 graczy",["groups6","groups6_full","double6"],format_func=format_option,horizontal=False,key="format6_radio")
     elif count==7:
         st.session_state.format7=st.radio("Format dla 7 graczy",["double7","groups7","groups7_sf"],format_func=format_option,horizontal=False,key="format7_radio")
     elif count==8:
         st.session_state.format8=st.radio("Format dla 8 graczy",["groups8_sf","double8","groups8_barrage"],format_func=format_option,horizontal=False,key="format8_radio")
     fmt=format_for(count)
     st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}  \n**Łącznie:** {FORMAT_MATCH_COUNTS[fmt]}")
-    if "stake_per_player" not in st.session_state:
-        st.session_state.stake_per_player=float(db.last_stake())
+    if "stake_per_player" not in st.session_state:st.session_state.stake_per_player=float(db.last_stake())
     with st.form(f"create_{count}_{fmt}"):
-        st.caption("Nicki z oficjalnych statystyk są podpowiadane podczas wpisywania. Możesz też wpisać nowego gracza.")
-        cols=st.columns(2); names=[]
+        st.caption("Nicki z oficjalnych statystyk są podpowiadane. Przy każdym graczu możesz wyłączyć udział w puli pieniężnej.")
+        names=[];cash_flags=[]
         for i in range(count):
-            with cols[i%2]:
-                names.append(st.selectbox(
-                    f"Gracz {i+1}",
-                    options=official_names,
-                    index=None,
-                    key=f"p_{count}_{i}",
-                    placeholder="Wpisz nick lub wybierz z listy",
-                    accept_new_options=True,
-                ))
-        if count in (4,5):
+            c_name,c_cash=st.columns([3.4,1.35],vertical_alignment="bottom")
+            with c_name:
+                names.append(st.selectbox(f"Gracz {i+1}",official_names,index=None,key=f"p_{count}_{i}",placeholder="Wpisz nick lub wybierz z listy",accept_new_options=True))
+            with c_cash:
+                cash_flags.append(st.checkbox("💰 Gra za kasę",value=True,key=f"cash_{count}_{i}"))
+        if count in (3,4,5):
             teams=BASE_TEAMS.copy()
-            st.markdown("**Draft drużyn:** najpierw losujemy kolejność wyboru, potem każdy wybiera z pozostałej puli.")
-            st.caption("Bayern • Barcelona • PSG • Liverpool • Man City • Wild Card (Real Madryt banned)")
+            st.markdown("**Draft drużyn:** losujemy kolejność, potem każdy wybiera klub z puli stałej albo dostępny Wild Card.")
+            st.caption("Stałe: Bayern • Barcelona • PSG • Liverpool. Wild Card może być użyty kilka razy, ale konkretny klub tylko raz.")
         elif count==6:
-            teams=BASE_TEAMS.copy(); st.caption("Pula drużyn: Bayern, Barcelona, PSG, Liverpool, Man City + dzika karta (Real banned).")
+            teams=SIX_TEAMS.copy();st.caption("Pula: Bayern • Barcelona • PSG • Liverpool + 2 sloty Wild Card. Man City jest Wild Cardem.")
         elif count==7:
-            teams=SEVEN_TEAMS.copy(); st.caption("Pula drużyn: 5 klubów + 2 dzikie karty. Real Madryt banned.")
+            teams=SEVEN_TEAMS.copy();st.caption("Pula: 4 kluby stałe + 3 sloty Wild Card. Real Madryt banned.")
         else:
-            teams=EIGHT_TEAMS.copy(); st.caption("Pula drużyn: 5 klubów + 3 dzikie karty. Real Madryt banned.")
+            teams=EIGHT_TEAMS.copy();st.caption("Pula: 4 kluby stałe + 4 sloty Wild Card. Real Madryt banned.")
         stake=st.number_input("💰 Stawka na osobę (zł)",min_value=0.0,step=5.0,format="%.2f",key="stake_per_player")
-        st.caption("Rozliczenie: każdy uczestnik wpłaca tę samą stawkę, a zwycięzca bierze całą pulę. Po kilku turniejach aplikacja skompensuje należności.")
+        jackpot=db.current_jackpot_cents()
+        if jackpot>0:st.warning(f"🎰 Aktualny jackpot do przejęcia przez kolejnego uprawnionego mistrza: **{pln_cents(jackpot)} zł**")
+        st.caption("Gracz z wyłączonym „Gra za kasę” gra normalnie sportowo, ale nie wpłaca i nie może odebrać puli. Jeśli wygra — pula przechodzi do jackpotu.")
         test=st.toggle("🧪 Tryb testowy",value=True,key=f"test_{count}")
         go=st.form_submit_button("🎮 UTWÓRZ TURNIEJ",type="primary",use_container_width=True)
     if go:
-        try:db.create_tournament(names,count,fmt,teams,test,stake);st.session_state.pop("last_spin",None);rr()
+        try:
+            db.create_tournament(names,count,fmt,teams,test,stake,cash_flags)
+            st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
     with st.expander("⚙️ Historia i baza"):
         render_history_admin()
+
 
 @st.fragment
 def draft_order(tid:str):
@@ -268,7 +281,7 @@ def team_draft(tid:str):
         st.markdown("**Wybrane:** " + " • ".join(f"{esc(p['name'])}: {esc(p['team'])}" for p in picked))
     with st.form(f"pick_team_{tid}_{current['player_id']}"):
         slot=st.selectbox("Drużyna",remaining,key=f"pick_slot_{tid}_{current['player_id']}")
-        wildcard=st.selectbox("Wild Card — wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
+        wildcard=st.selectbox("Wild Card — wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
                               placeholder="np. Arsenal",accept_new_options=True,key=f"wild_{tid}_{current['player_id']}")
         ok=st.form_submit_button("✅ WYBIERAM",type="primary",use_container_width=True)
     if ok:
@@ -319,7 +332,7 @@ def team_draw(tid:str):
     def show_pending_wildcard(result:dict):
         st.markdown(f"### 🃏 Wild Card — {esc(result['name'])}")
         with st.form(f"wildcard_draw_{tid}_{result['player_id']}"):
-            st.selectbox("Wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
+            st.selectbox("Wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
                          placeholder="np. Arsenal",accept_new_options=True,key=f"wheel_wc_{tid}_{result['player_id']}")
             st.form_submit_button("✅ ZATWIERDŹ DRUŻYNĘ",type="primary",use_container_width=True)
 
@@ -328,7 +341,7 @@ def team_draw(tid:str):
             render_wheel(pending["team"],pending["name"],tid,pool)
         st.markdown(f"### 🃏 Wild Card — {esc(pending['name'])}")
         with st.form(f"wildcard_draw_{tid}_{pending['player_id']}"):
-            choice=st.selectbox("Wpisz lub wybierz drużynę",options=wildcard_team_suggestions_cached(),index=None,
+            choice=st.selectbox("Wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
                                 placeholder="np. Arsenal",accept_new_options=True,key=f"wheel_wc_{tid}_{pending['player_id']}")
             ok=st.form_submit_button("✅ ZATWIERDŹ DRUŻYNĘ",type="primary",use_container_width=True)
         if ok:
@@ -430,8 +443,8 @@ def structure_draw(tid:str):
 
 
 def render_structure(t):
-    title={"league4_final":"losowanie ustawienia ligi","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
-    step="Etap 3/3" if int(t["player_count"]) in (4,5) else "Etap 2/2"
+    title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
+    step="Etap 3/3" if int(t["player_count"]) in (3,4,5) else "Etap 2/2"
     hero(f"{step} • {title}")
     render_tournament_status_control(t,"structure")
     structure_draw(t["id"]);reset_controls(t,"structure")
@@ -440,17 +453,21 @@ def render_structure(t):
 def stage_name(m):
     s=m["stage"]
     if s=="GROUP":return f"GRUPA {m['group_name']}"
-    return {"LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}.get(s,s)
+    return {"DUEL":"1 VS 1","LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}.get(s,s)
 
-def max_matches(fmt):return {"league4_final":7,"double5":8,"league5_final":11,"groups6":9,"groups6_full":11,"double7":12,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":14,"groups8_barrage":17}[fmt]
+def max_matches(fmt):return {"duel1v1":1,"league3_final":4,"league4_final":7,"double4":6,"double5":8,"league5_final":11,"groups6":9,"groups6_full":11,"double6":10,"double7":12,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":14,"groups8_barrage":17}[fmt]
 
 def source_placeholder(fmt,no):
     maps={
+      "duel1v1":{},
+      "league3_final":{4:"1. miejsce ligi — 2. miejsce ligi"},
       "league4_final":{7:"1. miejsce ligi — 2. miejsce ligi"},
+      "double4":{3:"Przegrany M1 — Przegrany M2",4:"Zwycięzca M1 — Zwycięzca M2",5:"Zwycięzca M3 — Przegrany finału Winners",6:"Mistrz Winners (start 1:0) — Mistrz Losers"},
       "double5":{3:"Szczęśliwy los — wylosowany zwycięzca M1/M2",4:"Przegrany M1 — Przegrany M2",5:"Drugi zwycięzca M1/M2 — Zwycięzca M3",6:"Zwycięzca M4 — Przegrany M3",7:"Zwycięzca M6 — Przegrany M5",8:"Mistrz winners (start 1:0) — Mistrz losers"},
       "league5_final":{11:"1. miejsce ligi — 2. miejsce ligi"},
       "groups6":{7:"1A — 2B / 1B — 2A",8:"Drugi półfinał",9:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups6_full":{7:"2A — 3B / 2B — 3A",8:"Drugi ćwierćfinał",9:"Zwycięzca grupy — Zwycięzca QF",10:"Zwycięzca grupy — Zwycięzca QF",11:"Zwycięzca SF1 — Zwycięzca SF2"},
+      "double6":{3:"Zwycięzca M1 — Szczęśliwy los E",4:"Zwycięzca M2 — Szczęśliwy los F",5:"Przegrany M1 — Przegrany M2",6:"Zwycięzca M5 — Przegrany M3",7:"Finał Winners",8:"Zwycięzca M6 — Przegrany M4",9:"Finał Losers",10:"Mistrz Winners (start 1:0) — Mistrz Losers"},
       "double7":{4:"Losowanie Winners + Szczęśliwy los po pierwszej rundzie",5:"Drugi wylosowany półfinał Winners",6:"Dwóch przegranych bez Szczęśliwego losu",7:"Szczęśliwy los LB — przegrany półfinału WB",8:"Zwycięzca M6 — drugi przegrany półfinału WB",9:"Finał winners",10:"Drabinka przegranych",11:"Finał losers",12:"Mistrz winners (start 1:0) — Mistrz losers"},
       "groups7":{10:"2A — 3B / 2B — 3A",11:"Drugi ćwierćfinał",12:"Zwycięzca grupy — Zwycięzca QF",13:"Zwycięzca grupy — Zwycięzca QF",14:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups7_sf":{10:"1A — 2B / 1B — 2A",11:"Drugi półfinał",12:"Zwycięzca SF1 — Zwycięzca SF2"},
@@ -461,52 +478,39 @@ def source_placeholder(fmt,no):
     return maps.get(fmt,{}).get(no,"Do ustalenia")
 
 
-def _scorer_goal_row(tid,m,side,row_idx,name):
-    c_name,c_goals=st.columns([3.4,1.15],gap="small",vertical_alignment="center")
-    with c_name:
-        st.markdown(f"<div style='font-weight:750;line-height:1.1;padding:0.18rem 0'>{esc(name)}</div>",unsafe_allow_html=True)
-    with c_goals:
-        goals=st.number_input(
-            f"Gole — {name}",min_value=0,max_value=20,value=0,step=1,
-            key=f"sc_{tid}_{m['match_no']}_{side}_{row_idx}_{name}",label_visibility="collapsed",
-        )
-    return int(goals)
-
-
 def _scorer_side_form(tid,m,side,team_name,player_name):
     options=db.team_scorer_options(team_name)
-    st.markdown(f"#### ⚽ {esc(team_name)}")
-    st.caption(f"{esc(player_name)}")
-    items=[]
-    top=options[:5]; rest=options[5:]
-    for i,row in enumerate(top):
-        goals=_scorer_goal_row(tid,m,side,i,row["name"])
-        items.append({"name":row["name"],"goals":goals})
-    if rest:
-        with st.expander(f"Pozostali zawodnicy ({len(rest)})"):
-            for j,row in enumerate(rest,5):
-                goals=_scorer_goal_row(tid,m,side,j,row["name"])
-                items.append({"name":row["name"],"goals":goals})
     known=[r["name"] for r in options]
-    with st.expander("➕ Inny zawodnik"):
-        st.caption("Użyj tylko wtedy, gdy strzelca nie ma na liście.")
-        for k in range(2):
-            c1,c2=st.columns([2.6,1],gap="small",vertical_alignment="bottom")
-            with c1:
-                name=st.selectbox(
-                    f"Inny strzelec {k+1}",options=known,index=None,accept_new_options=True,
-                    placeholder="Wpisz nazwisko",key=f"sc_other_name_{tid}_{m['match_no']}_{side}_{k}",
-                )
-            with c2:
-                goals=st.number_input(
-                    f"Gole {k+1}",0,20,0,1,key=f"sc_other_goals_{tid}_{m['match_no']}_{side}_{k}",
-                )
-            if name and int(goals)>0:items.append({"name":name,"goals":int(goals)})
+    count_key=f"sc_rows_{tid}_{m['match_no']}_{side}"
+    st.session_state.setdefault(count_key,3)
+    count=max(3,min(8,int(st.session_state.get(count_key) or 3)))
+    st.markdown(f"#### {esc(team_name)}")
+    st.caption(f"{esc(player_name)} • wybierz tylko tych, których chcesz wpisać")
+    for i in range(count):
+        name_key=f"sc_name_{tid}_{m['match_no']}_{side}_{i}"
+        goals_key=f"sc_goals_{tid}_{m['match_no']}_{side}_{i}"
+        st.session_state.setdefault(goals_key,0)
+        c_name,c_minus,c_num,c_plus=st.columns([4.6,.7,.85,.7],gap="small",vertical_alignment="center")
+        with c_name:
+            st.selectbox(f"Strzelec {i+1}",known,index=None,accept_new_options=True,placeholder="Wybierz lub wpisz nazwisko",key=name_key,label_visibility="collapsed")
+        with c_minus:
+            if st.button("−",key=f"sc_minus_{tid}_{m['match_no']}_{side}_{i}",use_container_width=True):
+                st.session_state[goals_key]=max(0,int(st.session_state.get(goals_key) or 0)-1);rf()
+        with c_num:
+            st.markdown(f"<div style='text-align:center;font-size:1.15rem;font-weight:900;padding:.45rem 0'>{int(st.session_state.get(goals_key) or 0)}</div>",unsafe_allow_html=True)
+        with c_plus:
+            if st.button("+",key=f"sc_plus_{tid}_{m['match_no']}_{side}_{i}",use_container_width=True):
+                st.session_state[goals_key]=min(20,int(st.session_state.get(goals_key) or 0)+1);rf()
+    if count<8 and st.button("➕ Dodaj strzelca",key=f"sc_add_{tid}_{m['match_no']}_{side}",use_container_width=True):
+        st.session_state[count_key]=count+1;rf()
     merged={}
-    for item in items:
-        n=" ".join(str(item.get("name") or "").strip().split());g=int(item.get("goals") or 0)
-        if n and g>0:merged[n.casefold()]={"name":n,"goals":merged.get(n.casefold(),{}).get("goals",0)+g}
+    for i in range(count):
+        n=" ".join(str(st.session_state.get(f"sc_name_{tid}_{m['match_no']}_{side}_{i}") or "").strip().split())
+        g=int(st.session_state.get(f"sc_goals_{tid}_{m['match_no']}_{side}_{i}") or 0)
+        if n and g>0:
+            key=n.casefold();merged[key]={"name":n,"goals":int(merged.get(key,{}).get("goals",0))+g}
     return {"team":team_name,"items":list(merged.values())}
+
 
 def render_match_context(m):
     ctx=db.match_context(m["home_player_id"],m["away_player_id"])
@@ -538,27 +542,22 @@ def score_form(tid,m,fmt):
                 except ValueError as e:st.error(str(e))
         if st.button("↩️ Zmień wynik przed karnymi",use_container_width=True,key=f"change_{tid}_{no}"):st.session_state.pop("pending_ko",None);rf()
         return
-    wb_bonus = fmt in ("double5","double7","double8") and m.get("stage")=="FINAL"
+    wb_bonus = fmt in ("double4","double5","double6","double7","double8") and m.get("stage")=="FINAL"
     start_home = 1 if wb_bonus else 0
-    if wb_bonus and st.session_state.get(f"hs_{tid}_{no}",1) < 1:
-        st.session_state[f"hs_{tid}_{no}"] = 1
-    with st.form(f"score_{tid}_{no}"):
-        c1,mid,c2=st.columns([1,.18,1])
-        with c1:hs=st.number_input(m["home_name"],min_value=start_home,max_value=99,value=start_home,step=1,key=f"hs_{tid}_{no}")
-        with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
-        with c2:ass=st.number_input(m["away_name"],min_value=0,max_value=99,value=0,step=1,key=f"as_{tid}_{no}")
-        st.divider()
-        st.markdown("### ⚽ Strzelcy")
-        st.caption("Nazwisko po lewej, szybki licznik po prawej. Zmiany zapisują się dopiero razem z wynikiem meczu.")
-        home_sc=_scorer_side_form(tid,m,"home",m["home_team"],m["home_name"])
-        away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
-        if wb_bonus:
-            st.caption("Bonusowe 1:0 z Winners Bracket nie ma strzelca — nie dodawaj go do listy strzelców.")
-        st.caption("Strzelcy są opcjonalni i nie muszą sumować się do wyniku — samobóje lub nieuzupełnione bramki możesz zostawić bez przypisania.")
-        ok=st.form_submit_button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True)
-    if ok:
-        scorers={"home":home_sc,"away":away_sc}
-        ko=m["stage"] not in ("GROUP","LEAGUE")
+    if wb_bonus and st.session_state.get(f"hs_{tid}_{no}",1) < 1:st.session_state[f"hs_{tid}_{no}"]=1
+    c1,mid,c2=st.columns([1,.18,1])
+    with c1:hs=st.number_input(m["home_name"],min_value=start_home,max_value=99,value=start_home,step=1,key=f"hs_{tid}_{no}")
+    with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
+    with c2:ass=st.number_input(m["away_name"],min_value=0,max_value=99,value=0,step=1,key=f"as_{tid}_{no}")
+    st.divider()
+    st.markdown("### ⚽ Strzelcy — opcjonalnie")
+    st.caption("Domyślnie są 3 kompaktowe wiersze na drużynę. Możesz dodać kolejne lub zostawić wszystko puste.")
+    sc1,sc2=st.columns(2)
+    with sc1:home_sc=_scorer_side_form(tid,m,"home",m["home_team"],m["home_name"])
+    with sc2:away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
+    if wb_bonus:st.caption("Bonusowe 1:0 z Winners Bracket nie ma strzelca.")
+    if st.button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True,key=f"save_score_{tid}_{no}"):
+        scorers={"home":home_sc,"away":away_sc};ko=m["stage"] not in ("GROUP","LEAGUE")
         if ko and int(hs)==int(ass):st.session_state.pending_ko={"tid":tid,"no":no,"hs":int(hs),"as":int(ass),"scorers":scorers};rf()
         else:
             try:db.save_result(tid,no,int(hs),int(ass),scorers=scorers);rf()
@@ -638,32 +637,51 @@ def render_special_event(tid:str, b:dict) -> bool:
 
 @st.fragment
 def live(tid:str):
-    b=db.bundle(tid);t=b["tournament"];meta=b["meta"]
+    b=db.bundle(tid);t=b["tournament"];meta=b["meta"];fmt=meta["format_key"]
     if t["status"]=="completed":
-        summary=db.tournament_summary(tid);champ=summary.get("champion") or "Mistrz"
+        summary=db.tournament_summary(tid);champ=summary.get("champion") or "Zwycięzca"
+        finance=db.finance_event(tid) if not int(t.get("is_test") or 0) else None
+        if fmt=="duel1v1":
+            m=next((x for x in b.get("matches",[]) if x.get("home_score") is not None),None)
+            score=(f"{m.get('home_score')}:{m.get('away_score')}" if m else "—")
+            if m and m.get("home_penalties") is not None:score+=f" (k. {m.get('home_penalties')}:{m.get('away_penalties')})"
+            st.markdown(f'<div class="winner"><div class="match-no">ZWYCIĘZCA 1 VS 1</div><div style="font-size:3rem">⚔️</div><div class="player-big">{esc(champ)}</div></div>',unsafe_allow_html=True)
+            if st.session_state.get("celebrated")!=tid:st.balloons();st.session_state.celebrated=tid
+            if m:st.success(f"**{esc(m.get('home_name'))} {score} {esc(m.get('away_name'))}**")
+            if finance and int(finance.get("prize_cents") or 0)>0:
+                st.info(f"💰 Zwycięzca otrzymuje **{pln_cents(finance['prize_cents'])} zł**. Mecz 1v1 nie rusza jackpotu turniejowego.")
+            elif float((meta.get("extra") or {}).get("stake_per_player") or 0)<=0:
+                st.caption("Mecz bezpłatny.")
+            st.caption("Wynik liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów, finałów ani Gracza Roku.")
+            if t["is_test"]:st.info("Mecz testowy — nie liczy się do statystyk oficjalnych.")
+            if st.button("➕ NOWY MECZ 1 VS 1",type="primary",use_container_width=True,key=f"new_duel_{tid}"):
+                db.start_new();st.session_state.start_view="duel";rr()
+            return
+
         export_meta=db.tournament_export_meta(tid)
-        png_bytes=tournament_summary_png_cached(b, summary, export_meta.get("official_no"))
+        png_bytes=tournament_summary_png_cached(b,summary,export_meta.get("official_no"))
         file_tag=f"turniej-{export_meta.get('official_no') or 'test'}-{str(export_meta.get('completed_at') or export_meta.get('created_at') or '')[:10]}".strip('-')
         st.markdown(f'<div class="winner"><div class="match-no">MISTRZ TURNIEJU</div><div style="font-size:3rem">🏆</div><div class="player-big">{esc(champ)}</div></div>',unsafe_allow_html=True)
         if st.session_state.get("celebrated")!=tid:st.balloons();st.session_state.celebrated=tid
         st.markdown("### 📋 Podsumowanie turnieju")
-        stake=float((b.get("meta",{}).get("extra") or {}).get("stake_per_player") or 0)
+        stake=float((meta.get("extra") or {}).get("stake_per_player") or 0)
+        cash_names=list((meta.get("extra") or {}).get("cash_player_names") or [])
         if stake>0:
-            st.info(f"💰 **Stawka:** {pln_value(stake)} zł / osoba • **pula:** {pln_value(stake*len(b.get('players',[])))} zł")
+            cash_count=len(cash_names) if "cash_player_names" in (meta.get("extra") or {}) else len(b.get("players",[]))
+            st.info(f"💰 **Stawka:** {pln_value(stake)} zł / płacąca osoba • **wpłaty tego turnieju:** {pln_value(stake*cash_count)} zł • płaci: {cash_count}/{len(b.get('players',[]))}")
+        if finance:
+            jin=int(finance.get("jackpot_in_cents") or 0);jout=int(finance.get("jackpot_out_cents") or 0);prize=int(finance.get("prize_cents") or 0)
+            if jin>0:st.warning(f"🎰 Do tego turnieju wszedł jackpot **{pln_cents(jin)} zł**.")
+            if prize>0:st.success(f"💸 Do odbioru przez **{finance.get('prize_winner_name') or champ}**: **{pln_cents(prize)} zł**.")
+            elif jout>0 and int(finance.get("contribution_cents") or 0)>0:
+                st.warning(f"🎰 Mistrz nie grał za kasę — **{pln_cents(jout)} zł** przechodzi jako jackpot na następny oficjalny płatny turniej.")
         champ_record=summary.get("champion_record") or {}
         champ_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==champ),"—")
-        st.success(
-            f"🏆 **1. miejsce: {champ} • {champ_team}**\n\n"
-            f"Bilans: {champ_record.get('w',0)}W / {champ_record.get('d',0)}R / {champ_record.get('l',0)}P • "
-            f"Bramki {champ_record.get('gf',0)}:{champ_record.get('ga',0)}"
-        )
-        third=summary.get("third_place") or {}
-        fourth=summary.get("fourth_place") or {}
-        runner_name=summary.get("runner_up") or "—"
-        runner_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==runner_name),"—")
+        st.success(f"🏆 **1. miejsce: {champ} • {champ_team}**\n\nBilans: {champ_record.get('w',0)}W / {champ_record.get('d',0)}R / {champ_record.get('l',0)}P • Bramki {champ_record.get('gf',0)}:{champ_record.get('ga',0)}")
+        third=summary.get("third_place") or {};fourth=summary.get("fourth_place") or {}
+        runner_name=summary.get("runner_up") or "—";runner_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==runner_name),"—")
         st.markdown("#### 🏅 Klasyfikacja")
-        p1,p2,p3=st.columns(3)
-        p1.info(f"🥈 **2. miejsce:** {runner_name} • {runner_team}")
+        p1,p2,p3=st.columns(3);p1.info(f"🥈 **2. miejsce:** {runner_name} • {runner_team}")
         if third:p2.info(f"🥉 **3. miejsce:** {third.get('name','—')} • {third.get('team','—')}")
         if fourth:p3.info(f"4️⃣ **4. miejsce:** {fourth.get('name','—')} • {fourth.get('team','—')}")
         c1,c2=st.columns(2)
@@ -674,37 +692,44 @@ def live(tid:str):
             mot_score=mot["score"]
             if mot.get("home_penalties") is not None and mot.get("away_penalties") is not None:mot_score+=f" (k. {mot['home_penalties']}:{mot['away_penalties']})"
             st.warning(f"🎬 **Mecz turnieju:** {mot['home']} {mot_score} {mot['away']} • {stage_name({'stage':mot.get('stage'),'group_name':mot.get('group_name') or ''})}")
-        if summary.get("real_top_scorer"):
-            st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
-        else:
-            st.info("⚽ **Strzelcy:** nie uzupełniono strzelców w tym turnieju.")
+        if summary.get("real_top_scorer"):st.success(f"🥇 Strzelec turnieju: **{summary['real_top_scorer']['name']} — {summary['real_top_scorer']['goals']} goli**")
+        else:st.info("⚽ **Strzelcy:** nie uzupełniono strzelców w tym turnieju.")
         if summary.get("rivalry_match"):st.info(f"🔥 Rivalry match turnieju: **{summary['rivalry_match']['home']} {summary['rivalry_match']['score']} {summary['rivalry_match']['away']}**")
         if summary.get("new_records"):
             st.markdown("#### 🆕 Nowe rekordy")
             for r in summary["new_records"]:st.success(r)
         st.markdown("### 🖼️ Eksport")
         e1,e2=st.columns(2)
-        with e1:
-            st.download_button("📸 Pobierz podsumowanie PNG",data=png_bytes,file_name=f"{file_tag}.png",mime="image/png",use_container_width=True,key=f"dl_png_{tid}")
+        with e1:st.download_button("📸 Pobierz podsumowanie PNG",data=png_bytes,file_name=f"{file_tag}.png",mime="image/png",use_container_width=True,key=f"dl_png_{tid}")
         with e2:
-            if st.button("➕ NOWY TURNIEJ",type="primary",use_container_width=True,key=f"new_{tid}"):db.start_new();rr()
-        st.caption("Eksport tworzy gotową grafikę 1080×1080 z numerem turnieju, zwycięzcą, finałem i najważniejszymi statystykami.")
-        if t["is_test"]:st.info("Turniej testowy — nie liczy się do statystyk wszech czasów.")
+            if st.button("➕ NOWY TURNIEJ",type="primary",use_container_width=True,key=f"new_{tid}"):
+                db.start_new();st.session_state.start_view="tournament";rr()
+        if t["is_test"]:st.info("Turniej testowy — nie liczy się do statystyk wszech czasów ani finansów.")
         return
+
     if render_special_event(tid,b): return
-    b=db.bundle(tid)
-    cur=db.current_match_from(b["matches"],meta.get("extra") or {})
+    b=db.bundle(tid);cur=db.current_match_from(b["matches"],meta.get("extra") or {})
     if not cur:st.info("Czekam na rozstrzygnięcie poprzedniego etapu…");return
-    total=max_matches(meta["format_key"])
+    total=max_matches(fmt)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
-    if meta["format_key"] in ("double5","double7","double8") and cur.get("stage")=="FINAL":
+    if fmt in ("double4","double5","double6","double7","double8") and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_context(cur)
-    score_form(tid,cur,meta["format_key"])
+    if fmt in ("league3_final","league4_final","league5_final") and cur.get("stage")=="LEAGUE":
+        pending_league=[x for x in b.get("matches",[]) if x.get("stage")=="LEAGUE" and x.get("home_score") is None and str(x.get("match_status") or "pending")!="skipped"]
+        if len(pending_league)==1:
+            check=db.can_skip_match(tid,int(cur["match_no"]))
+            if check.get("allowed"):
+                finals=" i ".join(check.get("finalists") or [])
+                st.info(f"⏭️ Ten mecz nie może już zmienić pary finalistów{f': {finals}' if finals else ''}. Możesz go rozegrać albo pominąć.")
+                if st.button("⏭️ POMIŃ MECZ",use_container_width=True,key=f"skip_{tid}_{cur['match_no']}"):
+                    try:db.skip_match(tid,int(cur["match_no"]));rf()
+                    except ValueError as e:st.error(str(e))
+    score_form(tid,cur,fmt)
     nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
     if nxt:st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")
-    if st.button("↩️ Cofnij ostatni wynik",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
+    if st.button("↩️ Cofnij ostatni wynik / pominięcie",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
         st.session_state.pop("pending_ko",None);db.undo_last_result(tid);rf()
     tables=db.standings(tid)
     if tables:
@@ -719,45 +744,32 @@ def live(tid:str):
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];st.subheader("📅 Terminarz")
     for m in b["matches"]:
+        skipped=str(m.get("match_status") or "pending")=="skipped"
         if m.get("home_player_id"):
-            names=f"{esc(m['home_name'])} — {esc(m['away_name'])}";result=result_text(m);icon="✅" if m.get("home_score") is not None else "▶️"
+            names=f"{esc(m['home_name'])} — {esc(m['away_name'])}"
+            if skipped:result="POMINIĘTY";icon="⏭️"
+            else:result=result_text(m);icon="✅" if m.get("home_score") is not None else "▶️"
         else:names=source_placeholder(fmt,int(m["match_no"]));result="—";icon="🔒"
-        bonus = " • START 1:0 DLA WINNERS" if fmt in ("double5","double7","double8") and m["stage"]=="FINAL" else ""
+        bonus=" • START 1:0 DLA WINNERS" if fmt in ("double4","double5","double6","double7","double8") and m["stage"]=="FINAL" else ""
         st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{bonus}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
+        if skipped:st.caption("Pominięty mecz nie jest zapisany jako 0:0 i nie wchodzi do żadnych statystyk.")
 
 
 def render_stats(t=None):
     st.subheader("📊 Statystyki wszech czasów")
-    st.caption("Wszystkie zakończone turnieje nietestowe zapisane w bazie.")
+    st.caption("Oficjalne mecze, turnieje i 1 vs 1. Mecze 1v1 liczą się do statystyk meczowych, ale nie do tytułów i finałów.")
     stats=db.all_time_stats()
     if not stats:st.info("Brak zakończonych turniejów nietestowych.");return
-    tab1,tab2,tab3,tab4,tab5,tab6,tab7=st.tabs(["🏆 Ranking","⚔️ H2H","🏛️ Rekordy","👥 Drużyny","👤 Gracze","⚽ Strzelcy","💸 Rozliczenia"])
+    tab1,tab_records,tab_teams,tab_players,tab_scorers,tab_finance=st.tabs(["🏆 Ranking","🏛️ Rekordy","👥 Drużyny","👤 Gracze","⚽ Strzelcy","💸 Rozliczenia"])
     with tab1:
         leader=stats[0];c1,c2,c3,c4=st.columns(4);c1.metric("🐐 Lider",leader["name"]);c2.metric("🏆 Tytuły",leader["titles"]);tg=max(stats,key=lambda x:x["gf"]);c3.metric("⚽ Król bramek",tg["name"],f"{tg['gf']} goli");tw=max(stats,key=lambda x:x["w"]);c4.metric("🔥 Najwięcej wygranych",tw["name"],f"{tw['w']} W")
-        df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
+        df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"1v1":s.get("duels",0),"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
         st.markdown("#### 🔥 Aktualna forma — ostatnie 5 oficjalnych meczów")
         forms=db.recent_forms()
         if forms:
             best=forms[0];st.success(f"Najlepsza aktualna forma: **{best['name']} — {' '.join(best['form'])}**")
             st.dataframe(pd.DataFrame([{"Gracz":x["name"],"Forma":" ".join(x["form"]),"W":x["w"],"R":x["d"],"P":x["l"]} for x in forms]),hide_index=True,use_container_width=True)
-    with tab2:
-        st.markdown("### ⚔️ Head to head")
-        opts={p["name"]:p["player_id"] for p in stats}
-        names=list(opts)
-        with st.form("h2h_explorer"):
-            c1,c2=st.columns(2)
-            with c1:a=st.selectbox("Gracz 1",names,index=0)
-            with c2:b=st.selectbox("Gracz 2",names,index=1 if len(names)>1 else 0)
-            go=st.form_submit_button("Pokaż H2H",use_container_width=True)
-        if go:
-            if a==b:st.warning("Wybierz dwóch różnych graczy.")
-            else:
-                h=db.h2h(opts[a],opts[b]);c1,c2,c3,c4=st.columns(4);c1.metric("Mecze",h["meetings"]);c2.metric(a,h["wins1"]);c3.metric("Remisy",h["draws"]);c4.metric(b,h["wins2"])
-                st.caption(f"Bramki: {a} {h['gf1']}–{h['gf2']} {b}")
-                if h["recent"]:
-                    st.markdown("**Ostatnie spotkania:**")
-                    for m in h["recent"]:st.write(f"{m['home']} {m['score']} {m['away']}")
-    with tab3:
+    with tab_records:
         r=db.all_time_records()
         if not r:st.info("Za mało danych do rekordów.")
         else:
@@ -789,7 +801,7 @@ def render_stats(t=None):
             if r.get("balanced_rivalry"):p=r['balanced_rivalry'];add("Najbardziej wyrównana rywalizacja",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             if r.get("h2h_dominance"):p=r['h2h_dominance'];add("Największa dominacja H2H",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
-    with tab4:
+    with tab_teams:
         team_stats=db.team_stats()
         if not team_stats:st.info("Brak danych o drużynach z oficjalnych turniejów.")
         else:
@@ -803,7 +815,12 @@ def render_stats(t=None):
             c4.metric("🔥 Najwięcej wygranych",most_wins["team"],most_wins["w"])
             df=pd.DataFrame([{"Drużyna":x["team"],"Tytuły":x["titles"],"M":x["matches"],"W":x["w"],"R":x["d"],"P":x["l"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}","G/mecz":x["goals_per_match"],"Gracze":x["players"],"Najlepszy gracz":x["best_player"]} for x in team_stats])
             st.dataframe(df,hide_index=True,use_container_width=True)
-    with tab5:
+            ratings=db.live_team_ratings()
+            if ratings:
+                st.markdown("#### 📡 Live Team Rating")
+                st.caption("Rating aktualizuje się z wynikami; mała próbka jest przyciągana do neutralnych 50 pkt, a nowsze mecze ważą trochę więcej.")
+                st.dataframe(pd.DataFrame([{"Drużyna":x["team"],"Rating":x["rating"],"M":x["matches"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}"} for x in ratings]),hide_index=True,use_container_width=True)
+    with tab_players:
         st.markdown("### 👤 Profil i historia gracza")
         opts={p["name"]:p["player_id"] for p in stats};names=list(opts)
         selected=st.selectbox("Gracz",names,key="player_profile_select")
@@ -830,7 +847,7 @@ def render_stats(t=None):
                     hist.append({"Data":date,"Wynik":x["result"],"Faza":stage_labels.get(x.get("stage"),x.get("stage") or "—"),"Rywal":x["opponent"],"Drużyna":x["team"],"Rezultat":x["score"]})
                 st.dataframe(pd.DataFrame(hist),hide_index=True,use_container_width=True)
 
-    with tab6:
+    with tab_scorers:
         scorers=db.scorer_stats()
         if not scorers:st.info("Brak zapisanych strzelców w oficjalnych turniejach.")
         else:
@@ -857,9 +874,9 @@ def render_stats(t=None):
                     else:st.info("Wszyscy wpisani zawodnicy byli już na liście.")
                 except ValueError as e:st.error(str(e))
 
-    with tab7:
-        st.markdown("### 💸 Rozliczenia turniejów")
-        st.caption("Każdy uczestnik wpłaca stawkę na osobę, zwycięzca bierze pulę. Status rozliczenia mówi tylko, czy przelewy zostały już wykonane — historyczny bilans finansowy zawsze zachowuje wszystkie płatne oficjalne turnieje.")
+    with tab_finance:
+        st.markdown("### 💸 Rozliczenia rozgrywek")
+        st.caption("Każdy uczestnik oznaczony „Gra za kasę” wpłaca stawkę. W 1v1 mecz jest płatny tylko wtedy, gdy obaj grają za kasę. W turniejach niewypłacony jackpot przechodzi do następnego płatnego oficjalnego turnieju.")
 
         st.markdown("#### 📈 Ranking finansowy")
         finance=db.financial_ranking()
@@ -880,29 +897,33 @@ def render_stats(t=None):
                     "Bilans":f"{sign}{pln_cents(amount)} zł",
                     "Wygrane":f"{pln_cents(row.get('won_cents') or 0)} zł",
                     "Wpłacone":f"{pln_cents(row.get('paid_cents') or 0)} zł",
-                    "Płatne turnieje":int(row.get("paid_tournaments") or 0),
-                    "Wygrane turnieje":int(row.get("wins") or 0),
+                    "Płatne rozgrywki":int(row.get("paid_tournaments") or 0),
+                    "Wygrane rozgrywki":int(row.get("wins") or 0),
                 })
             st.dataframe(pd.DataFrame(finance_rows),hide_index=True,use_container_width=True)
-            st.caption("Ranking liczy wszystkie zakończone oficjalne turnieje z dodatnią stawką — także te oznaczone już jako rozliczone.")
+            st.caption("Ranking liczy płatne oficjalne rozgrywki, także 1v1 i wydarzenia już oznaczone jako rozliczone. Jackpot dotyczy wyłącznie turniejów.")
         else:
-            st.info("Ranking finansowy pojawi się po zakończeniu pierwszego oficjalnego turnieju z wpisaną stawką.")
+            st.info("Ranking finansowy pojawi się po zakończeniu pierwszej płatnej oficjalnej rozgrywki.")
 
         st.divider()
         st.markdown("#### 💳 Bieżące rozliczenie")
-        st.caption("Wybierz kilka nierozliczonych turniejów, a aplikacja skompensuje wzajemne należności i poda najkrótszą listę końcowych przelewów.")
+        st.caption("Wybierz kilka nierozliczonych rozgrywek, a aplikacja skompensuje wzajemne należności i poda najkrótszą listę końcowych przelewów.")
+        current_jackpot=db.current_jackpot_cents()
+        if current_jackpot>0:st.warning(f"🎰 Aktualny jackpot do następnego płatnego oficjalnego turnieju: **{pln_cents(current_jackpot)} zł**")
         recent=db.settlement_tournaments(100)
         if not recent:
-            st.info("Brak zakończonych oficjalnych turniejów do rozliczenia.")
+            st.info("Brak zakończonych oficjalnych rozgrywek do rozliczenia.")
         else:
             by_id={x["id"]:x for x in recent}
             def settle_label(tid):
                 x=by_id[tid]; raw=x.get("completed_at") or x.get("created_at") or ""; date=str(raw)[:10] or "—"
-                no=f"#{x.get('official_no')}" if x.get("official_no") else "turniej"
+                if x.get("format_key")=="duel1v1":no="⚔️ 1v1"
+                else:no=f"🏆 turniej #{x.get('official_no')}" if x.get("official_no") else "🏆 turniej"
                 status="✅ rozliczony" if x.get("settled") else "🟠 nierozliczony"
-                return f"{no} • {date} • {x['player_count']} graczy • 🏆 {x.get('champion_name') or '?'} • {pln_cents(x['stake_cents'])} zł/os. • {status}"
+                cash=f"{int(x.get('cash_count') or 0)}/{int(x.get('player_count') or 0)} za kasę"
+                return f"{no} • {date} • {cash} • 🥇 {x.get('champion_name') or '?'} • {pln_cents(x['stake_cents'])} zł/os. • {status}"
 
-            show_settled=st.toggle("Pokaż także rozliczone turnieje",value=False,key="settlement_show_settled")
+            show_settled=st.toggle("Pokaż także rozliczone rozgrywki",value=False,key="settlement_show_settled")
             available=[x for x in recent if show_settled or not x.get("settled")]
             allowed_ids={x["id"] for x in available}
             positive_unsettled=[x["id"] for x in available if int(x.get("stake_cents") or 0)>0 and not x.get("settled")]
@@ -916,25 +937,25 @@ def render_stats(t=None):
 
             if available:
                 selected=st.multiselect(
-                    "Turnieje do wspólnego rozliczenia",
+                    "Rozgrywki do wspólnego rozliczenia",
                     options=[x["id"] for x in available],
                     format_func=settle_label,
                     key=select_key,
-                    placeholder="Wybierz 2, 3, 4 lub więcej turniejów",
+                    placeholder="Wybierz 2, 3, 4 lub więcej rozgrywek",
                 )
-                st.caption("Domyślnie zaznaczam maksymalnie 4 ostatnie nierozliczone turnieje z wpisaną stawką. Możesz wybrać dowolny zestaw.")
+                st.caption("Domyślnie zaznaczam maksymalnie 4 ostatnie nierozliczone płatne rozgrywki. Możesz wybrać dowolny zestaw.")
             else:
                 selected=[]
-                st.success("✅ Wszystkie widoczne turnieje są już rozliczone.")
+                st.success("✅ Wszystkie widoczne rozgrywki są już rozliczone.")
 
-            with st.expander("✏️ Ustaw stawkę lub zmień status starego turnieju"):
-                edit_tid=st.selectbox("Turniej",options=[x["id"] for x in recent],format_func=settle_label,key="settlement_edit_tid")
+            with st.expander("✏️ Ustaw stawkę lub zmień status starej rozgrywki"):
+                edit_tid=st.selectbox("Rozgrywka",options=[x["id"] for x in recent],format_func=settle_label,key="settlement_edit_tid")
                 current_stake=float(by_id[edit_tid].get("stake_per_player") or 0)
                 current_settled=bool(by_id[edit_tid].get("settled"))
                 with st.form(f"settlement_edit_form_{edit_tid}"):
                     edit_stake=st.number_input("Stawka na osobę (zł)",min_value=0.0,value=current_stake,step=5.0,format="%.2f",key=f"settlement_edit_value_{edit_tid}")
                     edit_settled=st.checkbox("✅ Ten turniej jest już rozliczony",value=current_settled,key=f"settlement_edit_settled_{edit_tid}")
-                    st.caption("Możesz więc uzupełnić stawkę starego turnieju i od razu zaznaczyć, że pieniądze za niego zostały już rozliczone.")
+                    st.caption("Możesz uzupełnić stawkę starej rozgrywki i od razu oznaczyć ją jako rozliczoną.")
                     save_finance=st.form_submit_button("💾 ZAPISZ",use_container_width=True)
                 if save_finance:
                     try:
@@ -947,56 +968,177 @@ def render_stats(t=None):
                 settlement=db.settlement_summary(selected)
                 used=settlement.get("tournaments") or []
                 if not used:
-                    st.warning("Wybrane turnieje nie mają jeszcze wpisanej dodatniej stawki.")
+                    st.warning("Wybrane rozgrywki nie mają jeszcze wpisanej dodatniej stawki.")
                 else:
-                    st.markdown("#### 📋 Wybrane turnieje")
+                    def event_label(x):
+                        raw=x.get("completed_at") or x.get("created_at") or "";date=str(raw)[:10] or "—"
+                        if x.get("format_key")=="duel1v1":kind="⚔️ 1v1"
+                        else:kind=f"🏆 turniej #{x.get('official_no')}" if x.get("official_no") else "🏆 turniej"
+                        cash=f"{int(x.get('cash_count') or 0)}/{int(x.get('player_count') or 0)} za kasę"
+                        return f"{kind} • {date} • {cash} • 🥇 {x.get('champion_name') or '?'} • {pln_cents(x.get('stake_cents') or 0)} zł/os."
+                    st.markdown("#### 📋 Rozgrywki objęte rozliczeniem")
                     used_ids={x["id"] for x in used}
-                    for tid in selected:
-                        if tid in used_ids:
-                            st.write(f"• **{settle_label(tid)}**")
-                    st.metric("Łączna suma wszystkich wpisowych",f"{pln_cents(settlement.get('total_pot_cents',0))} zł")
+                    selected_ids=set(selected)
+                    for event in used:
+                        suffix=" • 🎰 dodane automatycznie jako źródło jackpotu" if event["id"] not in selected_ids else ""
+                        st.write(f"• **{event_label(event)}**{suffix}")
+                    c1,c2=st.columns(2)
+                    c1.metric("Łączna suma wpisowych",f"{pln_cents(settlement.get('total_pot_cents',0))} zł")
+                    pending=int(settlement.get("pending_jackpot_cents") or 0)
+                    consumed=max([int(x.get("jackpot_in_cents") or 0) for x in used] or [0])
+                    if pending>0:c2.metric("🎰 Jackpot do przeniesienia",f"{pln_cents(pending)} zł")
+                    elif consumed>0:c2.metric("🎰 Jackpot wykorzystany",f"{pln_cents(consumed)} zł")
+                    else:c2.metric("🎰 Jackpot w tym zestawie","0,00 zł")
 
                     st.markdown("#### 💳 Kto komu przelewa")
                     transfers=settlement.get("transfers") or []
+                    lines=[]
                     if transfers:
-                        lines=[]
                         for tr in transfers:
                             text=f"{tr['from_name']} → {tr['to_name']}: {pln_cents(tr['amount_cents'])} zł"
-                            st.success(f"💸 **{text}**")
-                            lines.append(text)
-                        st.caption("Wzajemne należności są kompensowane — nie trzeba rozliczać każdego turnieju osobno.")
+                            st.success(f"💸 **{text}**");lines.append(text)
+                        st.caption("Wzajemne należności są kompensowane — nie trzeba rozliczać każdej rozgrywki osobno.")
                         st.code("\n".join(lines),language=None)
-                        export_lines=["FIFA NIGHT — ROZLICZENIE","","TURNIEJE:"]
-                        for tid in selected:
-                            if tid in used_ids: export_lines.append(f"- {settle_label(tid)}")
-                        export_lines += ["","PRZELEWY:"] + [f"- {line}" for line in lines] + ["","BILANS:"]
-                        for row in settlement.get("balances") or []:
-                            amount=int(row.get("balance_cents") or 0); sign="+" if amount>0 else ""
-                            export_lines.append(f"- {row.get('name')}: {sign}{pln_cents(amount)} zł")
-                        st.download_button("⬇️ Pobierz rozliczenie TXT",data="\n".join(export_lines),file_name="fifa-night-rozliczenie.txt",mime="text/plain",use_container_width=True,key="settlement_txt_download")
+                    elif pending>0:
+                        st.warning("🎰 W tym zestawie część pieniędzy nie ma jeszcze odbiorcy — jackpot przechodzi do kolejnego płatnego oficjalnego turnieju.")
                     else:
-                        st.success("✅ Po wybranych turniejach nikt nikomu nic nie jest winien.")
+                        st.success("✅ Po wybranych rozgrywkach nikt nikomu nic nie jest winien.")
 
-                    st.markdown("#### ⚖️ Bilans wybranych turniejów")
+                    st.markdown("#### ⚖️ Bilans wybranych rozgrywek")
                     balance_rows=[]
                     for row in settlement.get("balances") or []:
-                        amount=int(row.get("balance_cents") or 0)
-                        sign="+" if amount>0 else ""
+                        amount=int(row.get("balance_cents") or 0);sign="+" if amount>0 else ""
                         balance_rows.append({"Gracz":row.get("name"),"Bilans":f"{sign}{pln_cents(amount)} zł"})
-                    if balance_rows: st.dataframe(pd.DataFrame(balance_rows),hide_index=True,use_container_width=True)
+                    if balance_rows:st.dataframe(pd.DataFrame(balance_rows),hide_index=True,use_container_width=True)
 
-                    unsettled_used=[tid for tid in used_ids if not by_id.get(tid,{}).get("settled")]
+                    export_lines=["FIFA NIGHT — ROZLICZENIE","","ROZGRYWKI:"]+[f"- {event_label(x)}" for x in used]
+                    export_lines += ["",f"WPISOWE: {pln_cents(settlement.get('total_pot_cents',0))} zł"]
+                    if pending:export_lines.append(f"JACKPOT DO PRZENIESIENIA: {pln_cents(pending)} zł")
+                    elif consumed:export_lines.append(f"JACKPOT WYKORZYSTANY: {pln_cents(consumed)} zł")
+                    export_lines += ["","PRZELEWY:"] + ([f"- {line}" for line in lines] if lines else ["- brak"])+["","BILANS:"]
+                    for row in settlement.get("balances") or []:
+                        amount=int(row.get("balance_cents") or 0);sign="+" if amount>0 else ""
+                        export_lines.append(f"- {row.get('name')}: {sign}{pln_cents(amount)} zł")
+                    c1,c2=st.columns(2)
+                    with c1:
+                        st.download_button("⬇️ Rozliczenie TXT",data="\n".join(export_lines),file_name="fifa-night-rozliczenie.txt",mime="text/plain",use_container_width=True,key="settlement_txt_download")
+                    with c2:
+                        settlement_png=generate_settlement_png(settlement,[event_label(x) for x in used])
+                        st.download_button("⬇️ Rozliczenie PNG 1080×1080",data=settlement_png,file_name="fifa-night-rozliczenie.png",mime="image/png",use_container_width=True,key="settlement_png_download")
+
+                    unsettled_used=[str(x["id"]) for x in used if not x.get("settled")]
                     if unsettled_used:
-                        st.caption("Gdy przelewy są już wykonane, oznacz te turnieje jako rozliczone. Znikną z domyślnej listy, ale nadal zostaną w rankingu finansowym.")
-                        if st.button("✅ OZNACZ WYBRANE TURNIEJE JAKO ROZLICZONE",use_container_width=True,key="settlement_mark_selected_paid"):
+                        st.caption("Gdy przelewy są już wykonane, oznacz te rozgrywki jako rozliczone. Znikną z domyślnej listy, ale nadal zostaną w rankingu finansowym.")
+                        if st.button("✅ OZNACZ WYBRANE ROZGRYWKI JAKO ROZLICZONE",use_container_width=True,key="settlement_mark_selected_paid"):
                             changed=db.set_tournaments_settled(unsettled_used,True)
-                            if changed: st.success(f"Oznaczono jako rozliczone: {changed} turniej(e).")
+                            if changed:st.success(f"Oznaczono jako rozliczone: {changed} rozgrywki.")
                             rr()
                     else:
-                        st.info("Te turnieje są już oznaczone jako rozliczone.")
+                        st.info("Te rozgrywki są już oznaczone jako rozliczone.")
             elif available:
-                st.info("Wybierz turnieje, które chcesz razem rozliczyć.")
+                st.info("Wybierz rozgrywki, które chcesz razem rozliczyć.")
 
+
+
+def render_awards():
+    st.subheader("🏆 FIFA Night Awards")
+    st.info("Nagrody i końcowi laureaci zależą od indywidualnej decyzji organizatora. Rankingi TOP 5 są podpowiedzią statystyczną i aktualizują się wraz z wynikami.")
+    current_year=datetime.now().year
+    year=int(st.number_input("Rok",min_value=2024,max_value=current_year+1,value=current_year,step=1,key="awards_year"))
+    data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {}
+    c1,c2,c3,c4,c5=st.columns(5)
+    c1.metric("🏆 Turnieje",overview.get("tournaments",0));c2.metric("⚔️ 1v1",overview.get("duels",0));c3.metric("🎮 Mecze",overview.get("matches",0));c4.metric("⚽ Gole",overview.get("goals",0));c5.metric("👥 Gracze",overview.get("players",0))
+    if not cats:
+        st.warning(f"Brak zakończonych oficjalnych rozgrywek w {year} roku.")
+        return
+
+    award_cats=[c for c in cats if c.get("award")]
+    view_cats=[c for c in cats if not c.get("award")]
+    st.markdown("### 📊 Rankingi LIVE — TOP 5")
+    for cat in award_cats:
+        candidates=cat.get("candidates") or []
+        selected=selections.get(cat["key"]) or {}
+        selected_note=f" • 🏅 wybrany laureat: **{selected.get('name')}**" if selected.get("name") else ""
+        with st.expander(f"{cat['title']}{' • TOP '+str(len(candidates)) if candidates else ''}",expanded=cat.get("key") in ("player_year","offensive","defense")):
+            st.caption(cat.get("description") or "")
+            if selected_note: st.markdown(selected_note)
+            if not candidates:
+                st.info("Kategoria jest warunkowa albo nie ma jeszcze wystarczającej próby danych.")
+            else:
+                rows=[{"#":i,"Kandydat":x.get("name"),"Dlaczego jest wysoko":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]
+                st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+                secondary=cat.get("secondary")
+                if secondary and cat.get("key")=="finance":
+                    st.caption(f"📉 Sponsor FIFA Night: **{secondary.get('name')}** — {secondary.get('reason','')}")
+
+    if view_cats:
+        st.markdown("### 👀 Dodatkowe rankingi — bez oficjalnej nagrody")
+        cols=st.columns(min(2,len(view_cats)))
+        for idx,cat in enumerate(view_cats):
+            with cols[idx % len(cols)]:
+                st.markdown(f"#### {cat['title']}")
+                st.caption(cat.get("description") or "")
+                candidates=cat.get("candidates") or []
+                if candidates:
+                    st.dataframe(pd.DataFrame([{"#":i,"Gracz":x.get("name"),"Argument":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]),hide_index=True,use_container_width=True)
+                else: st.caption("Brak wystarczającej próby.")
+
+    st.divider();st.markdown("### 🔐 Organizator — wybór laureatów")
+    st.caption("W każdej kategorii możesz wybrać jedną osobę z TOP 2–3. Liczba już przyznanych nagród jest tylko informacją — nie ma twardego limitu.")
+    secret_ready=bool(admin_password())
+    if not secret_ready:
+        st.warning("Brak ADMIN_PASSWORD w Streamlit Secrets — rankingi działają, ale wybór laureatów jest zablokowany.")
+    elif not st.session_state.get("awards_admin_ok"):
+        with st.form("awards_unlock"):
+            pwd=st.text_input("Hasło administratora",type="password",key="awards_pwd")
+            unlock=st.form_submit_button("🔓 ODBLOKUJ WYBÓR LAUREATÓW",use_container_width=True)
+        if unlock:
+            if admin_ok(pwd):st.session_state.awards_admin_ok=True;rr()
+            else:st.error("Nieprawidłowe hasło.")
+    else:
+        counts={}
+        for sel in selections.values():
+            name=str((sel or {}).get("name") or "")
+            if name:counts[name]=counts.get(name,0)+1
+        for cat in award_cats:
+            candidates=(cat.get("candidates") or [])[:3]
+            if not candidates:continue
+            selected=selections.get(cat["key"]) or {}
+            ids=[str(x.get("id")) for x in candidates]
+            current_id=str(selected.get("id") or "")
+            default_index=ids.index(current_id) if current_id in ids else 0
+            label_by={str(x.get("id")):f"{x.get('name')} • już wybrane nagrody: {counts.get(str(x.get('name') or ''),0)}" for x in candidates}
+            with st.form(f"award_pick_{year}_{cat['key']}"):
+                choice=st.selectbox(cat["title"],options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
+                save=st.form_submit_button("🏅 ZAPISZ LAUREATA",use_container_width=True)
+            if save:
+                cand=next(x for x in candidates if str(x.get("id"))==str(choice))
+                db.set_award_selection(year,cat["key"],str(cand.get("id")),str(cand.get("name")))
+                st.success(f"Zapisano: {cat['title']} — {cand.get('name')}");rr()
+        if st.button("🔒 Zablokuj wybór laureatów",use_container_width=True,key="awards_lock"):
+            st.session_state.awards_admin_ok=False;rr()
+
+    # Share cards. The Awards graphic intentionally contains only organizer-selected winners.
+    selected_rows=[]
+    for cat in award_cats:
+        sel=selections.get(cat["key"]) or {}
+        if sel.get("name"):
+            raw_title=str(cat["title"]);plain_title=raw_title.split(" ",1)[1] if " " in raw_title else raw_title
+            selected_rows.append({"title":plain_title,"name":sel["name"]})
+    st.divider();st.markdown("### 🖼️ Grafiki roczne")
+    c1,c2=st.columns(2)
+    highlights=[]
+    if overview.get("top_player"):highlights.append({"label":"Lider rankingu Gracza Roku","value":overview.get("top_player")})
+    if overview.get("top_team"):highlights.append({"label":"Najwyżej sklasyfikowana drużyna","value":overview.get("top_team")})
+    match_cat=next((c for c in cats if c.get("key")=="match_year"),None)
+    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Roku — ranking live","value":match_cat["candidates"][0].get("name")})
+    with c1:
+        year_png=generate_year_summary_png(year,overview,highlights)
+        st.download_button("⬇️ FIFA Night — Rok w liczbach (PNG)",data=year_png,file_name=f"fifa-night-{year}-rok-w-liczbach.png",mime="image/png",use_container_width=True,key=f"year_png_{year}")
+    with c2:
+        awards_png=generate_awards_png(year,selected_rows)
+        st.download_button("⬇️ FIFA Night Awards — laureaci (PNG)",data=awards_png,file_name=f"fifa-night-awards-{year}.png",mime="image/png",use_container_width=True,key=f"awards_png_{year}")
+        if not selected_rows:st.caption("Grafika Awards będzie uzupełniać się dopiero po wyborze laureatów przez organizatora.")
 
 
 def reset_controls(t,loc):
@@ -1011,13 +1153,15 @@ def reset_controls(t,loc):
 
 
 def render_live(t):
-    hero(f"{t['player_count']} graczy • {FORMAT_LABELS[t['format_key']]}")
+    title="1 vs 1" if t.get("format_key")=="duel1v1" else f"{t['player_count']} graczy"
+    hero(f"{title} • {FORMAT_LABELS[t['format_key']]}")
     st.markdown(f'<span class="status-chip">{"🧪 TEST" if t["is_test"] else "🏆 OFICJALNY"}</span>',unsafe_allow_html=True)
     render_tournament_status_control(t,"live")
-    opts=["🏠 Ekran główny","📅 Terminarz","📊 Statystyki"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
+    opts=["🏠 Ekran główny","📅 Terminarz","📊 Statystyki","🏆 AWARDS"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
     if view==opts[0]:live(t["id"]);reset_controls(t,"live")
     elif view==opts[1]:render_schedule(t)
-    else:render_stats(t)
+    elif view==opts[2]:render_stats(t)
+    else:render_awards()
 
 
 t=db.current_tournament()

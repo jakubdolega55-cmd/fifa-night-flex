@@ -5,6 +5,7 @@ import random
 from typing import Iterable
 
 WILDCARD_TEAM_SUGGESTIONS = [
+    "Manchester City",
     "Inter",
     "Atletico",
     "BVB",
@@ -17,42 +18,44 @@ WILDCARD_TEAM_SUGGESTIONS = [
     "Napoli",
 ]
 
-BASE_TEAMS = [
+FIXED_TEAMS = [
     "Bayern Monachium",
     "FC Barcelona",
     "PSG",
     "Liverpool",
-    "Manchester City",
-    "Dowolna drużyna (Real Madryt banned)",
 ]
 
-SEVEN_TEAMS = [
-    "Bayern Monachium",
-    "FC Barcelona",
-    "PSG",
-    "Liverpool",
-    "Manchester City",
+# Draft 3–5: fixed clubs plus a reusable Wild Card choice. The Wild Card option may
+# be used by more than one player as long as the concrete clubs are different.
+BASE_TEAMS = FIXED_TEAMS + ["Dowolna drużyna (Real Madryt banned)"]
+
+# 6+ wheel: four fixed clubs and enough Wild Card slots to fill the field.
+SIX_TEAMS = FIXED_TEAMS + [
     "Dowolna drużyna #1 (Real Madryt banned)",
     "Dowolna drużyna #2 (Real Madryt banned)",
 ]
-
-EIGHT_TEAMS = [
-    "Bayern Monachium",
-    "FC Barcelona",
-    "PSG",
-    "Liverpool",
-    "Manchester City",
+SEVEN_TEAMS = FIXED_TEAMS + [
     "Dowolna drużyna #1 (Real Madryt banned)",
     "Dowolna drużyna #2 (Real Madryt banned)",
     "Dowolna drużyna #3 (Real Madryt banned)",
 ]
+EIGHT_TEAMS = FIXED_TEAMS + [
+    "Dowolna drużyna #1 (Real Madryt banned)",
+    "Dowolna drużyna #2 (Real Madryt banned)",
+    "Dowolna drużyna #3 (Real Madryt banned)",
+    "Dowolna drużyna #4 (Real Madryt banned)",
+]
 
 FORMAT_LABELS = {
+    "duel1v1": "Mecz 1 vs 1",
+    "league3_final": "Liga każdy z każdym + finał",
     "league4_final": "Liga każdy z każdym + finał",
+    "double4": "Double elimination",
     "double5": "Double elimination",
     "league5_final": "Liga każdy z każdym + finał",
     "groups6": "Klasyczny: 2 grupy po 3 + półfinały + finał",
     "groups6_full": "Rozszerzony: 2 grupy po 3 + ćwierćfinały + półfinały + finał",
+    "double6": "Double elimination",
     "double7": "Double elimination",
     "groups7": "Grupy 4+3 + ćwierćfinały + półfinały + finał",
     "groups7_sf": "Grupy 4+3 + półfinały + finał",
@@ -62,11 +65,15 @@ FORMAT_LABELS = {
 }
 
 FORMAT_MATCH_COUNTS = {
+    "duel1v1": "1 mecz",
+    "league3_final": "4 mecze",
     "league4_final": "7 meczów",
+    "double4": "6 meczów",
     "double5": "8 meczów",
     "league5_final": "11 meczów",
     "groups6": "9 meczów",
     "groups6_full": "11 meczów",
+    "double6": "10 meczów",
     "double7": "12 meczów",
     "groups7": "14 meczów",
     "groups7_sf": "12 meczów",
@@ -79,6 +86,7 @@ FORMAT_MATCH_COUNTS = {
 def allowed_teams(player_count: int) -> list[str]:
     if player_count == 8: return EIGHT_TEAMS.copy()
     if player_count == 7: return SEVEN_TEAMS.copy()
+    if player_count == 6: return SIX_TEAMS.copy()
     return BASE_TEAMS.copy()
 
 
@@ -120,7 +128,9 @@ def draft_order_weights(placement_by_player_id: dict[str,int] | None, previous_p
     """
     placements={str(k):int(v) for k,v in (placement_by_player_id or {}).items() if v}
     prev_n=max(2,int(previous_player_count or 0)) if previous_player_count else 0
-    if current_player_count==4:
+    if current_player_count==3:
+        low,high=0.75,1.30
+    elif current_player_count==4:
         low,high=0.70,1.35
     else:
         low,high=0.65,1.40
@@ -144,10 +154,68 @@ def wildcard_assignment_weights(placement_by_player_id: dict[str,int] | None) ->
     return {str(pid):rank_weight.get(int(place),1.0) for pid,place in (placement_by_player_id or {}).items()}
 
 
-def weighted_team_assignments(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random) -> dict[str,str]:
-    """Random team assignment with only Wild Card slots softly weighted by prior place.
+def _weighted_choice_pairs(options: list[tuple[object,float]], rng: random.Random):
+    total=sum(max(0.000001,float(w)) for _,w in options)
+    pick=rng.random()*total; acc=0.0
+    for item,w in options:
+        acc+=max(0.000001,float(w))
+        if pick<=acc: return item
+    return options[-1][0]
 
-    Fixed clubs remain fully random among players who did not receive a Wild Card.
+
+def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], placement_by_player_id: dict[str,int] | None,
+                                 team_ratings: dict[str,float] | None, previous_team_by_player_id: dict[str,str] | None,
+                                 rng: random.Random) -> dict[str,str]:
+    """Assign the four fixed clubs with soft live-strength handicap + anti-repeat.
+
+    All 4! permutations remain possible. Previous champions/finalists are gently nudged
+    toward currently weaker clubs. Repeating exactly the same club as the immediately
+    previous tournament keeps 35% of normal weight, never zero.
+    """
+    import itertools, math
+    pids=[str(x) for x in player_ids]
+    if len(pids)!=len(fixed_teams):
+        pool=fixed_teams.copy(); rng.shuffle(pool); return dict(zip(pids,pool))
+    placements={str(k):int(v) for k,v in (placement_by_player_id or {}).items() if v}
+    ratings={str(k):float(v) for k,v in (team_ratings or {}).items()}
+    previous={str(k):str(v) for k,v in (previous_team_by_player_id or {}).items() if v}
+    strength={1:0.018,2:0.012,3:0.006}
+    opts=[]
+    for perm in itertools.permutations(fixed_teams):
+        w=1.0
+        for pid,team in zip(pids,perm):
+            rating=float(ratings.get(team,50.0))
+            coef=strength.get(placements.get(pid),0.0)
+            # rating >50 means stronger; top finishers are slightly less likely to get it.
+            w*=math.exp((50.0-rating)*coef)
+            if previous.get(pid) and previous.get(pid).casefold()==str(team).casefold():
+                w*=0.35
+        opts.append((perm,w))
+    chosen=_weighted_choice_pairs(opts,rng)
+    return dict(zip(pids,chosen))
+
+
+def reveal_order_with_previous_finalists(player_ids: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random) -> list[str]:
+    """For 6+ wheels reveal non-finalists first, runner-up next, champion last.
+
+    This affects only who gets to choose a concrete Wild Card first; team-slot assignment
+    itself remains random/weighted. Missing/new players are treated as non-finalists.
+    """
+    placements={str(k):int(v) for k,v in (placement_by_player_id or {}).items() if v}
+    normal=[str(pid) for pid in player_ids if placements.get(str(pid)) not in (1,2)]
+    rng.shuffle(normal)
+    runner=[str(pid) for pid in player_ids if placements.get(str(pid))==2]
+    champ=[str(pid) for pid in player_ids if placements.get(str(pid))==1]
+    rng.shuffle(runner); rng.shuffle(champ)
+    return normal+runner+champ
+
+def weighted_team_assignments(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random,
+                              team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None) -> dict[str,str]:
+    """Assign Wild Card slots softly by prior finish, then fixed clubs intelligently.
+
+    Wild Card: 1st=1.40, 2nd=1.25, 3rd=1.10.
+    Fixed clubs: live strength is a soft handicap for top finishers and exact previous-team
+    repeats are reduced to 35% normal weight. Every valid assignment remains possible.
     """
     if len(player_ids)!=len(teams):
         raise ValueError("Liczba drużyn musi odpowiadać liczbie graczy.")
@@ -155,27 +223,32 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
     wild=[t for t in teams if "Dowolna drużyna" in str(t)]
     fixed=[t for t in teams if "Dowolna drużyna" not in str(t)]
     if not wild:
-        return shuffled_assignments(pids,teams,rng)
+        return weighted_fixed_team_matching(pids,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng)
     weights=wildcard_assignment_weights(placement_by_player_id)
-    # Pick only as many weighted players as there are Wild Cards; all remaining clubs stay uniform.
     weighted_order=weighted_sample_without_replacement(pids,weights,rng)
     wild_players=weighted_order[:len(wild)]
-    remaining=[pid for pid in pids if pid not in set(wild_players)]
-    wild_pool=wild.copy(); fixed_pool=fixed.copy(); rng.shuffle(wild_pool); rng.shuffle(fixed_pool)
-    out={}
-    for pid,team in zip(wild_players,wild_pool,strict=True): out[pid]=team
-    for pid,team in zip(remaining,fixed_pool,strict=True): out[pid]=team
+    wild_set=set(wild_players)
+    remaining=[pid for pid in pids if pid not in wild_set]
+    wild_pool=wild.copy(); rng.shuffle(wild_pool)
+    out={pid:team for pid,team in zip(wild_players,wild_pool,strict=True)}
+    out.update(weighted_fixed_team_matching(remaining,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng))
     return out
 
 def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> dict:
     ids = player_ids.copy(); rng.shuffle(ids)
-    if format_key == "league4_final":
+    if format_key == "duel1v1":
+        return {"slots": dict(zip(["A", "B"], ids, strict=True))}
+    if format_key == "league3_final":
+        return {"slots": dict(zip(["A", "B", "C"], ids, strict=True))}
+    if format_key in ("league4_final","double4"):
         return {"slots": dict(zip(["A", "B", "C", "D"], ids, strict=True))}
     if format_key in ("double5", "league5_final"):
         return {"slots": dict(zip(["A", "B", "C", "D", "E"], ids, strict=True))}
     if format_key in ("groups6", "groups6_full"):
         seq = ["A1", "B1", "A2", "B2", "A3", "B3"]
         return {"slots": dict(zip(seq, ids, strict=True))}
+    if format_key == "double6":
+        return {"slots": dict(zip(["A","B","C","D","E","F"],ids,strict=True))}
     if format_key == "double7":
         return {"slots": dict(zip(["A", "B", "C", "D", "E", "F", "G"], ids, strict=True))}
     if format_key in ("groups7", "groups7_sf"):
@@ -187,7 +260,6 @@ def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> di
         seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4", "B4"]
         return {"slots": dict(zip(seq, ids, strict=True))}
     raise ValueError(f"Nieznany format: {format_key}")
-
 
 def draw_signature(draw: dict) -> tuple:
     slots = draw.get("slots", {})
@@ -214,6 +286,28 @@ def _round_robin_pairs(ids: list[str]) -> list[list[tuple[str, str]]]:
         work = [work[0]] + [work[-1]] + work[1:-1]
     return rounds
 
+
+def schedule_league3(draw: dict, rng: random.Random) -> list[dict]:
+    s=draw["slots"]
+    pairs=[(s["A"],s["B"]),(s["C"],s["A"]),(s["B"],s["C"])]
+    out=[]
+    for no,(h,a) in enumerate(pairs,1):
+        if rng.choice([True,False]): h,a=a,h
+        out.append({"match_no":no,"stage":"LEAGUE","group_name":"L","home":f"P:{h}","away":f"P:{a}"})
+    out.append({"match_no":4,"stage":"FINAL","group_name":None,"home":"POS:L:1","away":"POS:L:2"})
+    return out
+
+
+def schedule_double4(draw: dict, extra: dict) -> list[dict]:
+    s=draw["slots"]
+    return [
+        {"match_no":1,"stage":"WB","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"},
+        {"match_no":2,"stage":"WB","group_name":None,"home":f"P:{s['C']}","away":f"P:{s['D']}"},
+        {"match_no":3,"stage":"LB","group_name":None,"home":"L:1","away":"L:2"},
+        {"match_no":4,"stage":"WB_FINAL","group_name":None,"home":"W:1","away":"W:2"},
+        {"match_no":5,"stage":"LB_FINAL","group_name":None,"home":"W:3","away":"L:4"},
+        {"match_no":6,"stage":"FINAL","group_name":None,"home":"W:4","away":"W:5"},
+    ]
 
 def schedule_league4(draw: dict, rng: random.Random) -> list[dict]:
     s = draw["slots"]
@@ -395,6 +489,26 @@ def schedule_double5(draw: dict, extra: dict) -> list[dict]:
     ]
 
 
+def schedule_double6(draw: dict, extra: dict) -> list[dict]:
+    """6-player double elimination with two initial Winners lucky passes, 10 matches.
+
+    E/F enter the WB semifinals. The bracket keeps a single Grand Final with our 1:0
+    Winners bonus, so the total stays at 10 matches.
+    """
+    s=draw["slots"]
+    return [
+        {"match_no":1,"stage":"WB","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"},
+        {"match_no":2,"stage":"WB","group_name":None,"home":f"P:{s['C']}","away":f"P:{s['D']}"},
+        {"match_no":3,"stage":"WB","group_name":None,"home":"W:1","away":f"P:{s['E']}"},
+        {"match_no":4,"stage":"WB","group_name":None,"home":"W:2","away":f"P:{s['F']}"},
+        {"match_no":5,"stage":"LB","group_name":None,"home":"L:1","away":"L:2"},
+        {"match_no":6,"stage":"LB","group_name":None,"home":"W:5","away":"L:3"},
+        {"match_no":7,"stage":"WB_FINAL","group_name":None,"home":"W:3","away":"W:4"},
+        {"match_no":8,"stage":"LB","group_name":None,"home":"W:6","away":"L:4"},
+        {"match_no":9,"stage":"LB_FINAL","group_name":None,"home":"W:8","away":"L:7"},
+        {"match_no":10,"stage":"FINAL","group_name":None,"home":"W:7","away":"W:9"},
+    ]
+
 def schedule_double7(draw: dict, extra: dict) -> list[dict]:
     s=draw["slots"]
     # G has the winners-bracket bye. The first losers-bracket bye is drawn *after* M1-M3.
@@ -416,11 +530,16 @@ def schedule_double7(draw: dict, extra: dict) -> list[dict]:
 
 
 def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Random) -> list[dict]:
+    if format_key=="duel1v1":
+        s=draw["slots"]; return [{"match_no":1,"stage":"DUEL","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"}]
+    if format_key=="league3_final": return schedule_league3(draw,rng)
     if format_key=="league4_final": return schedule_league4(draw,rng)
+    if format_key=="double4": return schedule_double4(draw,extra)
     if format_key=="double5": return schedule_double5(draw,extra)
     if format_key=="league5_final": return schedule_league5(draw,rng)
     if format_key=="groups6": return schedule_groups6(draw,rng)
     if format_key=="groups6_full": return schedule_groups6_full(draw,rng)
+    if format_key=="double6": return schedule_double6(draw,extra)
     if format_key=="double7": return schedule_double7(draw,extra)
     if format_key=="groups7": return schedule_groups7(draw,rng)
     if format_key=="groups7_sf": return schedule_groups7_sf(draw,rng)
@@ -428,7 +547,6 @@ def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Ra
     if format_key=="double8": return schedule_double8(draw,extra)
     if format_key=="groups8_barrage": return schedule_groups8_barrage(draw,rng)
     raise ValueError(format_key)
-
 
 def group_table(group_player_ids: Iterable[str], matches: list[dict], tie_orders: dict[str,int]) -> list[dict]:
     ids=list(group_player_ids)
@@ -620,18 +738,32 @@ def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | 
     return vals[-1]
 
 def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> dict:
-    """Softly weight the initial WB BYE while keeping all non-BYE pairings random."""
-    if format_key not in ("double5", "double7") or not start_priority:
+    """Softly weight initial Winners lucky passes while keeping pairings random."""
+    if format_key not in ("double5", "double6", "double7") or not start_priority:
         return draw
-    bye_slot = "E" if format_key == "double5" else "G"
-    slots = dict(draw.get("slots") or {})
-    if bye_slot not in slots:
-        return draw
-    selected = weighted_bye_choice(list(slots.values()), start_priority, rng, new_player_ids)
-    if not selected or selected == slots[bye_slot]:
-        return draw
-    selected_slot = next((slot for slot, pid in slots.items() if str(pid) == str(selected)), None)
-    if not selected_slot:
-        return draw
-    slots[bye_slot], slots[selected_slot] = slots[selected_slot], slots[bye_slot]
-    return {**draw, "slots": slots}
+    slots=dict(draw.get("slots") or {})
+    if format_key in ("double5","double7"):
+        bye_slot = "E" if format_key == "double5" else "G"
+        if bye_slot not in slots: return draw
+        selected=weighted_bye_choice(list(slots.values()),start_priority,rng,new_player_ids)
+        if not selected or selected==slots[bye_slot]: return draw
+        selected_slot=next((slot for slot,pid in slots.items() if str(pid)==str(selected)),None)
+        if selected_slot:
+            slots[bye_slot],slots[selected_slot]=slots[selected_slot],slots[bye_slot]
+        return {**draw,"slots":slots}
+
+    # DE6 has two Winners lucky passes (E/F). Draw both without replacement using the
+    # same soft weights: newcomers are strongly discouraged from waiting, never banned.
+    vals=list(slots.values()); remaining=vals.copy(); chosen=[]
+    for _ in range(2):
+        pick=weighted_bye_choice(remaining,start_priority,rng,new_player_ids)
+        if not pick: break
+        chosen.append(pick); remaining.remove(pick)
+    if len(chosen)!=2: return draw
+    # Keep A-D pairings as originally drawn as much as possible: swap chosen players into E/F.
+    for target,pid in zip(("E","F"),chosen):
+        if slots.get(target)==pid: continue
+        src=next((k for k,v in slots.items() if str(v)==str(pid)),None)
+        if src: slots[target],slots[src]=slots[src],slots[target]
+    return {**draw,"slots":slots}
+

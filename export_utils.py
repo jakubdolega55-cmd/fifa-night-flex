@@ -281,3 +281,129 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     bio = BytesIO()
     img.save(bio, "PNG", optimize=True)
     return bio.getvalue()
+
+
+def _money(cents: int) -> str:
+    return f"{int(cents or 0) / 100:.2f}".replace(".", ",") + " zł"
+
+
+def generate_settlement_png(settlement: dict, event_labels: list[str] | None = None) -> bytes:
+    """Square share card for a multi-event cash settlement."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), BG)
+    draw = ImageDraw.Draw(img)
+    _rr(draw, (24, 24, 1056, 1056), fill="#0e1728", outline="#25334b", r=38)
+    draw.text((68, 62), "FIFA NIGHT — ROZLICZENIE", font=_font(50, True), fill=TEXT)
+    draw.text((70, 126), datetime.now().strftime("%d.%m.%Y"), font=_font(24), fill=MUTED)
+
+    total = int(settlement.get("total_pot_cents") or 0)
+    pending = int(settlement.get("pending_jackpot_cents") or 0)
+    current = int(settlement.get("current_jackpot_cents") or 0)
+    _rr(draw, (58, 182, 1022, 300), fill=PANEL, outline="#334563", r=28)
+    draw.text((88, 205), "WPISOWE W WYBRANYCH GRACH", font=_font(21, True), fill=CYAN)
+    draw.text((88, 242), _money(total), font=_font(37, True), fill=TEXT)
+    if pending:
+        jp = f"Jackpot bez laureata: {_money(pending)}"
+        draw.text((528, 220), jp, font=_fit(draw, jp, 440, 27, 18, True), fill=GOLD)
+    elif current:
+        jp = f"Aktualny jackpot: {_money(current)}"
+        draw.text((528, 220), jp, font=_fit(draw, jp, 440, 27, 18, True), fill=GOLD)
+
+    transfers = settlement.get("transfers") or []
+    _rr(draw, (58, 328, 1022, 700), fill=PANEL, outline=BORDER, r=28)
+    draw.text((88, 354), "KTO KOMU PRZELEWA", font=_font(26, True), fill=GREEN)
+    y = 404
+    if transfers:
+        for tr in transfers[:6]:
+            line = f"{tr.get('from_name', '—')} → {tr.get('to_name', '—')}   {_money(tr.get('amount_cents', 0))}"
+            draw.text((92, y), line, font=_fit(draw, line, 870, 31, 20, True), fill=TEXT)
+            y += 48
+        if len(transfers) > 6:
+            draw.text((92, y), f"+ {len(transfers)-6} kolejnych przelewów", font=_font(22), fill=MUTED)
+    else:
+        draw.text((92, 418), "Nikt nikomu nic nie jest winien.", font=_font(31, True), fill=TEXT)
+
+    balances = settlement.get("balances") or []
+    _rr(draw, (58, 728, 1022, 966), fill=PANEL, outline=BORDER, r=28)
+    draw.text((88, 752), "BILANS", font=_font(25, True), fill=PURPLE)
+    y = 798
+    # Arrange up to eight balances in two columns.
+    for i, row in enumerate(balances[:8]):
+        col = i % 2; rr_idx = i // 2
+        x = 92 + col * 455; yy = y + rr_idx * 39
+        amount = int(row.get("balance_cents") or 0); sign = "+" if amount > 0 else ""
+        text = f"{row.get('name', '—')}: {sign}{_money(amount)}"
+        draw.text((x, yy), text, font=_fit(draw, text, 410, 23, 17, True), fill=TEXT)
+
+    labels = event_labels or []
+    if labels:
+        footer = f"{len(labels)} rozgrywek • kompensacja wzajemnych należności"
+    else:
+        footer = "Kompensacja wzajemnych należności"
+    draw.text((70, 1002), footer, font=_fit(draw, footer, 930, 20, 16), fill=MUTED)
+    bio = BytesIO(); img.save(bio, "PNG", optimize=True); return bio.getvalue()
+
+
+def generate_awards_png(year: int, winners: list[dict] | dict) -> bytes:
+    """Final Awards card: category + selected winner only, without ranking reasons."""
+    if isinstance(winners, dict):
+        rows = [{"title": k, "name": (v or {}).get("name", "—")} for k, v in winners.items()]
+    else:
+        rows = list(winners or [])
+    img = Image.new("RGB", (WIDTH, HEIGHT), BG); draw = ImageDraw.Draw(img)
+    _rr(draw, (24, 24, 1056, 1056), fill="#0e1728", outline="#25334b", r=38)
+    draw.text((66, 58), "FIFA NIGHT AWARDS", font=_font(55, True), fill=GOLD)
+    draw.text((70, 126), str(int(year)), font=_font(33, True), fill=TEXT)
+    if not rows:
+        draw.text((70, 220), "Laureaci nie zostali jeszcze wybrani.", font=_font(29, True), fill=MUTED)
+    else:
+        # Fit up to 19 categories on a single 1080 card.
+        top = 184; bottom = 1005; available = bottom - top
+        h = max(38, min(58, available // max(1, len(rows))))
+        title_size = max(14, min(20, h // 2)); name_size = max(17, min(25, h // 2 + 3))
+        y = top
+        for row in rows[:19]:
+            title = str(row.get("title") or row.get("category") or "Nagroda")
+            name = str(row.get("name") or "—")
+            draw.text((74, y), title, font=_fit(draw, title, 510, title_size, 12, True), fill=MUTED)
+            draw.text((590, y-2), name, font=_fit(draw, name, 405, name_size, 14, True), fill=TEXT)
+            y += h
+    bio = BytesIO(); img.save(bio, "PNG", optimize=True); return bio.getvalue()
+
+
+def generate_year_summary_png(year: int, overview: dict, highlights: list[dict] | None = None) -> bytes:
+    """Annual 'Rok w liczbach' share card."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), BG); draw = ImageDraw.Draw(img)
+    _rr(draw, (24, 24, 1056, 1056), fill="#0e1728", outline="#25334b", r=38)
+    draw.text((66, 58), f"FIFA NIGHT {int(year)}", font=_font(57, True), fill=TEXT)
+    draw.text((70, 130), "ROK W LICZBACH", font=_font(29, True), fill=CYAN)
+
+    metrics = [
+        ("TURNIEJE", overview.get("tournaments", 0)),
+        ("1 VS 1", overview.get("duels", 0)),
+        ("MECZE", overview.get("matches", 0)),
+        ("GOLE", overview.get("goals", 0)),
+        ("GRACZE", overview.get("players", 0)),
+        ("TYTUŁY", overview.get("titles", overview.get("tournaments", 0))),
+    ]
+    x0, y0, w, h = 60, 205, 300, 145
+    for i, (label, value) in enumerate(metrics):
+        row, col = divmod(i, 3); x = x0 + col * 330; y = y0 + row * 168
+        _rr(draw, (x, y, x+w, y+h), fill=PANEL, outline=BORDER, r=25)
+        draw.text((x+25, y+25), label, font=_font(21, True), fill=MUTED)
+        draw.text((x+25, y+63), str(value), font=_font(49, True), fill=TEXT)
+
+    _rr(draw, (60, 565, 1020, 926), fill=PANEL, outline=BORDER, r=28)
+    draw.text((90, 594), "NAJWAŻNIEJSZE", font=_font(26, True), fill=GOLD)
+    items = list(highlights or [])
+    if not items:
+        if overview.get("top_player"): items.append({"label":"Lider roku","value":overview.get("top_player")})
+        if overview.get("top_team"): items.append({"label":"Drużyna roku — ranking live","value":overview.get("top_team")})
+    y = 650
+    for row in items[:5]:
+        label = str(row.get("label") or row.get("title") or "—")
+        value = str(row.get("value") or row.get("name") or "—")
+        draw.text((92, y), label, font=_fit(draw, label, 360, 21, 15, True), fill=MUTED)
+        draw.text((440, y-2), value, font=_fit(draw, value, 520, 30, 18, True), fill=TEXT)
+        y += 54
+    draw.text((70, 1002), "Oficjalne rozgrywki • testy nie są uwzględniane", font=_font(19), fill=MUTED)
+    bio = BytesIO(); img.save(bio, "PNG", optimize=True); return bio.getvalue()

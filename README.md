@@ -1,12 +1,14 @@
-# FIFA Night Flex v1.7.7
+# FIFA Night Flex v1.8.0
 
-Responsywna aplikacja Streamlit do turniejów FIFA dla 4–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
+Responsywna aplikacja Streamlit do turniejów FIFA dla 3–8 graczy oraz osobnych meczów 1 vs 1, z trwałym zapisem w Neon/PostgreSQL.
 
 ## Formaty
 
-- 4 graczy — liga każdy z każdym + finał (7 meczów)
+- 1 vs 1 — osobny mecz dwóch graczy z ręcznym wyborem drużyn (1 mecz)
+- 3 graczy — liga każdy z każdym + finał (4 mecze)
+- 4 graczy — liga każdy z każdym + finał (7) albo Double Elimination (6)
 - 5 graczy — Double Elimination (8) albo liga + finał (11)
-- 6 graczy — klasyczne 2×3 + SF + finał (9) albo rozszerzone 2×3 + QF + SF + finał (11)
+- 6 graczy — klasyczne 2×3 + SF + finał (9), rozszerzone 2×3 + QF + SF + finał (11) albo Double Elimination (10)
 - 7 graczy — Double Elimination (12), grupy 4+3 + QF + SF + finał (14) albo grupy 4+3 + SF + finał (12)
 - 8 graczy — grupy 4+4 + SF + finał (15), Double Elimination (14) albo grupy 4+4 + baraże + SF + finał (17)
 
@@ -26,11 +28,13 @@ Pełna, symetryczna drabinka dla ośmiu osób, bez Szczęśliwego losu. Zawodnik
 
 ## Drużyny
 
-- 4 i 5 graczy — losowanie kolejności draftu, następnie wybór drużyn z pozostałej puli.
-- 6 graczy — koło fortuny: Bayern, Barcelona, PSG, Liverpool, Man City, Wild Card.
-- 7 graczy — koło fortuny: 5 klubów + 2 Wild Cards.
-- 8 graczy — koło fortuny: 5 klubów + 3 Wild Cards.
-- Real Madryt pozostaje zablokowany przy Wild Card.
+- 3–5 graczy — losowanie kolejności draftu, następnie wybór jednego z 4 stałych klubów albo dowolnego dostępnego Wild Carda.
+- Stałe kluby: Bayern Monachium, FC Barcelona, PSG, Liverpool.
+- 6 graczy — 4 stałe kluby + 2 sloty Wild Card.
+- 7 graczy — 4 stałe kluby + 3 sloty Wild Card.
+- 8 graczy — 4 stałe kluby + 4 sloty Wild Card.
+- Manchester City i Arsenal są dostępne jako Wild Cardy.
+- Konkretny klub Wild Card może wystąpić tylko raz w jednym turnieju; Real Madryt pozostaje zablokowany.
 
 ## Telefon
 
@@ -102,6 +106,22 @@ Plik `.streamlit/secrets.toml` nie może trafić do GitHuba.
 
 Sekcja strzelców została skompresowana pod telefon: każdy z 5 podstawowych zawodników zajmuje jeden niski wiersz z nazwiskiem po lewej i licznikiem goli po prawej. Drużyny są prezentowane jedna pod drugą, a `Pozostali zawodnicy` i `Inny zawodnik` są domyślnie zwinięte. Wszystko nadal znajduje się w formularzu meczu, więc zmiana liczników nie powoduje rerunu strony; dane zapisują się dopiero przy zatwierdzeniu wyniku.
 
+
+
+## v1.8.0 — 1v1, nowe formaty, jackpot i FIFA Night Awards
+
+- osobny tryb **1 vs 1** z ręcznym wyborem drużyn, opcjonalną stawką i minimum 5 meczów do rankingu `Król 1 vs 1`;
+- turniej **3-osobowy**: liga + finał (4 mecze);
+- **Double Elimination dla 4 i 6 graczy** (odpowiednio 6 i 10 meczów), z zachowaniem finału bez resetu i startu mistrza WB od 1:0;
+- checkbox **Gra za kasę** przy każdym uczestniku i **jackpot** przenoszony, gdy mistrz nie gra za kasę; 1v1 nie tworzy i nie zużywa jackpotu;
+- nowe pule drużyn 6–8: Bayern, Barcelona, PSG, Liverpool + odpowiednio 2/3/4 Wild Cardy; Man City jest teraz Wild Cardem;
+- **Live Team Rating**, miękkie ważenie losowania i anty-powtórka poprzedniej drużyny;
+- uproszczone, opcjonalne wpisywanie strzelców: 3 kompaktowe wiersze +/− i możliwość dodania kolejnych;
+- matematycznie bezpieczne **Pomiń mecz** w lidze + finał; pominięte spotkanie nie jest 0:0 i nie wchodzi do statystyk;
+- rozliczenia rozszerzone o jackpot oraz eksport **TXT + PNG 1080×1080**;
+- nowy ekran **AWARDS**: 19 kategorii nagród, TOP5 live, uzasadnienia, wybór organizatora z TOP2–3 oraz dwa rankingi podglądowe bez nagrody;
+- roczne grafiki **Rok w liczbach** i **FIFA Night Awards**;
+- usunięta osobna zakładka H2H ze Statystyk (same dane H2H pozostają w bazie i są dalej wykorzystywane).
 
 ## Kolejność między turniejami v1.7.0
 
@@ -190,3 +210,9 @@ Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statysty
 - Kafelki pokazują osobę najbardziej na plus i najbardziej na minus.
 - Turnieje oznaczone jako rozliczone nadal liczą się do historycznego rankingu finansowego; status wpływa wyłącznie na listę bieżących należności.
 - Nie ma migracji schematu: status jest przechowywany w istniejącym `extra_json`, więc starsze turnieje pozostają kompatybilne.
+
+## v1.7.7.1 — czytelniejsza nawigacja startowa
+
+- przyciski „🎮 NOWY TURNIEJ” i „📊 STATYSTYKI” zostały przeniesione pod główny baner FIFA NIGHT FLEX;
+- nie są już narażone na przycięcie przez górny obszar Streamlita;
+- brak zmian w bazie, statystykach i logice turniejów.
