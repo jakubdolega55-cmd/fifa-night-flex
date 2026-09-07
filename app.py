@@ -125,6 +125,12 @@ def start_defaults(count:int, official_names:list[str]):
 
 
 def render_start():
+    start_opts=["🎮 Nowy turniej","📊 Statystyki"]
+    start_view=st.segmented_control("Widok",start_opts,default=start_opts[0],key="start_view",label_visibility="collapsed") or start_opts[0]
+    if start_view==start_opts[1]:
+        hero("Statystyki i historia oficjalnych turniejów.")
+        render_stats()
+        return
     hero("Wybierz liczbę graczy i format turnieju.")
     if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud podłącz DATABASE_URL z Neon.")
     default=db.last_player_count() if "player_count" not in st.session_state else st.session_state.player_count
@@ -678,7 +684,7 @@ def render_schedule(t):
         st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {m["match_no"]} • {stage_name(m)}{bonus}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
 
 
-def render_stats(t):
+def render_stats(t=None):
     st.subheader("📊 Statystyki wszech czasów")
     st.caption("Wszystkie zakończone turnieje nietestowe zapisane w bazie.")
     stats=db.all_time_stats()
