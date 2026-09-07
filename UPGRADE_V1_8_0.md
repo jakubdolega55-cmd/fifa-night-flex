@@ -34,7 +34,7 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - 1v1 płatne i bezpłatne;
 - jackpot: rollover przez nieuprawnionego mistrza, brak zużycia przez 1v1, wypłata w kolejnym turnieju;
 - `Pomiń mecz`: status `skipped`, przejście do finału i brak wpisu do statystyk;
-- Awards: 19 kategorii + 2 podglądowe;
+- Awards: kategorie oficjalne + 2 podglądowe (Debiut Roku jest warunkowy);
 - generowanie trzech typów PNG w rozdzielczości 1080×1080.
 
 ## Hotfix Awards po testach v1.8.0
@@ -96,3 +96,22 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - Naprawiono `psycopg.ProgrammingError` podczas historycznej zmiany nazwy gracza.
 - Wzorce `LIKE` dla zapamiętanych składów i zapisanych wyborów AWARDS są teraz przekazywane jako parametry SQL, dzięki czemu znak `%` nie jest interpretowany przez psycopg jako placeholder.
 - Nie zmienia to logiki rename: `player_id` pozostaje ten sam, więc historyczne mecze, H2H, statystyki i finanse nadal należą do tego samego profilu.
+
+### Awards hotfix 10 — dopracowanie kryteriów kategorii
+- `Gracz Roku`: delikatnie zmniejszono wagę tytułu (32 → 27) i zwiększono wagę każdego finału (11 → 14), aby regularne dochodzenie do finałów miało większe znaczenie.
+- `Król Strzelców FIFA Night`: przy równej liczbie goli decyduje mniejsza liczba meczów rozegranych przez danego gracza drużyną tego strzelca; przy kolejnym remisie decyduje liczba hat-tricków tego piłkarza.
+- `Clutch Player Roku`: Winners Bracket i WB Final nie są już liczone jako clutch, bo porażka nie eliminuje gracza; liczą się QF/baraż, SF, LB/LB Final oraz finały.
+- `Najbardziej Uniwersalny Gracz`: usunięto próg W% ≥ 40% dla drużyny. Udana drużyna to obecnie taka, która wyszła do SF/finału z grup, dotarła do WB Final lub LB Final w Double Elimination albo do finału w formacie ligowym.
+- `Król Wild Cardów`: tytuły i finały są liczone wyłącznie wtedy, gdy osiągnięto je Wild Cardem; tytuł daje mocny bonus, a finał dodatkową premię.
+- `Debiut Roku`: kategoria nie jest pokazywana w sezonie, w którym wszyscy aktywni gracze są debiutantami. Pojawia się dopiero, gdy obok nowych graczy występują uczestnicy z wcześniejszą historią.
+- `Mecz Roku`: balans ustawiono na 35% bliskość, 22% gole, 18% stawka, 13% ranga fazy i 12% karne; wynik techniczny nadal pozostaje ukryty.
+- `Najczęściej nominowani`: liczniki TOP3/TOP5 pozostają, ale lista nazw kategorii pokazuje tylko te, w których gracz jest w TOP2, aby ograniczyć bałagan.
+- dodano oficjalną kategorię `Najbardziej Widowiskowy Gracz`: minimum 5 meczów; widowiskowość pojedynczego meczu to 45% bliskość, 40% liczba goli i 15% karne, a ranking gracza to 80% średnia widowiskowość + 20% odsetek bardzo widowiskowych spotkań. Ranga meczu i wynik gracza nie wpływają na tę nagrodę.
+
+
+### Awards hotfix 11 — Debiut Roku: pierwsze 5 i 10 meczów
+- `Debiut Roku` nie jest już wyłączany w pierwszym wspólnym sezonie. Dzięki nowej logice nie dubluje `Gracza Roku`, bo ocenia wyłącznie początek kariery.
+- w AWARDS są dwie osobne tabelki: **pierwsze 5 meczów** (tempo wejścia) oraz **pierwsze 10 meczów** (ranking główny do nagrody);
+- ranking pierwszych 10 jest podstawą nominacji i wyboru laureata; jeśli nikt nie ma jeszcze 10 spotkań, ranking LIVE tymczasowo korzysta z pierwszych 5;
+- w obu tabelach pokazujemy W-D-L, W%, punkty/mecz, bilans bramek, finały i tytuły;
+- wynik wewnętrzny bierze pod uwagę przede wszystkim rezultaty z okna 5/10 meczów (W%, punkty/mecz i bilans bramek), a dojście do głębokich faz, finałów i zdobycie tytułu jest dodatkową premią. 1v1 nie wchodzi do tej kategorii.

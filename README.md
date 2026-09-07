@@ -230,3 +230,7 @@ Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statysty
 - w sekcji `Historia i baza` administrator może po podaniu `ADMIN_PASSWORD` zmienić nazwę istniejącego gracza;
 - zmiana nicku działa historycznie, ponieważ wszystkie wyniki są przypisane do stałego `player_id`; dodatkowo aktualizowane są tekstowe snapshoty ostatnich składów, gry za kasę i zapisanych laureatów Awards;
 - zmiana nazwy nie łączy dwóch istniejących profili — kolizja z już istniejącym nickiem jest blokowana.
+
+
+### Debiut Roku
+Debiut Roku jest oceniany na podstawie początku kariery: AWARDS pokazuje osobno ranking pierwszych 5 i pierwszych 10 oficjalnych meczów turniejowych. Pierwsze 10 stanowi ranking główny do nagrody.

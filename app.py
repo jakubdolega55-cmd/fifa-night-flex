@@ -1092,7 +1092,7 @@ def render_awards():
     # bez etapów, nagłówków grup i dodatkowych opisów kolejności.
     award_priority_keys=[
         "player_year","offensive","defense","player_scorers","clutch",
-        "regular","progress","penalties","duel","universal","wildcards","debut","outsider",
+        "regular","progress","spectacle","penalties","duel","universal","wildcards","debut","outsider",
         "finance","rivalry","team_best","team_worst","superscorer","match_year",
     ]
     award_priority_index={key:i for i,key in enumerate(award_priority_keys)}
@@ -1112,6 +1112,33 @@ def render_awards():
             if selected_note: st.markdown(selected_note)
             if not candidates:
                 st.info("Kategoria jest warunkowa albo nie ma jeszcze wystarczającej próby danych.")
+            elif cat.get("key")=="debut":
+                def debut_table_rows(items):
+                    return [{
+                        "#":i,
+                        "Gracz":x.get("name"),
+                        "W-D-L":f"{x.get('w',0)}-{x.get('d',0)}-{x.get('l',0)}",
+                        "W%":x.get("win_pct",0),
+                        "Pkt/mecz":x.get("points_per_match",0),
+                        "Gole":f"{x.get('gf',0)}:{x.get('ga',0)}",
+                        "Bilans":f"{int(x.get('gd',0)):+d}",
+                        "SF / finały ścieżki":x.get("deep_runs",0),
+                        "Finały":x.get("finals",0),
+                        "Tytuły":x.get("titles",0),
+                    } for i,x in enumerate((items or [])[:5],1)]
+
+                first5=cat.get("debut_first5") or []
+                first10=cat.get("debut_first10") or []
+                st.markdown("**⚡ Pierwsze 5 meczów — tempo wejścia do FIFA Night**")
+                if first5:
+                    st.dataframe(pd.DataFrame(debut_table_rows(first5)),hide_index=True,use_container_width=True)
+                else:
+                    st.caption("Nikt z tegorocznych debiutantów nie ma jeszcze 5 oficjalnych meczów turniejowych.")
+                st.markdown("**🏁 Pierwsze 10 meczów — ranking główny Debiutu Roku**")
+                if first10:
+                    st.dataframe(pd.DataFrame(debut_table_rows(first10)),hide_index=True,use_container_width=True)
+                else:
+                    st.caption("Nikt z tegorocznych debiutantów nie ma jeszcze 10 oficjalnych meczów turniejowych — ranking LIVE korzysta tymczasowo z pierwszych 5.")
             else:
                 rows=[{"#":i,"Kandydat":x.get("name"),"Dlaczego jest wysoko":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]
                 st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
@@ -1133,11 +1160,11 @@ def render_awards():
 
     if nomination_summary:
         st.divider();st.markdown("### 🌟 Najczęściej nominowani")
-        st.caption("Ile różnych indywidualnych kategorii ma danego gracza w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
+        st.caption("Ile różnych indywidualnych kategorii ma danego gracza w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. Żeby tabela była czytelna, z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
         rows=[]
         for i,x in enumerate(nomination_summary[:10],1):
-            cats_txt=", ".join(str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories") or []))
-            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w rankingu":x.get("first",0),"Kategorie TOP 5":cats_txt or "—"})
+            cats_txt=", ".join(str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or []))
+            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w rankingu":x.get("first",0),"Kategorie TOP 2":cats_txt or "—"})
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
     st.divider();st.markdown("### 🔐 Organizator — wybór laureatów")
@@ -1158,7 +1185,7 @@ def render_awards():
         # podpowiedzią, a licznik nagród pomaga świadomie rozłożyć wyróżnienia.
         direct_player_awards={
             "player_year","offensive","defense","clutch","penalties","wildcards",
-            "progress","regular","debut","outsider","universal","finance","duel"
+            "progress","spectacle","regular","debut","outsider","universal","finance","duel"
         }
 
         def award_owner_name(cat_key,candidate_id,candidate_name):
@@ -1193,7 +1220,7 @@ def render_awards():
              ["player_year","offensive","defense","player_scorers","clutch"]),
             ("🥈 ETAP 2/3 — Nagrody specjalistyczne",
              "Tu nadal liczy się ranking, ale warto już zerkać na rozkład nagród i TOP 3 kandydatów.",
-             ["regular","progress","penalties","duel","universal","wildcards","debut","outsider"]),
+             ["regular","progress","spectacle","penalties","duel","universal","wildcards","debut","outsider"]),
             ("🥉 ETAP 3/3 — Nagrody specjalne i finał gali",
              "Najbardziej elastyczny etap. Dobry moment, żeby przy zbliżonych wynikach docenić kogoś, kto jeszcze nic nie dostał.",
              ["finance","rivalry","team_best","team_worst","superscorer","match_year"]),
