@@ -115,3 +115,9 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - ranking pierwszych 10 jest podstawą nominacji i wyboru laureata; jeśli nikt nie ma jeszcze 10 spotkań, ranking LIVE tymczasowo korzysta z pierwszych 5;
 - w obu tabelach pokazujemy W-D-L, W%, punkty/mecz, bilans bramek, finały i tytuły;
 - wynik wewnętrzny bierze pod uwagę przede wszystkim rezultaty z okna 5/10 meczów (W%, punkty/mecz i bilans bramek), a dojście do głębokich faz, finałów i zdobycie tytułu jest dodatkową premią. 1v1 nie wchodzi do tej kategorii.
+
+### Hotfix Awards 12
+- `Najbardziej Widowiskowy Gracz` jest utrzymany jako pełnoprawna nagroda w środkowej części kolejności AWARDS i wyboru laureatów (po `Największym Progresie`). Kategoria jest widoczna także przy 0 zakwalifikowanych.
+- tabela `Najczęściej nominowani` wylicza nazwy kategorii TOP 2 bezpośrednio z aktualnych rankingów AWARDS, więc kolumna nie pozostaje pusta wskutek rozjazdu danych pomocniczych;
+- przy braku TOP 2 pokazujemy jednoznaczne `brak TOP 2` zamiast pustego pola;
+- widok Debiutu Roku ma fallback zgodności, aby nie zgłaszać fałszywie pustych tabel, jeśli ranking z informacją o oknie 5/10 meczów jest już dostępny.

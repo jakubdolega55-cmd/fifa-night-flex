@@ -1106,7 +1106,7 @@ def render_awards():
         candidates=cat.get("candidates") or []
         selected=selections.get(cat["key"]) or {}
         selected_note=f" • 🏅 wybrany laureat: **{selected.get('name')}**" if selected.get("name") else ""
-        qualified_label=(" • TOP 5" if len(candidates)>=5 else (f" • {len(candidates)} zakwalifikowanych" if candidates else ""))
+        qualified_label=(" • TOP 5" if len(candidates)>=5 else f" • {len(candidates)} zakwalifikowanych")
         with st.expander(f"{cat['title']}{qualified_label}",expanded=cat.get("key") in ("player_year","offensive","defense")):
             st.caption(cat.get("description") or "")
             if selected_note: st.markdown(selected_note)
@@ -1129,6 +1129,14 @@ def render_awards():
 
                 first5=cat.get("debut_first5") or []
                 first10=cat.get("debut_first10") or []
+                # Zgodność z sesją / backendem sprzed rozszerzenia Debiutu Roku:
+                # jeśli główny ranking już ma rekordy z informacją o oknie, nie pokazuj
+                # fałszywego komunikatu „nikt nie ma 5/10 meczów”.
+                if not first5 and not first10 and candidates:
+                    c5=[x for x in candidates if int(x.get("matches") or 0)==5]
+                    c10=[x for x in candidates if int(x.get("matches") or 0)==10]
+                    if c5:first5=c5
+                    if c10:first10=c10
                 st.markdown("**⚡ Pierwsze 5 meczów — tempo wejścia do FIFA Night**")
                 if first5:
                     st.dataframe(pd.DataFrame(debut_table_rows(first5)),hide_index=True,use_container_width=True)
@@ -1161,10 +1169,40 @@ def render_awards():
     if nomination_summary:
         st.divider();st.markdown("### 🌟 Najczęściej nominowani")
         st.caption("Ile różnych indywidualnych kategorii ma danego gracza w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. Żeby tabela była czytelna, z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
+
+        # Budujemy nazwy kategorii TOP 2 bezpośrednio z aktualnie wyświetlanych
+        # rankingów. Dzięki temu kolumna nie zależy od pomocniczego pola zwracanego
+        # przez backend i nie może zostać pusta przy poprawnie policzonym TOP 2.
+        direct_player_nomination_keys={
+            "player_year","offensive","defense","clutch","penalties","wildcards",
+            "progress","spectacle","regular","debut","outsider","universal","finance","duel"
+        }
+        top2_titles_by_player={}
+        for cat in award_cats:
+            key=str(cat.get("key") or "")
+            if key not in direct_player_nomination_keys and key!="player_scorers":
+                continue
+            title=str(cat.get("title") or key)
+            # Usuń wyłącznie emoji/pierwszy znacznik z tytułu, zachowując pełną nazwę nagrody.
+            clean_title=title.split(" ",1)[1] if " " in title else title
+            for cand in (cat.get("candidates") or [])[:2]:
+                cid=str(cand.get("id") or "")
+                pid=cid.split("|",1)[0] if key=="player_scorers" else cid
+                if not pid:
+                    continue
+                top2_titles_by_player.setdefault(pid,[])
+                if clean_title not in top2_titles_by_player[pid]:
+                    top2_titles_by_player[pid].append(clean_title)
+
         rows=[]
         for i,x in enumerate(nomination_summary[:10],1):
-            cats_txt=", ".join(str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or []))
-            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w rankingu":x.get("first",0),"Kategorie TOP 2":cats_txt or "—"})
+            pid=str(x.get("player_id") or "")
+            live_titles=top2_titles_by_player.get(pid,[])
+            # Fallback dla zgodności ze starszym backendem / zapisaną sesją.
+            if not live_titles:
+                live_titles=[str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or [])]
+            cats_txt=", ".join(live_titles)
+            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w rankingu":x.get("first",0),"Kategorie TOP 2":cats_txt or "brak TOP 2"})
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
     st.divider();st.markdown("### 🔐 Organizator — wybór laureatów")

@@ -234,3 +234,8 @@ Na ekranie startowym jest teraz przełącznik `🎮 Nowy turniej / 📊 Statysty
 
 ### Debiut Roku
 Debiut Roku jest oceniany na podstawie początku kariery: AWARDS pokazuje osobno ranking pierwszych 5 i pierwszych 10 oficjalnych meczów turniejowych. Pierwsze 10 stanowi ranking główny do nagrody.
+
+#### Awards hotfix 12
+- gwarantowana widoczność `Najbardziej Widowiskowego Gracza` w kolejności AWARDS;
+- naprawione nazwy kategorii w kolumnie `Kategorie TOP 2` w podsumowaniu nominacji;
+- czytelne `brak TOP 2` zamiast pustej komórki oraz fallback widoku Debiutu Roku.
