@@ -99,7 +99,7 @@ def render_access_settings():
             st.session_state.public_view="stats"
             rr()
     else:
-        st.info("📺 To urządzenie działa w trybie podglądu. Podczas aktywnego turnieju domyślnie pokazuje ekran TV, a poza turniejem pozwala przeglądać statystyki i AWARDS.")
+        st.info("📺 To urządzenie działa bez sterowania. Możesz przeglądać FIFA Night i samodzielnie rozpocząć mecz 1 vs 1. Pełny turniej FIFA Night można rozpocząć dopiero po włączeniu sterowania hasłem.")
         if not admin_password():
             st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Nie można włączyć sterowania.")
             return
@@ -789,7 +789,10 @@ def live(tid:str):
             st.caption("Wynik liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów, finałów ani Gracza Roku.")
             if t["is_test"]:st.info("Mecz testowy — nie liczy się do statystyk oficjalnych.")
             if st.button("➕ NOWY MECZ 1 VS 1",type="primary",use_container_width=True,key=f"new_duel_{tid}"):
-                db.start_new();st.session_state.start_view="duel";rr()
+                db.start_new()
+                if controller_access():st.session_state.start_view="duel"
+                else:st.session_state.public_view="duel"
+                rr()
             return
 
         export_meta=db.tournament_export_meta(tid)
@@ -944,24 +947,48 @@ def _de_round_title(lane:str, idx:int, count:int) -> str:
     return "WIELKI FINAŁ"
 
 
-def _de_lucky_labels(b:dict,fmt:str) -> dict[str,str]:
-    """Player badges used by the DE map for real lucky passes/BYEs."""
-    labels={}
+def _de_lucky_match_labels(b:dict,fmt:str) -> dict[int,dict[str,str]]:
+    """Lucky-pass badges keyed by the *single match where the player enters after the bye*.
+
+    A player must not carry the badge through every later card in the bracket.  The marker
+    belongs only to the first match reached thanks to the lucky pass.
+    """
+    labels:dict[int,dict[str,str]]={}
     meta=b.get("meta") or {}; draw=meta.get("draw") or {}; slots=draw.get("slots") or {}; extra=meta.get("extra") or {}
-    winners_bye_slots={"double5":["E"],"double6":["E","F"],"double7":["G"]}.get(fmt,[])
-    for slot in winners_bye_slots:
-        pid=slots.get(slot)
-        if pid: labels[str(pid)]="🎟️ SZCZĘŚLIWY LOS • wolny los w 1. rundzie Winners"
-    if fmt=="double7" and extra.get("d7_lb_bye_match"):
-        try:
-            lucky_no=int(extra.get("d7_lb_bye_match"))
-            mm={int(m["match_no"]):m for m in b.get("matches",[])}
-            src=mm.get(lucky_no)
-            if src and src.get("winner_player_id"):
-                loser=src.get("away_player_id") if src.get("winner_player_id")==src.get("home_player_id") else src.get("home_player_id")
-                if loser: labels[str(loser)]="🍀 SZCZĘŚLIWY LOS • wolny los w 1. rundzie Losers"
-        except Exception:
-            pass
+    matches=b.get("matches",[]) or []
+
+    def add(match_no:int,pid,txt:str):
+        if pid:
+            labels.setdefault(int(match_no),{})[str(pid)]=txt
+
+    if fmt=="double5":
+        # Slot E skips the opening round and enters directly in M3.
+        add(3,slots.get("E"),"🎟️ SZCZĘŚLIWY LOS • wolny los w 1. rundzie Winners")
+    elif fmt=="double6":
+        # E and F enter the two Winners semifinals directly.
+        add(3,slots.get("E"),"🎟️ SZCZĘŚLIWY LOS • wolny los w 1. rundzie Winners")
+        add(4,slots.get("F"),"🎟️ SZCZĘŚLIWY LOS • wolny los w 1. rundzie Winners")
+    elif fmt=="double7":
+        # G skips round one. The post-R1 draw decides whether G lands in M4 or M5,
+        # so locate the resolved card instead of marking the player globally.
+        g=slots.get("G")
+        if g:
+            target=next((int(m.get("match_no") or 0) for m in matches
+                         if int(m.get("match_no") or 0) in (4,5)
+                         and str(g) in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or ""))),None)
+            if target:add(target,g,"🎟️ SZCZĘŚLIWY LOS • wolny los w 1. rundzie Winners")
+
+        # One loser of M1-M3 also skips the first Losers match and enters directly in M7.
+        if extra.get("d7_lb_bye_match"):
+            try:
+                lucky_no=int(extra.get("d7_lb_bye_match"))
+                mm={int(m["match_no"]):m for m in matches}
+                src=mm.get(lucky_no)
+                if src and src.get("winner_player_id"):
+                    loser=src.get("away_player_id") if src.get("winner_player_id")==src.get("home_player_id") else src.get("home_player_id")
+                    add(7,loser,"🍀 SZCZĘŚLIWY LOS • wolny los w 1. rundzie Losers")
+            except Exception:
+                pass
     return labels
 
 
@@ -1016,8 +1043,8 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
         st.info("Brak widoku drzewka dla tego formatu.");return
 
     wb=layout.get("wb") or []; lb=layout.get("lb") or []; max_rounds=max(len(wb),len(lb),1)
-    lucky_labels=_de_lucky_labels(b,fmt)
-    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany. Szczęśliwy los jest oznaczony bezpośrednio przy graczu.")
+    lucky_by_match=_de_lucky_match_labels(b,fmt)
+    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany. Szczęśliwy los jest oznaczony tylko przy meczu, do którego gracz wszedł dzięki wolnemu losowi.")
 
     def lane_html(lane:str,rounds_list:list[list[int]])->str:
         accent="#178a57" if lane=="wb" else "#c54848"
@@ -1030,7 +1057,7 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
             pieces.append(f"<div class='round'><div class='round-title'>{esc(_de_round_title(lane,idx,len(rounds_list)))}</div><div class='round-stack'>")
             for no in nos:
                 m=by_no.get(no)
-                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_labels))
+                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{})))
             pieces.append("</div></div>")
         pieces.append("</div></section>")
         return "".join(pieces)
@@ -1038,28 +1065,13 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     final_html=[]
     for no in layout["final"]:
         m=by_no.get(no)
-        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_labels))
+        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{})))
 
     # 4 DE rounds + Grand Final now fit inside a normal desktop viewport; phones keep
     # the exact same left-to-right map and simply scroll horizontally.
     col_w=174; gap=12; final_w=188
     width=max(690,max_rounds*col_w+(max_rounds-1)*gap+final_w+72)
     height={"double4":650,"double5":720,"double6":790,"double7":860,"double8":930}.get(fmt,800)
-    lb_lucky_note=""
-    if fmt=="double7":
-        extra=(b.get("meta") or {}).get("extra") or {}
-        if extra.get("d7_lb_bye_match"):
-            lucky_match=int(extra.get("d7_lb_bye_match"))
-            src=by_no.get(lucky_match)
-            lucky_name=""
-            if src and src.get("winner_player_id"):
-                loser=src.get("away_player_id") if src.get("winner_player_id")==src.get("home_player_id") else src.get("home_player_id")
-                pl=next((x for x in b.get("players",[]) if str(x.get("player_id"))==str(loser)),None)
-                lucky_name=(pl or {}).get("name") or "wybrany przegrany"
-            lb_lucky_note=f"<div class='lucky-note'>🍀 <b>Szczęśliwy los w Losers:</b> {esc(lucky_name)} omija pierwszy mecz eliminacyjny po spadku z Winners.</div>"
-        else:
-            lb_lucky_note="<div class='lucky-note muted'>🍀 Po 1. rundzie jeden z przegranych otrzyma szczęśliwy los w Losers.</div>"
-
     html_doc=f"""
     <!doctype html><html><head><meta charset='utf-8'><style>
     *{{box-sizing:border-box}} html,body{{margin:0;padding:0;background:transparent;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#202532}}
@@ -1107,7 +1119,6 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     <div class='scroll'><div class='board'><div class='main'><div class='routes'>
     {lane_html('wb',wb)}
     <div class='drop'>↓ przegrani z Winners trafiają do Losers ↓</div>
-    {lb_lucky_note}
     {lane_html('lb',lb)}
     </div><aside class='final'><div class='final-title'>🏆 WIELKI FINAŁ</div>{''.join(final_html)}</aside></div>
     <div class='legend'><span><i class='dot green'></i>TERAZ</span><span><i class='dot amber'></i>GOTOWY</span><span><i class='dot grey'></i>ROZEGRANY</span><span>🎟️ / 🍀 szczęśliwy los</span></div>
@@ -1844,14 +1855,17 @@ def render_tournament_archive(readonly:bool=True):
 
 def render_public_start():
     start_view=st.session_state.get("public_view","stats")
-    hero("Tryb podglądu FIFA Night")
-    cols=st.columns(4)
-    nav=[("stats","📊 STATYSTYKI"),("history","🗂️ HISTORIA"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
+    hero("FIFA Night")
+    st.info("🎮 **Chcesz rozpocząć pełny turniej FIFA Night?** Wejdź w **Ustawienia** i włącz sterowanie na tym urządzeniu, wpisując hasło. **Mecz 1 vs 1 możesz rozpocząć bez sterowania.**")
+    cols=st.columns(5)
+    nav=[("duel","⚔️ 1 VS 1"),("stats","📊 STATYSTYKI"),("history","🗂️ HISTORIA"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
     for col,(key,label) in zip(cols,nav):
         with col:
             if st.button(label,type="primary" if start_view==key else "secondary",use_container_width=True,key=f"public_nav_{key}"):
                 st.session_state.public_view=key;rr()
-    if start_view=="history":render_tournament_archive(readonly=True)
+    if start_view=="duel":
+        render_duel_start(official_player_names_cached())
+    elif start_view=="history":render_tournament_archive(readonly=True)
     elif start_view=="awards":render_awards(readonly=True)
     elif start_view=="settings":render_access_settings()
     else:render_stats(readonly=True)
@@ -1930,6 +1944,22 @@ def render_viewer_live(t):
     elif view==opts[4]:render_awards(readonly=True)
     else:render_access_settings()
 
+def render_public_duel_live(t):
+    """Self-service 1v1: writable without unlocking full tournament control."""
+    hero(f"1 vs 1 • {FORMAT_LABELS[t['format_key']]}")
+    st.caption("⚔️ 1 vs 1 działa bez przejmowania sterowania. Możesz wpisać wynik i strzelców tego meczu; tworzenie i prowadzenie pełnych turniejów nadal wymaga sterowania w Ustawieniach.")
+    opts=["⚔️ MECZ","📅 Terminarz","📊 Statystyki","🗂️ Historia","🏆 AWARDS","⚙️ Ustawienia"]
+    view=st.segmented_control("Widok",opts,default=opts[0],key="public_duel_view",label_visibility="collapsed") or opts[0]
+    if view==opts[0]:
+        live(t["id"])
+        if t.get("status")!="completed":reset_controls(t,"public_duel")
+    elif view==opts[1]:render_schedule(t)
+    elif view==opts[2]:render_stats(t,readonly=True)
+    elif view==opts[3]:render_tournament_archive(readonly=True)
+    elif view==opts[4]:render_awards(readonly=True)
+    else:render_access_settings()
+
+
 def reset_controls(t,loc):
     if t.get("status")=="completed": return
     st.divider()
@@ -1959,7 +1989,8 @@ def render_live(t):
 
 t=db.current_tournament()
 if not controller_access():
-    if t:render_viewer_live(t)
+    if t and t.get("format_key")=="duel1v1":render_public_duel_live(t)
+    elif t:render_viewer_live(t)
     else:render_public_start()
 elif not t:render_start()
 elif t["phase"]=="draft_order":render_draft_order_stage(t)

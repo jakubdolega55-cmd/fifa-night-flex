@@ -257,7 +257,7 @@ Odznaki graczy obejmują także sytuacyjne wyczyny: wygrany finał po karnych, t
 
 ### Tryb TV i sterowanie urządzeniem
 
-Aplikacja rozróżnia urządzenie ze sterowaniem od urządzeń działających w trybie podglądu. W `⚙️ Ustawieniach` po podaniu `ADMIN_PASSWORD` można włączyć sterowanie w bieżącej sesji przeglądarki. Pozostałe urządzenia podczas aktywnego turnieju domyślnie otwierają `📺 LIVE`, który odświeża się automatycznie i pokazuje aktualny mecz, kolejny mecz, strzelców oraz tabelę. Z trybu podglądu nadal można przejść do terminarza, statystyk i AWARDS, ale bez formularzy zapisujących dane. Poza aktywnym turniejem publiczny podgląd obejmuje statystyki i AWARDS.
+Aplikacja rozróżnia urządzenie ze sterowaniem od urządzeń działających bez sterowania. W `⚙️ Ustawieniach` po podaniu `ADMIN_PASSWORD` można włączyć sterowanie w bieżącej sesji przeglądarki. Pełny turniej FIFA Night można utworzyć i prowadzić tylko na urządzeniu ze sterowaniem. Mecz **1 vs 1 jest wyjątkiem**: można go utworzyć, wpisać wynik i strzelców oraz zakończyć bez przejmowania sterowania. Pozostałe urządzenia podczas aktywnego turnieju domyślnie otwierają `📺 LIVE`, który odświeża się automatycznie i pokazuje aktualny mecz, kolejny mecz, strzelców oraz tabelę. Poza aktywnym turniejem publiczny ekran pozwala uruchomić 1 vs 1 oraz przeglądać statystyki, historię i AWARDS.
 
 W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybranymi FIFA Night Awards i ważnymi momentami z historii.
 
@@ -278,3 +278,9 @@ W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybr
 - Winners, Losers i Wielki Finał pozostają na jednej mapie;
 - w widoku `Lista` każdy rozegrany mecz ma rozwijane `⚽ Szczegóły meczu` ze strzelcami obu stron i karnymi;
 - szczegóły są dostępne także w Historii starych turniejów.
+
+### Hotfix 22 — DE bracket polish
+- Drzewko DE pozostaje zawsze poziome; na telefonie przewija się w bok.
+- Rundy Winners są ułożone obok siebie bez sztucznej pustej kolumny.
+- Wielki Finał jest częścią tego samego widoku i mieści się w głównym canvasie na typowym desktopie.
+- Szczęśliwy los/BYE jest oznaczony bezpośrednio przy graczu, a DE7 pokazuje też szczęśliwy los w Losers.
