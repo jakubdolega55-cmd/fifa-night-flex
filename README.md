@@ -254,3 +254,9 @@ W aktywnym turnieju terminarz jest prezentowany według aktualnej kolejności gr
 
 ### Dodatkowe osiągnięcia i jubileusze
 Odznaki graczy obejmują także sytuacyjne wyczyny: wygrany finał po karnych, trzy eliminacyjne zwycięstwa w jednym turnieju, zwycięski rewanż po wcześniejszej porażce, mistrzostwo bez straty gola, trzy wygrane jedną bramką oraz pokonanie obrońcy tytułu w kolejnym FIFA Night. Globalne jubileusze meczów, goli i zwycięstw są zapisywane przy 50/100 i dalej co 100, a czyste konta i hat-tricki co 25.
+
+### Tryb TV i sterowanie urządzeniem
+
+Aplikacja rozróżnia urządzenie ze sterowaniem od urządzeń działających w trybie podglądu. W `⚙️ Ustawieniach` po podaniu `ADMIN_PASSWORD` można włączyć sterowanie w bieżącej sesji przeglądarki. Pozostałe urządzenia podczas aktywnego turnieju domyślnie otwierają `📺 LIVE`, który odświeża się automatycznie i pokazuje aktualny mecz, kolejny mecz, strzelców oraz tabelę. Z trybu podglądu nadal można przejść do terminarza, statystyk i AWARDS, ale bez formularzy zapisujących dane. Poza aktywnym turniejem publiczny podgląd obejmuje statystyki i AWARDS.
+
+W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybranymi FIFA Night Awards i ważnymi momentami z historii.

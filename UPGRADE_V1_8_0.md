@@ -162,3 +162,14 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - czyste konta i hat-tricki są zapisywane co 25 (25, 50, 75, 100...);
 - mechanizm historycznego wskazywania autora jubileuszowego gola obejmuje także 50. gola.
 - przy jubileuszach czystych kont oraz pierwszych rekordach bramkowych bonus 1:0 z finału DE jest ignorowany tak samo jak przy pozostałych statystykach rzeczywistych goli.
+
+### Achievements / TV hotfix 18 — Gablota i tryb podglądu
+
+- dodano **Gablotę** do profilu gracza: tytuły, finały, zdobyte odznaki, wybrane nagrody FIFA Night Awards i ważne momenty z kamieni milowych;
+- dodano dwie wcześniej wybrane odznaki: **Rzutem na taśmę** i **Odrodzenie**;
+- dodano **Tryb TV** dla aktywnego turnieju z automatycznym odświeżaniem co 5 sekund, aktualnym meczem, następnym spotkaniem, strzelcami i tabelą grupy/liga;
+- urządzenia bez odblokowanego sterowania działają jako **podgląd**: podczas turnieju domyślnie widzą LIVE/TV, ale mogą przejść do terminarza, statystyk i AWARDS; poza turniejem mają dostęp do statystyk i AWARDS;
+- w **Ustawieniach dostępu** można po podaniu `ADMIN_PASSWORD` włączyć sterowanie dla bieżącej sesji przeglądarki;
+- tryb podglądu ukrywa formularze, które zapisują dane: tworzenie rozgrywek, wpisywanie wyników, edycję list strzelców, bieżące rozliczenia i wybór laureatów;
+- urządzenie ze sterowaniem może również ręcznie przełączyć się na widok TV;
+- operacje destrukcyjne w historii nadal wymagają osobnego podania hasła administratora.

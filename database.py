@@ -822,6 +822,14 @@ class Database:
         with self.connect() as conn:
             return self._fetchall(conn, """SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order""", (tid,))
 
+    def tournament_live_scorers(self, tid: str, limit: int = 3) -> list[dict]:
+        """Top entered scorers for the currently viewed event."""
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""SELECT scorer_name,SUM(goals) AS goals
+                FROM match_scorers WHERE tournament_id=?
+                GROUP BY scorer_name ORDER BY SUM(goals) DESC,scorer_name""",(tid,))
+        return [{"name":str(r.get("scorer_name") or "?"),"goals":int(r.get("goals") or 0)} for r in rows[:max(1,int(limit or 3))]]
+
     def meta(self, tid: str) -> dict:
         with self.connect() as conn:
             r = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
@@ -2352,8 +2360,64 @@ class Database:
         return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1]}
 
 
+    def player_award_wins(self, player_id: str) -> list[dict]:
+        """Organizer-selected individual FIFA Night Awards belonging to one participant."""
+        pid=str(player_id or "")
+        if not pid:return []
+        titles={
+            "player_year":"Gracz Roku","offensive":"Ofensywny Gracz Roku","defense":"Beton Roku",
+            "player_scorers":"Król Strzelców FIFA Night","clutch":"Clutch Player Roku",
+            "regular":"Najbardziej Regularny","progress":"Największy Progres","spectacle":"Najbardziej Widowiskowy Gracz",
+            "penalties":"Król Karnych","duel":"Król 1 vs 1","universal":"Najbardziej Uniwersalny Gracz",
+            "wildcards":"Król Wild Cardów","debut":"Debiut Roku","outsider":"Najlepszy spoza dominatorów",
+            "finance":"Rekin Finansowy",
+        }
+        direct=set(titles)-{"player_scorers"}
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE ?",("flex_award_selections_%",))
+        out=[]
+        for r in rows:
+            key=str(r.get("key") or "")
+            try:year=int(key.rsplit("_",1)[1])
+            except Exception:continue
+            try:data=json.loads(r.get("value") or "{}")
+            except Exception:continue
+            for cat,sel in (data or {}).items():
+                cat=str(cat);sel=sel or {};cid=str(sel.get("id") or "")
+                belongs=(cat in direct and cid==pid) or (cat=="player_scorers" and cid.split("|",1)[0]==pid)
+                if belongs:
+                    out.append({"year":year,"key":cat,"title":titles.get(cat,cat),"name":str(sel.get("name") or ""),"selected_at":sel.get("selected_at")})
+        out.sort(key=lambda x:(x["year"],x["title"]))
+        return out
+
+    def player_trophy_case(self, player_id: str) -> dict:
+        """Badges, selected annual awards and global milestone moments connected with a player."""
+        pid=str(player_id or "")
+        if not pid:return {"badges":[],"badge_count":0,"badge_total":0,"awards":[],"milestones":[]}
+        ach=self.achievement_center();pa=next((x for x in ach.get("players",[]) if str(x.get("player_id"))==pid),None) or {}
+        with self.connect() as conn:
+            prow=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(pid,))
+        pname=str((prow or {}).get("name") or "")
+        milestones=[]
+        for x in self.global_milestones().get("timeline",[]):
+            detail=str(x.get("detail") or "")
+            resolution=x.get("scorer_resolution") or {}
+            # Timeline details are rebuilt from current player names, so historical renames remain visible.
+            text_hit=bool(pname and pname.casefold() in detail.casefold())
+            scorer_hit=str(resolution.get("player_id") or "")==pid
+            if text_hit or scorer_hit:
+                milestones.append(x)
+        milestones.sort(key=lambda x:x.get("earned_at") or "",reverse=True)
+        return {
+            "badges":pa.get("unlocked") or [],
+            "badge_count":int(pa.get("count") or 0),
+            "badge_total":int(pa.get("total") or len(ach.get("catalog") or [])),
+            "awards":self.player_award_wins(pid),
+            "milestones":milestones[:12],
+        }
+
     # ------------------------------------------------------------------
-    # Achievements & global FIFA Night milestones (v1.8.0 hotfix 17)
+    # Achievements & global FIFA Night milestones (v1.8.0 hotfix 18)
     # ------------------------------------------------------------------
     @staticmethod
     def _event_when_match(m: dict) -> str:
@@ -2388,6 +2452,8 @@ class Database:
             {"key":"fortress","icon":"🏰","name":"Twierdza","desc":"Wygraj turniej bez straty ani jednego gola."},
             {"key":"on_the_edge","icon":"🫀","name":"Na styku","desc":"Wygraj trzy mecze różnicą jednej bramki w jednym turnieju."},
             {"key":"champion_hunter","icon":"🏹","name":"Łowca mistrza","desc":"Pokonaj obrońcę tytułu w następnym FIFA Night."},
+            {"key":"last_ticket","icon":"🎟️","name":"Rzutem na taśmę","desc":"Wyjdź z grupy z ostatniego premiowanego miejsca i wygraj cały turniej."},
+            {"key":"rebirth","icon":"♻️","name":"Odrodzenie","desc":"Przegraj mecz w grupie lub lidze, a mimo to wygraj cały turniej."},
         ]
 
     def achievement_center(self) -> dict:
@@ -2405,11 +2471,17 @@ class Database:
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
                 WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
-            tps=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,tp.team
+            tps=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,tp.team,tp.group_name,tp.tie_order
                 FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
                 WHERE t.status='completed' AND t.is_test=0""")
             ledger,_finance_names,_jackpot=self._finance_ledger_conn(conn)
         team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
+        group_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("group_name") or "") for r in tps}
+        group_players=defaultdict(list);tie_by={}
+        for r in tps:
+            tid0,pid0,grp0=str(r["tournament_id"]),str(r["player_id"]),str(r.get("group_name") or "")
+            tie_by[(tid0,pid0)]=int(r.get("tie_order") or 0)
+            if grp0:group_players[(tid0,grp0)].append(pid0)
         fixed={self._norm_team_name(x) for x in FIXED_TEAMS}
         tournament_no={str(e["id"]):i+1 for i,e in enumerate(events)}
         event_by={str(e["id"]):e for e in events}
@@ -2546,6 +2618,19 @@ class Database:
             fmt=str(e.get("format_key") or "")
             if fmt.startswith("double") and any(self._result_for_player(m,champ)=="L" for m in own):
                 award(champ,"from_the_dead",when,tid,None,"Tytuł po spadku do Losers Bracket")
+            if (fmt.startswith("groups") or fmt.startswith("league")) and any(str(m.get("stage") or "") in {"GROUP","LEAGUE"} and self._result_for_player(m,champ)=="L" for m in own):
+                award(champ,"rebirth",when,tid,None,"Tytuł mimo wcześniejszej porażki w grupie lub lidze")
+            qualifying_last={"groups6":2,"groups6_full":3,"groups7":3,"groups7_sf":2,"groups8_sf":2,"groups8_barrage":3}
+            if fmt in qualifying_last:
+                grp=group_by.get((tid,champ),"")
+                if grp:
+                    ids=group_players.get((tid,grp),[])
+                    gm=[m for m in matches if str(m.get("tournament_id") or "")==tid and str(m.get("group_name") or "")==grp]
+                    ties={pid0:tie_by.get((tid,pid0),0) for pid0 in ids}
+                    rows=group_table(ids,gm,ties) if ids else []
+                    pos=next((i+1 for i,r in enumerate(rows) if str(r.get("player_id") or "")==champ),None)
+                    if pos==qualifying_last[fmt]:
+                        award(champ,"last_ticket",when,tid,None,f"Awans z {pos}. miejsca w grupie i tytuł FIFA Night")
 
         # Historical finance thresholds: simulate balance after each official cash event.
         balances=defaultdict(int)
@@ -2601,6 +2686,8 @@ class Database:
                     elif k=="fortress":pg="czeka na tytuł bez straty gola"
                     elif k=="on_the_edge":pg=f"najlepiej w turnieju: {pr['max_close_wins_tournament']}/3 wygranych jedną bramką"
                     elif k=="champion_hunter":pg="czeka na pokonanie obrońcy tytułu"
+                    elif k=="last_ticket":pg="czeka na mistrzostwo po awansie z ostatniego premiowanego miejsca"
+                    elif k=="rebirth":pg="czeka na tytuł mimo porażki w grupie lub lidze"
                     else:pg="—"
                     locked.append({**c,"progress":pg})
             earned.sort(key=lambda x:(x.get("earned_at") or "",list(cat_by).index(x["key"])))
