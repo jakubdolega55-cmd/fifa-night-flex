@@ -285,3 +285,10 @@ W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybr
 - Rundy Winners są ułożone obok siebie bez sztucznej pustej kolumny.
 - Wielki Finał jest częścią tego samego widoku i mieści się w głównym canvasie na typowym desktopie.
 - Szczęśliwy los/BYE jest oznaczony bezpośrednio przy graczu, a DE7 pokazuje też szczęśliwy los w Losers.
+
+### Hotfix 25 — TV AUTO
+- w `📺 TV` dodano przełącznik `📺 LIVE / 🔄 AUTO` dla pełnych turniejów;
+- `AUTO` co około 10 sekund przełącza trzy ekrany: `TERAZ / NASTĘPNY`, `SYTUACJA TURNIEJU` oraz `WYNIKI I STRZELCY`;
+- dla Double Elimination ekran sytuacji pokazuje drzewko, a dla lig i grup — aktualną tabelę;
+- tryb AUTO jest wyłącznie prezentacją i nie zmienia kolejności meczów ani algorytmu dobierającego następne spotkanie;
+- awaryjne `Przesuń mecz na później` z Hotfix 24 pozostaje jedynym ręcznym odstępstwem od automatycznej kolejności.

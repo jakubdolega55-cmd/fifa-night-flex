@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -1887,6 +1888,27 @@ def render_tv_screen(tid:str):
     b=db.bundle(tid);t=b["tournament"];meta=b["meta"];fmt=meta["format_key"];extra=meta.get("extra") or {}
     status="🧪 TEST" if int(t.get("is_test") or 0) else "🏆 OFICJALNY"
     st.markdown(f"<div style='text-align:center;margin:.2rem 0 .7rem'><span class='status-chip'>{status}</span></div>",unsafe_allow_html=True)
+
+    # Hotfix 25: TV AUTO changes only what is displayed. It never changes the
+    # tournament scheduler or the order chosen by the existing fairness algorithm.
+    if fmt=="duel1v1":
+        tv_mode="📺 LIVE"
+    else:
+        tv_mode=st.segmented_control(
+            "Tryb TV",["📺 LIVE","🔄 AUTO"],default="📺 LIVE",
+            key=f"tv_display_mode_{tid}",label_visibility="collapsed"
+        ) or "📺 LIVE"
+    prev_key=f"_tv_display_prev_{tid}"
+    start_key=f"_tv_auto_started_{tid}"
+    if tv_mode=="🔄 AUTO" and st.session_state.get(prev_key)!="🔄 AUTO":
+        st.session_state[start_key]=time.time()
+    st.session_state[prev_key]=tv_mode
+    auto_slide=0
+    if tv_mode=="🔄 AUTO":
+        started=float(st.session_state.get(start_key) or time.time())
+        auto_slide=int(max(0,time.time()-started)//10)%3
+        labels=["🎮 TERAZ / NASTĘPNY","🗺️ SYTUACJA TURNIEJU","⚽ WYNIKI I STRZELCY"]
+        st.caption(f"🔄 TV AUTO • {labels[auto_slide]} • zmiana co około 10 s")
     if t.get("status")=="completed":
         summary=db.tournament_summary(tid);champ=summary.get("champion") or "—"
         label="ZWYCIĘZCA 1 VS 1" if fmt=="duel1v1" else "MISTRZ FIFA NIGHT"
@@ -1910,6 +1932,53 @@ def render_tv_screen(tid:str):
     cur=db.current_match_from(b.get("matches") or [],extra)
     schedule=db.live_schedule_from(b.get("matches") or [],extra)
     ready=[m for m in schedule if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
+
+    if tv_mode=="🔄 AUTO" and auto_slide==1:
+        st.markdown("### 🗺️ Sytuacja turnieju")
+        if fmt in DE_FORMATS:
+            cur_no=int(cur.get("match_no")) if cur else None
+            render_de_bracket(t,b,fmt,cur_no)
+        else:
+            tables=db.standings(tid)
+            if tables:
+                if "L" in tables:
+                    st.markdown("#### 📊 Tabela")
+                    st.dataframe(standings_df(tables["L"]),hide_index=True,use_container_width=True)
+                else:
+                    c1,c2=st.columns(2)
+                    with c1:
+                        st.markdown("#### Grupa A")
+                        st.dataframe(standings_df(tables["A"]),hide_index=True,use_container_width=True)
+                    with c2:
+                        st.markdown("#### Grupa B")
+                        st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
+            else:
+                st.info("Tabela pojawi się po rozegraniu pierwszych spotkań.")
+        return
+
+    if tv_mode=="🔄 AUTO" and auto_slide==2:
+        st.markdown("### ⚽ Wyniki i strzelcy")
+        played=[m for m in schedule if m.get("home_score") is not None]
+        if played:
+            st.markdown("#### 🕘 Ostatnie wyniki")
+            for m in played[-4:]:
+                st.markdown(
+                    f'<div class="mini-card"><span class="match-no">MECZ {int(m.get("match_no") or 0)} • {esc(stage_name(m))}</span><br>'
+                    f'<b>{esc(m.get("home_name"))} — {esc(m.get("away_name"))}</b>'
+                    f'<span style="float:right" class="scoreline">{esc(result_text(m))}</span></div>',
+                    unsafe_allow_html=True
+                )
+        else:
+            st.caption("Nie ma jeszcze rozegranych spotkań.")
+        scorers=db.tournament_live_scorers(tid,5)
+        if scorers:
+            st.markdown("#### 🥇 Strzelcy tego FIFA Night")
+            for idx,x in enumerate(scorers,1):
+                st.markdown(f"**{idx}. {esc(x.get('name'))}** — {int(x.get('goals') or 0)}")
+        else:
+            st.caption("Strzelcy pojawią się po zapisaniu pierwszych bramek.")
+        return
+
     if not cur:
         st.markdown("### ⏳ Czekamy na kolejny mecz")
         st.caption("Para pojawi się automatycznie po rozstrzygnięciu poprzedniego etapu.")
@@ -1938,7 +2007,7 @@ def render_tv_screen(tid:str):
             c1,c2=st.columns(2)
             with c1:st.markdown("#### Grupa A");st.dataframe(standings_df(tables["A"]),hide_index=True,use_container_width=True)
             with c2:st.markdown("#### Grupa B");st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
-    st.caption("📺 Tryb TV odświeża się automatycznie co 5 sekund.")
+    st.caption("📺 LIVE odświeża dane co 5 sekund. W trybie AUTO ekran sam przełącza widoki co około 10 sekund.")
 
 def render_viewer_live(t):
     title="1 vs 1" if t.get("format_key")=="duel1v1" else f"{t['player_count']} graczy"
