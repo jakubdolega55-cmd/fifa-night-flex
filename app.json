@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "FIFA Night",
+    "slug": "fifa-night-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "pl.fifanight.flex",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "backgroundColor": "#07111f"
+      }
+    },
+    "plugins": [
+      "expo-secure-store"
+    ]
+  }
+}

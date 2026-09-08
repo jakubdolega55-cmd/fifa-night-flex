@@ -11,13 +11,22 @@ import random
 import sqlite3
 import uuid
 
-import psycopg
-from psycopg.rows import dict_row
 try:
-    from psycopg_pool import ConnectionPool
-except ImportError:  # Safe fallback if an old Streamlit build has not installed the pool extra yet.
+    import psycopg
+    from psycopg.rows import dict_row
+    try:
+        from psycopg_pool import ConnectionPool
+    except ImportError:  # Safe fallback if an old build has not installed the pool extra yet.
+        ConnectionPool = None
+except ImportError:  # API unit tests can still use the SQLite fallback without PostgreSQL extras.
+    psycopg = None
+    dict_row = None
     ConnectionPool = None
-import streamlit as st
+
+try:
+    import streamlit as st
+except ImportError:  # The FastAPI service does not need Streamlit at runtime.
+    st = None
 
 from logic import (
     BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FIXED_TEAMS, WILDCARD_TEAM_SUGGESTIONS, build_draw, draw_signature, group_members, group_table,
@@ -39,14 +48,25 @@ def now_iso() -> str:
 def _database_url() -> str | None:
     value = os.getenv("DATABASE_URL")
     if value: return value
-    try:
-        value = st.secrets.get("DATABASE_URL")
-        return str(value) if value else None
-    except Exception:
-        return None
+    if st is not None:
+        try:
+            value = st.secrets.get("DATABASE_URL")
+            return str(value) if value else None
+        except Exception:
+            pass
+    return None
 
 
-@st.cache_resource(show_spinner=False)
+def _cache_resource_fallback(*_args, **_kwargs):
+    def decorator(fn):
+        return fn
+    return decorator
+
+
+_cache_resource = st.cache_resource if st is not None else _cache_resource_fallback
+
+
+@_cache_resource(show_spinner=False)
 def _postgres_pool(url: str):
     """Keep warm Neon connections between Streamlit reruns.
 
@@ -86,7 +106,9 @@ class Database:
     @contextmanager
     def connect(self):
         if self.is_postgres:
-            # Pool is cached by Streamlit, so ordinary reruns reuse an already-open
+            if psycopg is None:
+                raise RuntimeError("PostgreSQL wymaga pakietu psycopg. Zainstaluj requirements.txt.")
+            # Pool is cached by Streamlit (when present), so ordinary reruns reuse an already-open
             # Neon connection instead of paying for a new handshake every click.
             pool = _postgres_pool(self.url)
             if pool is not None:
