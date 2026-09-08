@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from database import Database
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
@@ -973,60 +974,113 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str) -> str
 
 
 def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
-    """One integrated Double Elimination map: Winners, Losers and Grand Final on one canvas."""
+    """Compact, integrated Double Elimination map rendered as one real HTML canvas."""
     layout=_de_bracket_layout(fmt); by_no={int(m["match_no"]):m for m in b["matches"]}; paths=_de_path_labels(fmt)
     if not layout.get("final"):
         st.info("Brak widoku drzewka dla tego formatu.");return
-    rounds=max(len(layout.get("wb") or []),len(layout.get("lb") or []))
-    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany • przegrany z Winners spada do Losers. Numery M1, M2… pozostają stałe.")
-    css=f"""
-    <style>
-    .de-tree-scroll{{overflow-x:auto;padding:5px 2px 14px;scrollbar-width:thin}}
-    .de-tree{{display:grid;grid-template-columns:92px repeat({rounds},minmax(220px,1fr)) 280px;grid-template-rows:auto auto;gap:14px 16px;min-width:{390+rounds*235}px;align-items:stretch}}
-    .de-lane-tag{{display:flex;align-items:center;justify-content:center;border-radius:14px;font-weight:950;font-size:.72rem;letter-spacing:.08em;writing-mode:vertical-rl;transform:rotate(180deg);padding:10px 6px;border:1px solid rgba(148,163,184,.30)}}
-    .de-lane-tag.wb{{background:rgba(34,197,94,.06)}}.de-lane-tag.lb{{background:rgba(239,68,68,.05)}}
-    .de-cell{{position:relative;border-radius:16px;padding:8px;background:rgba(15,23,42,.018);border:1px dashed rgba(148,163,184,.20);min-height:124px}}
-    .de-cell:after{{content:'→';position:absolute;right:-16px;top:50%;transform:translate(50%,-50%);font-size:22px;font-weight:900;opacity:.35;z-index:2}}
-    .de-cell.last-route:after{{content:''}}
-    .de-round-name{{font-size:.68rem;font-weight:950;letter-spacing:.07em;opacity:.64;text-transform:uppercase;margin:0 0 7px;text-align:center;min-height:17px}}
-    .de-stack{{display:flex;flex-direction:column;gap:9px;justify-content:center;height:calc(100% - 23px)}}
-    .de-match{{border:1px solid rgba(148,163,184,.34);border-radius:13px;padding:9px 10px;background:rgba(15,23,42,.035);box-shadow:0 2px 8px rgba(15,23,42,.04)}}
-    .de-match.current{{border-width:2px;box-shadow:0 0 0 2px rgba(34,197,94,.12)}}.de-match.played{{opacity:.88}}.de-match.locked{{opacity:.56}}
-    .de-head{{display:grid;grid-template-columns:auto 1fr auto;gap:5px;align-items:center;font-size:.65rem;margin-bottom:6px}}.de-head span{{font-weight:950}}.de-head b{{text-align:center;font-size:.62rem}}.de-head em{{font-style:normal;font-weight:900;font-size:.60rem}}
-    .de-player{{font-weight:850;font-size:.84rem;line-height:1.18;min-height:17px}}.de-player small{{display:block;font-size:.64rem;font-weight:650;opacity:.62;margin-top:2px}}.de-vs{{font-size:.56rem;font-weight:900;opacity:.48;margin:2px 0}}
-    .de-path{{margin-top:7px;padding-top:6px;border-top:1px dashed rgba(148,163,184,.28);font-size:.63rem;font-weight:750;opacity:.74;line-height:1.23}}.de-bonus{{font-size:.62rem;font-weight:850;margin-top:5px}}
-    .de-final-cell{{display:flex;align-items:center;justify-content:center;position:relative;border-radius:18px;padding:10px;background:rgba(234,179,8,.035);border:1px dashed rgba(234,179,8,.28)}}
-    .de-final-cell:before{{content:'→';position:absolute;left:-16px;top:50%;transform:translate(-50%,-50%);font-size:24px;font-weight:900;opacity:.38}}
-    .de-final-inner{{width:100%}}.de-final-label{{font-size:.73rem;font-weight:1000;letter-spacing:.09em;text-align:center;margin-bottom:8px}}
-    .de-drop{{grid-column:1 / -1;text-align:center;font-size:.67rem;font-weight:750;opacity:.58;margin:-7px 0 -5px}}
-    </style>
-    """
-    chunks=[css,"<div class='de-tree-scroll'><div class='de-tree'>"]
-    chunks.append("<div class='de-lane-tag wb' style='grid-column:1;grid-row:1'>🌿 WINNERS</div>")
-    for idx in range(rounds):
-        nos=layout.get("wb",[])[idx] if idx<len(layout.get("wb",[])) else []
-        last_cls=" last-route" if idx==rounds-1 else ""
-        chunks.append(f"<div class='de-cell{last_cls}' style='grid-column:{idx+2};grid-row:1'><div class='de-round-name'>{_de_round_title('wb',idx,len(layout.get('wb',[]))) if nos else ''}</div><div class='de-stack'>")
-        for no in nos:
-            m=by_no.get(no)
-            if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
-        chunks.append("</div></div>")
-    chunks.append("<div class='de-lane-tag lb' style='grid-column:1;grid-row:2'>🩸 LOSERS</div>")
-    for idx in range(rounds):
-        nos=layout.get("lb",[])[idx] if idx<len(layout.get("lb",[])) else []
-        last_cls=" last-route" if idx==rounds-1 else ""
-        chunks.append(f"<div class='de-cell{last_cls}' style='grid-column:{idx+2};grid-row:2'><div class='de-round-name'>{_de_round_title('lb',idx,len(layout.get('lb',[]))) if nos else ''}</div><div class='de-stack'>")
-        for no in nos:
-            m=by_no.get(no)
-            if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
-        chunks.append("</div></div>")
-    chunks.append(f"<div class='de-final-cell' style='grid-column:{rounds+2};grid-row:1 / span 2'><div class='de-final-inner'><div class='de-final-label'>🏆 WIELKI FINAŁ</div>")
+
+    wb=layout.get("wb") or []; lb=layout.get("lb") or []; max_rounds=max(len(wb),len(lb),1)
+    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany • przegrany z Winners spada do Losers.")
+
+    def distributed_positions(count:int,total:int)->list[int]:
+        if count<=0:return []
+        if count==1:return [total]
+        if count==total:return list(range(1,total+1))
+        # Spread shorter Winners routes across the same canvas without drawing empty boxes.
+        return [1+round(i*(total-1)/(count-1)) for i in range(count)]
+
+    wb_pos=distributed_positions(len(wb),max_rounds); lb_pos=distributed_positions(len(lb),max_rounds)
+
+    def lane_html(lane:str,rounds_list:list[list[int]],positions:list[int])->str:
+        accent="#178a57" if lane=="wb" else "#c54848"
+        title="WINNERS BRACKET" if lane=="wb" else "LOSERS BRACKET"
+        icon="🌿" if lane=="wb" else "🩸"
+        pieces=[f"<section class='lane {lane}'><div class='lane-title' style='--accent:{accent}'><span>{icon}</span>{title}</div><div class='lane-grid'>"]
+        for idx,nos in enumerate(rounds_list):
+            col=positions[idx]
+            pieces.append(f"<div class='round' style='grid-column:{col}'><div class='round-title'>{esc(_de_round_title(lane,idx,len(rounds_list)))}</div><div class='round-stack'>")
+            for no in nos:
+                m=by_no.get(no)
+                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+            pieces.append("</div></div>")
+        pieces.append("</div></section>")
+        return "".join(pieces)
+
+    final_html=[]
     for no in layout["final"]:
         m=by_no.get(no)
-        if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
-    chunks.append("</div></div></div></div>")
-    st.markdown("".join(chunks),unsafe_allow_html=True)
-    st.caption("Drzewko i lista pokazują te same mecze. Lista służy do śledzenia faktycznej kolejności grania, a drzewko do prześledzenia całej drogi zawodników w DE.")
+        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+
+    width=max(980,170+max_rounds*228+245)
+    height={"double4":610,"double5":690,"double6":760,"double7":830,"double8":900}.get(fmt,780)
+    html_doc=f"""
+    <!doctype html><html><head><meta charset='utf-8'><style>
+    *{{box-sizing:border-box}} html,body{{margin:0;padding:0;background:transparent;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#202532}}
+    .scroll{{overflow-x:auto;padding:2px 2px 12px;scrollbar-width:thin}}
+    .board{{min-width:{width}px;background:linear-gradient(180deg,#fbfcfe 0%,#f5f7fa 100%);border:1px solid #e3e7ee;border-radius:20px;padding:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}
+    .main{{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:18px;align-items:stretch}}
+    .routes{{min-width:{max_rounds*228}px}}
+    .lane{{position:relative;padding:10px 8px 16px;border-radius:16px}}
+    .lane.wb{{background:linear-gradient(90deg,rgba(23,138,87,.045),rgba(23,138,87,.012))}}
+    .lane.lb{{background:linear-gradient(90deg,rgba(197,72,72,.045),rgba(197,72,72,.012));margin-top:18px}}
+    .lane-title{{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:12px;font-weight:950;letter-spacing:.09em;margin:0 4px 12px}}
+    .lane-title:after{{content:'';height:1px;flex:1;background:color-mix(in srgb,var(--accent) 25%,transparent)}}
+    .lane-grid{{display:grid;grid-template-columns:repeat({max_rounds},210px);column-gap:18px;align-items:center;min-height:180px}}
+    .round{{position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center}}
+    .round:not(:last-child):after{{content:'›';position:absolute;right:-13px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#eef1f5;border:1px solid #d8dde6;color:#8a93a3;font-size:18px;font-weight:900;z-index:3}}
+    .round-title{{text-align:center;font-size:10px;font-weight:900;letter-spacing:.08em;color:#717887;text-transform:uppercase;margin-bottom:7px;min-height:14px}}
+    .round-stack{{display:flex;flex-direction:column;justify-content:center;gap:8px;height:100%}}
+    .de-match{{position:relative;background:#fff;border:1px solid #dce1e8;border-radius:12px;padding:9px 10px;box-shadow:0 3px 10px rgba(15,23,42,.055);min-height:104px}}
+    .de-match.played{{border-left:4px solid #7d8797}} .de-match.current{{border:2px solid #19a463;box-shadow:0 0 0 3px rgba(25,164,99,.10)}}
+    .de-match.ready{{border-left:4px solid #e0a92d}} .de-match.locked{{opacity:.58;background:#f8f9fb}} .de-match.skipped{{opacity:.62}}
+    .de-head{{display:grid;grid-template-columns:auto 1fr auto;gap:5px;align-items:center;font-size:9px;margin-bottom:7px;color:#6f7785}}
+    .de-head span{{font-weight:1000;color:#343a46}} .de-head b{{text-align:center;font-size:9px;text-transform:uppercase}} .de-head em{{font-style:normal;font-weight:950;font-size:9px;color:#343a46}}
+    .de-player{{font-weight:850;font-size:12px;line-height:1.15;color:#242a35;white-space:normal;overflow-wrap:anywhere}}
+    .de-player small{{display:block;font-size:9px;font-weight:650;color:#7b8390;margin-top:2px}}
+    .de-vs{{font-size:8px;font-weight:900;color:#a0a6b0;margin:3px 0}}
+    .de-path{{margin-top:7px;padding-top:6px;border-top:1px dashed #e0e4ea;font-size:9px;font-weight:800;color:#757d8b;line-height:1.25}}
+    .de-bonus{{font-size:9px;font-weight:850;color:#a36d00;margin-top:5px}}
+    .drop{{display:flex;align-items:center;gap:8px;margin:8px 8px -8px;color:#8c6670;font-size:9px;font-weight:850;letter-spacing:.03em}}
+    .drop:before,.drop:after{{content:'';height:1px;background:#ead9dd;flex:1}} 
+    .final{{display:flex;flex-direction:column;justify-content:center;background:linear-gradient(180deg,#fffaf0,#fffdf7);border:1px solid #ead9a5;border-radius:16px;padding:12px;position:relative}}
+    .final:before{{content:'›';position:absolute;left:-11px;top:50%;transform:translate(-50%,-50%);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff7da;border:1px solid #e5c863;color:#a67a00;font-size:20px;font-weight:900}}
+    .final-title{{text-align:center;font-size:12px;font-weight:1000;letter-spacing:.08em;color:#9b7200;margin-bottom:10px}}
+    .legend{{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;font-size:9px;color:#747c89}}
+    .dot{{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}} .green{{background:#19a463}} .amber{{background:#e0a92d}} .grey{{background:#7d8797}}
+    @media(max-width:700px){{.board{{padding:10px}}.main{{gap:12px}}}}
+    </style></head><body>
+    <div class='scroll'><div class='board'><div class='main'><div class='routes'>
+    {lane_html('wb',wb,wb_pos)}
+    <div class='drop'>↓ przegrani z Winners trafiają do Losers ↓</div>
+    {lane_html('lb',lb,lb_pos)}
+    </div><aside class='final'><div class='final-title'>🏆 WIELKI FINAŁ</div>{''.join(final_html)}</aside></div>
+    <div class='legend'><span><i class='dot green'></i>TERAZ</span><span><i class='dot amber'></i>GOTOWY</span><span><i class='dot grey'></i>ROZEGRANY</span><span>W → dalej po wygranej</span><span>P → dalej po porażce</span></div>
+    </div></div></body></html>
+    """
+    components.html(html_doc,height=height,scrolling=False)
+    st.caption("Drzewko pokazuje logiczną drogę przez DE. Faktyczną kolejność grania nadal najlepiej śledzić w widoku Lista.")
+
+
+def _render_match_scorer_details(tid:str,m:dict,no:int):
+    """Expandable match details used in both the live schedule and tournament archive."""
+    scorers=db.match_scorers(tid,no)
+    home=[x for x in scorers if x.get("side")=="home"]
+    away=[x for x in scorers if x.get("side")=="away"]
+    label=f"⚽ Szczegóły meczu {no} • {m.get('home_name') or '?'} – {m.get('away_name') or '?'}"
+    with st.expander(label,expanded=False):
+        c1,c2=st.columns(2)
+        with c1:
+            st.markdown(f"**{esc(m.get('home_name') or '—')}** · {esc(m.get('home_team') or '—')}")
+            if home:
+                for x in home:st.write(f"⚽ {x.get('scorer_name')}"+(f" ×{int(x.get('goals') or 0)}" if int(x.get('goals') or 0)>1 else ""))
+            else:st.caption("Brak zapisanych strzelców.")
+        with c2:
+            st.markdown(f"**{esc(m.get('away_name') or '—')}** · {esc(m.get('away_team') or '—')}")
+            if away:
+                for x in away:st.write(f"⚽ {x.get('scorer_name')}"+(f" ×{int(x.get('goals') or 0)}" if int(x.get('goals') or 0)>1 else ""))
+            else:st.caption("Brak zapisanych strzelców.")
+        if m.get("home_pen") is not None or m.get("away_pen") is not None:
+            st.caption(f"Karne: {int(m.get('home_pen') or 0)}:{int(m.get('away_pen') or 0)}")
 
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];extra=b["meta"].get("extra") or {};st.subheader("📅 Terminarz")
@@ -1064,6 +1118,7 @@ def render_schedule(t):
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
         st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {no} • {stage_name(m)}{esc(live_tag)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
         if skipped:st.caption("Pominięty mecz nie jest zapisany jako 0:0 i nie wchodzi do żadnych statystyk.")
+        elif played:_render_match_scorer_details(t["id"],m,no)
 
 
 

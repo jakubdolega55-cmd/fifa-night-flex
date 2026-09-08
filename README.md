@@ -271,3 +271,10 @@ W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybr
 - losowania pośrednie w DE5/DE7/DE8 są opisane jako możliwe ścieżki do czasu ustalenia konkretnej pary;
 - bonusowe 1:0 dla zwycięzcy Winners Bracket jest oznaczone także na karcie Wielkiego Finału;
 - brak zmian w bazie i w logice rozgrywania turnieju — jest to wyłącznie nowy widok tej samej drabinki.
+
+### Hotfix 21 — czytelniejsze drzewko DE + szczegóły meczu
+
+- widok DE renderuje się jako jeden kompaktowy canvas, bez surowego HTML w kartach i bez pustych obramowanych kolumn;
+- Winners, Losers i Wielki Finał pozostają na jednej mapie;
+- w widoku `Lista` każdy rozegrany mecz ma rozwijane `⚽ Szczegóły meczu` ze strzelcami obu stron i karnymi;
+- szczegóły są dostępne także w Historii starych turniejów.

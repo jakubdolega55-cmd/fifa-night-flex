@@ -830,6 +830,15 @@ class Database:
                 GROUP BY scorer_name ORDER BY SUM(goals) DESC,scorer_name""",(tid,))
         return [{"name":str(r.get("scorer_name") or "?"),"goals":int(r.get("goals") or 0)} for r in rows[:max(1,int(limit or 3))]]
 
+    def match_scorers(self, tid: str, match_no: int) -> list[dict]:
+        """Entered scorers for one match, grouped by side for schedule/history details."""
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""SELECT side,team_name,scorer_name,goals
+                FROM match_scorers WHERE tournament_id=? AND match_no=?
+                ORDER BY CASE WHEN side='home' THEN 0 ELSE 1 END,goals DESC,scorer_name""",(tid,int(match_no)))
+        return [{"side":str(r.get("side") or ""),"team_name":str(r.get("team_name") or ""),
+                 "scorer_name":str(r.get("scorer_name") or "?"),"goals":int(r.get("goals") or 0)} for r in rows]
+
     def meta(self, tid: str) -> dict:
         with self.connect() as conn:
             r = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
