@@ -884,11 +884,130 @@ def live(tid:str):
             with c2:st.subheader("Grupa B");st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
 
 
+
+DE_FORMATS={"double4","double5","double6","double7","double8"}
+
+
+def _de_bracket_layout(fmt:str) -> dict:
+    """Visual rounds for the supported single-final Double Elimination formats."""
+    return {
+        "double4": {"wb":[[1,2],[4]], "lb":[[3],[5]], "final":[6]},
+        "double5": {"wb":[[1,2],[3],[5]], "lb":[[4],[6],[7]], "final":[8]},
+        "double6": {"wb":[[1,2],[3,4],[7]], "lb":[[5],[6],[8],[9]], "final":[10]},
+        "double7": {"wb":[[1,2,3],[4,5],[9]], "lb":[[6],[7,8],[10],[11]], "final":[12]},
+        "double8": {"wb":[[1,2,3,4],[5,6],[11]], "lb":[[7,8],[9,10],[12],[13]], "final":[14]},
+    }.get(fmt,{"wb":[],"lb":[],"final":[]})
+
+
+def _de_path_labels(fmt:str) -> dict[int,str]:
+    """Human-readable next steps. Dynamic DE5/DE7 draws intentionally stay descriptive until resolved."""
+    return {
+        "double4": {
+            1:"W → M4  •  P → M3", 2:"W → M4  •  P → M3", 3:"W → M5  •  P → odpada",
+            4:"W → FINAŁ M6  •  P → M5", 5:"W → FINAŁ M6  •  P → odpada", 6:"🏆 Mistrz",
+        },
+        "double5": {
+            1:"W → M3/M5 (losowanie)  •  P → M4", 2:"W → M3/M5 (losowanie)  •  P → M4",
+            3:"W → M5  •  P → M6", 4:"W → M6  •  P → odpada", 5:"W → FINAŁ M8  •  P → M7",
+            6:"W → M7  •  P → odpada", 7:"W → FINAŁ M8  •  P → odpada", 8:"🏆 Mistrz",
+        },
+        "double6": {
+            1:"W → M3  •  P → M5", 2:"W → M4  •  P → M5", 3:"W → M7  •  P → M6",
+            4:"W → M7  •  P → M8", 5:"W → M6  •  P → odpada", 6:"W → M8  •  P → odpada",
+            7:"W → FINAŁ M10  •  P → M9", 8:"W → M9  •  P → odpada", 9:"W → FINAŁ M10  •  P → odpada", 10:"🏆 Mistrz",
+        },
+        "double7": {
+            1:"W → M4/M5 (losowanie)  •  P → M6/M7", 2:"W → M4/M5 (losowanie)  •  P → M6/M7",
+            3:"W → M4/M5 (losowanie)  •  P → M6/M7", 4:"W → M9  •  P → M7/M8", 5:"W → M9  •  P → M7/M8",
+            6:"W → M8  •  P → odpada", 7:"W → M10  •  P → odpada", 8:"W → M10  •  P → odpada",
+            9:"W → FINAŁ M12  •  P → M11", 10:"W → M11  •  P → odpada", 11:"W → FINAŁ M12  •  P → odpada", 12:"🏆 Mistrz",
+        },
+        "double8": {
+            1:"W → M5/M6 (losowanie)  •  P → M7", 2:"W → M5/M6 (losowanie)  •  P → M7",
+            3:"W → M5/M6 (losowanie)  •  P → M8", 4:"W → M5/M6 (losowanie)  •  P → M8",
+            5:"W → M11  •  P → M10", 6:"W → M11  •  P → M9", 7:"W → M9  •  P → odpada",
+            8:"W → M10  •  P → odpada", 9:"W → M12  •  P → odpada", 10:"W → M12  •  P → odpada",
+            11:"W → FINAŁ M14  •  P → M13", 12:"W → M13  •  P → odpada", 13:"W → FINAŁ M14  •  P → odpada", 14:"🏆 Mistrz",
+        },
+    }.get(fmt,{})
+
+
+def _de_round_title(lane:str, idx:int, count:int) -> str:
+    if lane=="wb":
+        return "FINAŁ WINNERS" if idx==count-1 else ("1. RUNDA WINNERS" if idx==0 else f"RUNDA {idx+1} WINNERS")
+    if lane=="lb":
+        return "FINAŁ LOSERS" if idx==count-1 else ("1. RUNDA LOSERS" if idx==0 else f"RUNDA {idx+1} LOSERS")
+    return "WIELKI FINAŁ"
+
+
+def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str) -> str:
+    no=int(m["match_no"]); skipped=str(m.get("match_status") or "pending")=="skipped"; played=m.get("home_score") is not None
+    ready=bool(m.get("home_player_id") and m.get("away_player_id")) and not played and not skipped
+    if skipped: state="skipped"; badge="POMINIĘTY"
+    elif played: state="played"; badge=result_text(m)
+    elif cur_no==no: state="current"; badge="TERAZ"
+    elif ready: state="ready"; badge="GOTOWY"
+    else: state="locked"; badge="CZEKA"
+    if m.get("home_player_id") and m.get("away_player_id"):
+        ht=f"<small>{esc(m.get('home_team'))}</small>" if m.get("home_team") else ""
+        at=f"<small>{esc(m.get('away_team'))}</small>" if m.get("away_team") else ""
+        h=f"{esc(m.get('home_name'))}{ht}"; a=f"{esc(m.get('away_name'))}{at}"
+    else:
+        ph=source_placeholder(fmt,no)
+        parts=[x.strip() for x in ph.split("—",1)]
+        h=esc(parts[0] if parts else ph); a=esc(parts[1] if len(parts)>1 else "do ustalenia")
+    bonus="<div class='de-bonus'>⭐ Winners zaczyna finał 1:0</div>" if m.get("stage")=="FINAL" else ""
+    return f"""
+      <div class="de-match {state}">
+        <div class="de-head"><span>M{no}</span><b>{esc(stage_name(m))}</b><em>{esc(badge)}</em></div>
+        <div class="de-player">{h}</div>
+        <div class="de-vs">VS</div>
+        <div class="de-player">{a}</div>
+        {bonus}
+        <div class="de-path">{esc(path_label)}</div>
+      </div>
+    """
+
+
+def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
+    """Scrollable bracket view that follows both winners and losers paths without changing match order."""
+    layout=_de_bracket_layout(fmt); by_no={int(m["match_no"]):m for m in b["matches"]}; paths=_de_path_labels(fmt)
+    if not layout.get("final"):
+        st.info("Brak widoku drzewka dla tego formatu.");return
+    st.caption("W = zwycięzca meczu • P = przegrany. Numery M1, M2… są stałe, nawet gdy kolejność gry w terminarzu zmienia się dynamicznie.")
+    css="""
+    <style>
+    .de-wrap{overflow-x:auto;padding:4px 2px 12px;scrollbar-width:thin}.de-lane{min-width:780px;margin:8px 0 18px}.de-lane-title{font-weight:950;font-size:1.05rem;margin:0 0 8px;letter-spacing:.02em}.de-rounds{display:flex;align-items:stretch;gap:12px}.de-round{min-width:220px;flex:1;display:flex;flex-direction:column;gap:10px;position:relative;padding-right:18px}.de-round:not(:last-child):after{content:'→';position:absolute;right:-3px;top:50%;transform:translateY(-50%);font-size:26px;font-weight:900;opacity:.45}.de-round-name{font-size:.72rem;font-weight:900;letter-spacing:.08em;opacity:.65;text-transform:uppercase;min-height:18px}.de-match{border:1px solid rgba(148,163,184,.34);border-radius:14px;padding:10px 11px;background:rgba(15,23,42,.035);box-shadow:0 2px 10px rgba(15,23,42,.04)}.de-match.current{border-width:2px}.de-match.played{opacity:.86}.de-match.locked{opacity:.58}.de-head{display:grid;grid-template-columns:auto 1fr auto;gap:6px;align-items:center;font-size:.67rem;margin-bottom:7px}.de-head span{font-weight:950}.de-head b{text-align:center;font-size:.64rem}.de-head em{font-style:normal;font-weight:900;font-size:.62rem}.de-player{font-weight:850;font-size:.88rem;line-height:1.2;min-height:18px}.de-player small{display:block;font-size:.66rem;font-weight:650;opacity:.62;margin-top:2px}.de-vs{font-size:.58rem;font-weight:900;opacity:.5;margin:2px 0}.de-path{margin-top:8px;padding-top:7px;border-top:1px dashed rgba(148,163,184,.3);font-size:.66rem;font-weight:750;opacity:.72;line-height:1.25}.de-bonus{font-size:.64rem;font-weight:850;margin-top:6px}.de-final-wrap{min-width:780px;display:flex;justify-content:center;margin:2px 0 8px}.de-final-col{width:min(360px,90%)}
+    </style>
+    """
+    chunks=[css,"<div class='de-wrap'>"]
+    for lane,title in (("wb","🌿 WINNERS BRACKET"),("lb","🩸 LOSERS BRACKET")):
+        rounds=layout[lane];chunks.append(f"<div class='de-lane'><div class='de-lane-title'>{title}</div><div class='de-rounds'>")
+        for idx,nos in enumerate(rounds):
+            chunks.append(f"<div class='de-round'><div class='de-round-name'>{_de_round_title(lane,idx,len(rounds))}</div>")
+            for no in nos:
+                m=by_no.get(no)
+                if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+            chunks.append("</div>")
+        chunks.append("</div></div>")
+    chunks.append("<div class='de-final-wrap'><div class='de-final-col'><div class='de-round-name' style='text-align:center'>WIELKI FINAŁ</div>")
+    for no in layout["final"]:
+        m=by_no.get(no)
+        if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+    chunks.append("</div></div></div>")
+    st.markdown("".join(chunks),unsafe_allow_html=True)
+    st.caption("Drzewko pokazuje logiczną drogę w DE. Zakładka Lista nadal pokazuje faktyczną kolejność rozgrywania gotowych spotkań.")
+
+
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];extra=b["meta"].get("extra") or {};st.subheader("📅 Terminarz")
-    matches=db.live_schedule_from(b["matches"],extra)
     cur=db.current_match_from(b["matches"],extra)
     cur_no=int(cur["match_no"]) if cur else None
+    if fmt in DE_FORMATS:
+        view=st.segmented_control("Widok terminarza",["📋 Lista","🌳 Drzewko"],default="📋 Lista",key=f"de_schedule_view_{t['id']}",label_visibility="collapsed") or "📋 Lista"
+        if view=="🌳 Drzewko":
+            render_de_bracket(t,b,fmt,cur_no);return
+    matches=db.live_schedule_from(b["matches"],extra)
     ready_pending=[m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
     next_no=int(ready_pending[1]["match_no"]) if len(ready_pending)>1 and cur_no is not None and int(ready_pending[0]["match_no"])==cur_no else None
     if cur_no is not None:

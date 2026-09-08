@@ -173,3 +173,10 @@ Nowy status `skipped` służy wyłącznie do matematycznie bezpiecznego pomijani
 - tryb podglądu ukrywa formularze, które zapisują dane: tworzenie rozgrywek, wpisywanie wyników, edycję list strzelców, bieżące rozliczenia i wybór laureatów;
 - urządzenie ze sterowaniem może również ręcznie przełączyć się na widok TV;
 - operacje destrukcyjne w historii nadal wymagają osobnego podania hasła administratora.
+
+### Hotfix 19 — widok drzewka Double Elimination
+- `Terminarz` w DE4, DE5, DE6, DE7 i DE8 ma dwa widoki: dynamiczną listę oraz drzewko;
+- drzewko rozdziela ścieżkę Winners i Losers, kończąc je wspólnym Wielkim Finałem;
+- każda karta meczu pokazuje numer, etap, parę/drużyny, status lub wynik oraz dokąd trafia zwycięzca i przegrany;
+- numery meczów pozostają logiczne i nie zmieniają się wraz z dynamiczną kolejnością grania;
+- zmiana nie wymaga migracji bazy danych.

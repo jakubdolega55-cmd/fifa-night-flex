@@ -260,3 +260,14 @@ Odznaki graczy obejmują także sytuacyjne wyczyny: wygrany finał po karnych, t
 Aplikacja rozróżnia urządzenie ze sterowaniem od urządzeń działających w trybie podglądu. W `⚙️ Ustawieniach` po podaniu `ADMIN_PASSWORD` można włączyć sterowanie w bieżącej sesji przeglądarki. Pozostałe urządzenia podczas aktywnego turnieju domyślnie otwierają `📺 LIVE`, który odświeża się automatycznie i pokazuje aktualny mecz, kolejny mecz, strzelców oraz tabelę. Z trybu podglądu nadal można przejść do terminarza, statystyk i AWARDS, ale bez formularzy zapisujących dane. Poza aktywnym turniejem publiczny podgląd obejmuje statystyki i AWARDS.
 
 W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybranymi FIFA Night Awards i ważnymi momentami z historii.
+
+### Hotfix 19 — drzewko Double Elimination
+
+- w `Terminarzu` dla formatów DE 4–8 dodano przełącznik `📋 Lista / 🌳 Drzewko`;
+- `Lista` nadal pokazuje faktyczną, dynamiczną kolejność rozgrywania gotowych meczów;
+- `Drzewko` pokazuje osobno Winners Bracket, Losers Bracket i Wielki Finał, wraz z numerami logicznymi meczów M1, M2 itd.;
+- na kartach widać aktualnych graczy i drużyny, wynik/status meczu oraz dalszą drogę zwycięzcy i przegranego (`W → ...`, `P → ...`);
+- nierozstrzygnięte pary pokazują źródło uczestników, więc drabinkę można prześledzić także przed rozegraniem wcześniejszych spotkań;
+- losowania pośrednie w DE5/DE7/DE8 są opisane jako możliwe ścieżki do czasu ustalenia konkretnej pary;
+- bonusowe 1:0 dla zwycięzcy Winners Bracket jest oznaczone także na karcie Wielkiego Finału;
+- brak zmian w bazie i w logice rozgrywania turnieju — jest to wyłącznie nowy widok tej samej drabinki.
