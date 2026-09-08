@@ -876,6 +876,14 @@ def live(tid:str):
                 if st.button("⏭️ POMIŃ MECZ",use_container_width=True,key=f"skip_{tid}_{cur['match_no']}"):
                     try:db.skip_match(tid,int(cur["match_no"]));rf()
                     except ValueError as e:st.error(str(e))
+    defer_check=db.can_defer_match(tid,int(cur["match_no"]))
+    if defer_check.get("allowed"):
+        nxt_label=f"{defer_check.get('next_home','?')} vs {defer_check.get('next_away','?')}"
+        st.caption(f"🕒 Nie możecie teraz zagrać? Ten mecz można przesunąć na później. Teraz wskoczy **{nxt_label}**.")
+        if st.button("🕒 PRZESUŃ MECZ NA PÓŹNIEJ",use_container_width=True,key=f"defer_{tid}_{cur['match_no']}"):
+            try:
+                db.defer_match(tid,int(cur["match_no"]));rf()
+            except ValueError as e:st.error(str(e))
     score_form(tid,cur,fmt)
     nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
     if nxt:st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")

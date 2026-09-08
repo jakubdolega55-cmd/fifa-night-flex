@@ -1941,6 +1941,72 @@ class Database:
         locked=sorted([m for m in pending if not (m.get("home_player_id") and m.get("away_player_id"))],key=pref)
         return completed+ready+locked
 
+    def can_defer_match(self, tid: str, match_no: int) -> dict:
+        """Return whether an active match can be moved behind the other matches that are ready now.
+
+        This never skips or completes the match. It only changes the preferred live play order
+        stored in ``extra_json``. The option is available only when at least one different
+        pending match already has both players resolved, so the app always has something real
+        to put on screen next.
+        """
+        with self.connect() as conn:
+            meta=self._fetchone(conn,"SELECT extra_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+            if not meta:
+                return {"allowed":False,"reason":"Nie znaleziono turnieju."}
+            extra=json.loads(meta.get("extra_json") or "{}")
+            matches=self._matches_conn(conn,tid)
+            order=[int(x) for x in (extra.get("match_play_order") or [])]
+            rank={no:i for i,no in enumerate(order)}
+            def pref(m):
+                no=int(m.get("match_no") or 0)
+                return (rank.get(no,10_000+no),no)
+            ready=sorted([m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"],key=pref)
+            current=next((m for m in ready if int(m.get("match_no") or 0)==int(match_no)),None)
+            if current is None:
+                return {"allowed":False,"reason":"Ten mecz nie jest teraz gotowy do rozegrania."}
+            alternatives=[m for m in ready if int(m.get("match_no") or 0)!=int(match_no)]
+            if not alternatives:
+                return {"allowed":False,"reason":"Nie ma innego gotowego meczu, który można zagrać teraz."}
+            nxt=alternatives[0]
+            return {"allowed":True,"reason":"Można przesunąć ten mecz na później.",
+                    "next_match_no":int(nxt.get("match_no") or 0),
+                    "next_home":nxt.get("home_name") or "?","next_away":nxt.get("away_name") or "?"}
+
+    def defer_match(self, tid: str, match_no: int) -> dict:
+        """Move a ready match behind all other matches that are ready at this moment."""
+        with self.connect() as conn:
+            meta=self._fetchone(conn,"SELECT extra_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+            if not meta:
+                raise ValueError("Nie znaleziono turnieju.")
+            extra=json.loads(meta.get("extra_json") or "{}")
+            matches=self._matches_conn(conn,tid)
+            valid_nos=[int(m.get("match_no") or 0) for m in matches]
+            base=[int(x) for x in (extra.get("match_play_order") or []) if int(x) in valid_nos]
+            for no in sorted(valid_nos):
+                if no not in base: base.append(no)
+            rank={no:i for i,no in enumerate(base)}
+            def pref(m):
+                no=int(m.get("match_no") or 0)
+                return (rank.get(no,10_000+no),no)
+            ready=sorted([m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"],key=pref)
+            current=next((m for m in ready if int(m.get("match_no") or 0)==int(match_no)),None)
+            alternatives=[m for m in ready if int(m.get("match_no") or 0)!=int(match_no)]
+            if current is None:
+                raise ValueError("Ten mecz nie jest teraz gotowy do rozegrania.")
+            if not alternatives:
+                raise ValueError("Nie ma innego gotowego meczu, który można zagrać teraz.")
+            # Remove the current match, then insert it immediately after the last match
+            # that is already ready now. Locked future matches keep their relative order.
+            reordered=[no for no in base if no!=int(match_no)]
+            other_ready={int(m.get("match_no") or 0) for m in alternatives}
+            last_ready_idx=max(i for i,no in enumerate(reordered) if no in other_ready)
+            reordered.insert(last_ready_idx+1,int(match_no))
+            extra["match_play_order"]=reordered
+            conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
+            nxt=alternatives[0]
+            return {"next_match_no":int(nxt.get("match_no") or 0),
+                    "next_home":nxt.get("home_name") or "?","next_away":nxt.get("away_name") or "?"}
+
     def can_skip_match(self, tid: str, match_no: int) -> dict:
         """Return whether the current league match can be skipped without changing the finalist pair.
 

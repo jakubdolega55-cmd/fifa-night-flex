@@ -118,6 +118,7 @@ Sekcja strzelców została skompresowana pod telefon: każdy z 5 podstawowych za
 - **Live Team Rating**, miękkie ważenie losowania i anty-powtórka poprzedniej drużyny;
 - uproszczone, opcjonalne wpisywanie strzelców: 3 kompaktowe wiersze +/− i możliwość dodania kolejnych;
 - matematycznie bezpieczne **Pomiń mecz** w lidze + finał; pominięte spotkanie nie jest 0:0 i nie wchodzi do statystyk;
+- **Przesuń mecz na później** — tylko gdy istnieje inny gotowy mecz; zmienia kolejność LIVE bez pomijania spotkania;
 - rozliczenia rozszerzone o jackpot oraz eksport **TXT + PNG 1080×1080**;
 - nowy ekran **AWARDS**: 19 kategorii nagród, TOP5 live, uzasadnienia, wybór organizatora z TOP2–3 oraz dwa rankingi podglądowe bez nagrody; `Król Strzelców FIFA Night` liczy konkretny duet piłkarz EA FC + gracz (np. Ferran Torres — Benio), a `Supersnajper Roku` sumuje gole piłkarza globalnie;
 - roczne grafiki **Rok w liczbach** i **FIFA Night Awards**;
