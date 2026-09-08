@@ -1,10 +1,10 @@
 # FIFA Night Flex v1.8.0
 
-Responsywna aplikacja Streamlit do turniejów FIFA dla 3–8 graczy oraz osobnych meczów 1 vs 1, z trwałym zapisem w Neon/PostgreSQL.
+Responsywna aplikacja Streamlit do FIFA Night: wariant 1 vs 1 oraz turnieje dla 3–8 graczy, z trwałym zapisem w Neon/PostgreSQL.
 
 ## Formaty
 
-- 1 vs 1 — osobny mecz dwóch graczy z ręcznym wyborem drużyn (1 mecz)
+- 1 vs 1 — wariant FIFA Night dla dwóch graczy z ręcznym wyborem drużyn (1 mecz)
 - 3 graczy — liga każdy z każdym + finał (4 mecze)
 - 4 graczy — liga każdy z każdym + finał (7) albo Double Elimination (6)
 - 5 graczy — Double Elimination (8) albo liga + finał (11)
@@ -247,8 +247,8 @@ Debiut Roku jest oceniany na podstawie początku kariery: AWARDS pokazuje osobno
 - usunięto z opisów techniczne wagi, procentowy podział algorytmów i sformułowania typu „premia” / „sensowna próba”;
 - sposób liczenia rankingów nie został zmieniony.
 
-## Osiągnięcia i kamienie milowe
-W `Statystyki → Osiągnięcia` znajdują się odznaki graczy oraz chronologiczna historia jubileuszy całego FIFA Night. Historyczne gole jubileuszowe mogą wymagać jednorazowego wskazania strzelca przez administratora, ponieważ w bazie przechowywane są sumy goli strzelców w meczu, a nie kolejność bramek.
+## Odznaki graczy i kamienie milowe
+Odznaki są częścią profilu konkretnego gracza w `Statystyki → Gracze`. Każda odznaka jest zwinięta i dopiero po rozwinięciu pokazuje opis, datę i miejsce zdobycia; osobno można rozwinąć listę odznak jeszcze niezdobytych. Globalne jubileusze całej historii FIFA Night zostały przeniesione do `AWARDS → Kamienie milowe`. Historyczne gole jubileuszowe mogą wymagać jednorazowego wskazania strzelca przez administratora, ponieważ w bazie przechowywane są sumy goli strzelców w meczu, a nie kolejność bramek.
 
 ### Live terminarz
 W aktywnym turnieju terminarz jest prezentowany według aktualnej kolejności gry, nie wyłącznie według logicznych numerów meczów. Po każdym wyniku kolejność odświeża się automatycznie; `TERAZ` wskazuje bieżące spotkanie, `NASTĘPNY` kolejny już ustalony mecz, a zablokowane pozycje czekają na rozstrzygnięcie wcześniejszych par.
@@ -258,7 +258,7 @@ Odznaki graczy obejmują także sytuacyjne wyczyny: wygrany finał po karnych, t
 
 ### Tryb TV i sterowanie urządzeniem
 
-Aplikacja rozróżnia urządzenie ze sterowaniem od urządzeń działających bez sterowania. W `⚙️ Ustawieniach` po podaniu `ADMIN_PASSWORD` można włączyć sterowanie w bieżącej sesji przeglądarki. Pełny turniej FIFA Night można utworzyć i prowadzić tylko na urządzeniu ze sterowaniem. Mecz **1 vs 1 jest wyjątkiem**: można go utworzyć, wpisać wynik i strzelców oraz zakończyć bez przejmowania sterowania. Pozostałe urządzenia podczas aktywnego turnieju domyślnie otwierają `📺 LIVE`, który odświeża się automatycznie i pokazuje aktualny mecz, kolejny mecz, strzelców oraz tabelę. Poza aktywnym turniejem publiczny ekran pozwala uruchomić 1 vs 1 oraz przeglądać statystyki, historię i AWARDS.
+Aplikacja rozróżnia urządzenie ze sterowaniem od urządzeń działających bez sterowania. W `⚙️ Ustawieniach` po podaniu `ADMIN_PASSWORD` można włączyć sterowanie w bieżącej sesji przeglądarki. Bez sterowania każdy może uruchomić i prowadzić **testowy turniej FIFA Night** oraz **oficjalny mecz 1 vs 1**. Każde 1 vs 1 jest oficjalne — niezależnie od tego, czy jest grane za kasę, czy bez stawki. Oficjalny turniej FIFA Night dla 3–8 graczy wymaga sterowania. Zmiana już rozpoczętego turnieju z testowego na oficjalny również wymaga ponownego podania `ADMIN_PASSWORD` i jednocześnie włącza sterowanie na tym urządzeniu. Pozostałe urządzenia podczas aktywnego oficjalnego turnieju otwierają widok tylko do odczytu; aktywne 1 vs 1 można prowadzić bez sterowania.
 
 W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybranymi FIFA Night Awards i ważnymi momentami z historii.
 
@@ -284,7 +284,7 @@ W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybr
 - Drzewko DE pozostaje zawsze poziome; na telefonie przewija się w bok.
 - Rundy Winners są ułożone obok siebie bez sztucznej pustej kolumny.
 - Wielki Finał jest częścią tego samego widoku i mieści się w głównym canvasie na typowym desktopie.
-- Szczęśliwy los/BYE jest oznaczony bezpośrednio przy graczu, a DE7 pokazuje też szczęśliwy los w Losers.
+- Szczęśliwy los/BYE jest oznaczony wyłącznie przy tym konkretnym meczu/rundzie, w której gracz dostał wolny los; oznaczenie nie ciągnie się za graczem dalej po drabince.
 
 ### Hotfix 25 — TV AUTO
 - w `📺 TV` dodano przełącznik `📺 LIVE / 🔄 AUTO` dla pełnych turniejów;
@@ -292,3 +292,7 @@ W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybr
 - dla Double Elimination ekran sytuacji pokazuje drzewko, a dla lig i grup — aktualną tabelę;
 - tryb AUTO jest wyłącznie prezentacją i nie zmienia kolejności meczów ani algorytmu dobierającego następne spotkanie;
 - awaryjne `Przesuń mecz na później` z Hotfix 24 pozostaje jedynym ręcznym odstępstwem od automatycznej kolejności.
+- Hotfix 27: mechanizm przesuwania został przetestowany na wszystkich obsługiwanych formatach 3–8; dodatkowo pozycje ligowe/grupowe nie odblokowują już fazy pucharowej przed zamknięciem wszystkich meczów danej tabeli.
+
+## Uproszczona nawigacja
+Główne panele poza aktywną rozgrywką to tylko `🎮 FIFA NIGHT`, `📊 STATYSTYKI`, `🏆 AWARDS` i `⚙️ USTAWIENIA`. W panelu FIFA Night wybiera się od razu wariant `1 vs 1` albo liczbę graczy `3–8` — bez dodatkowego przełącznika trybu. Historia turniejów znajduje się w `Statystyki → Historia`. Drużyny i strzelcy są zebrani razem w `Statystyki → Drużyny i strzelcy`.

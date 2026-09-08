@@ -759,8 +759,11 @@ class Database:
             conn.execute(self._sql("INSERT INTO flex_tournament_meta (tournament_id,player_count,format_key,team_pool_json,draw_json,extra_json,draw_revealed,redraw_count) VALUES (?,?,?,?,?,?,0,0)"), (tid,player_count,format_key,json.dumps(teams,ensure_ascii=False),json.dumps(draw),json.dumps(extra,ensure_ascii=False)))
         return tid
 
-    def create_duel(self, player_names: list[str], team_names: list[str], is_test: bool, stake_per_player: float = 0.0,
+    def create_duel(self, player_names: list[str], team_names: list[str], is_test: bool = False, stake_per_player: float = 0.0,
                     cash_flags: list[bool] | None = None) -> str:
+        # 1 vs 1 is always an official match. Keep the is_test argument only for
+        # backwards compatibility with older callers/API payloads.
+        is_test=False
         clean=[" ".join(str(x or "").strip().split()) for x in player_names]
         if len(clean)!=2 or any(not x for x in clean): raise ValueError("Wybierz dwóch graczy.")
         if clean[0].casefold()==clean[1].casefold(): raise ValueError("Wybierz dwóch różnych graczy.")
@@ -1112,8 +1115,16 @@ class Database:
             m=match_map.get(int(rest[0])); return m.get("winner_player_id") if m else None
         if kind == "L": return self._loser_of(match_map.get(int(rest[0])))
         if kind == "POS":
-            group,pos = rest[0],int(rest[1]); table=self._table_from_conn(conn,tid,group)
-            return table[pos-1]["player_id"] if len(table)>=pos and all(r["m"]>0 for r in table) else None
+            group,pos = rest[0],int(rest[1])
+            # Pozycja w tabeli może zasilić fazę pucharową dopiero po zamknięciu
+            # wszystkich meczów tej ligi/grupy. Sam warunek „każdy zagrał choć raz”
+            # był zbyt słaby: po awaryjnym przesunięciu meczu mógł przedwcześnie
+            # odblokować finał ligi, mimo że jeden mecz ligowy nadal czekał.
+            group_matches=[m for m in match_map.values() if str(m.get("group_name") or "")==group and str(m.get("stage") or "") in ("GROUP","LEAGUE")]
+            group_closed=bool(group_matches) and all(m.get("home_score") is not None or str(m.get("match_status") or "pending")=="skipped" for m in group_matches)
+            if not group_closed:return None
+            table=self._table_from_conn(conn,tid,group)
+            return table[pos-1]["player_id"] if len(table)>=pos else None
         if kind == "D5":
             _,extra=self._meta_extra_conn(conn,tid)
             chosen=extra.get("d5_opponent_match")
@@ -1942,7 +1953,7 @@ class Database:
         return completed+ready+locked
 
     def can_defer_match(self, tid: str, match_no: int) -> dict:
-        """Return whether an active match can be moved behind the other matches that are ready now.
+        """Return whether an active match can be moved behind the next match that is ready now.
 
         This never skips or completes the match. It only changes the preferred live play order
         stored in ``extra_json``. The option is available only when at least one different
@@ -1973,7 +1984,7 @@ class Database:
                     "next_home":nxt.get("home_name") or "?","next_away":nxt.get("away_name") or "?"}
 
     def defer_match(self, tid: str, match_no: int) -> dict:
-        """Move a ready match behind all other matches that are ready at this moment."""
+        """Move a ready match behind exactly the next playable match."""
         with self.connect() as conn:
             meta=self._fetchone(conn,"SELECT extra_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
             if not meta:
@@ -1995,12 +2006,13 @@ class Database:
                 raise ValueError("Ten mecz nie jest teraz gotowy do rozegrania.")
             if not alternatives:
                 raise ValueError("Nie ma innego gotowego meczu, który można zagrać teraz.")
-            # Remove the current match, then insert it immediately after the last match
-            # that is already ready now. Locked future matches keep their relative order.
+            # Minimal manual intervention: move the current match by exactly one playable
+            # slot. The algorithm still controls the rest of the order. If the player is
+            # still unavailable when the match comes back, it can be deferred once more.
             reordered=[no for no in base if no!=int(match_no)]
-            other_ready={int(m.get("match_no") or 0) for m in alternatives}
-            last_ready_idx=max(i for i,no in enumerate(reordered) if no in other_ready)
-            reordered.insert(last_ready_idx+1,int(match_no))
+            next_no=int(alternatives[0].get("match_no") or 0)
+            next_idx=reordered.index(next_no)
+            reordered.insert(next_idx+1,int(match_no))
             extra["match_play_order"]=reordered
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
             nxt=alternatives[0]
