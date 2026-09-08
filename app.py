@@ -289,11 +289,12 @@ def render_start():
         "tournament":"Wybierz liczbę graczy i format turnieju.",
         "duel":"Szybki mecz dwóch graczy z ręcznym wyborem drużyn.",
         "stats":"Statystyki i historia oficjalnych rozgrywek.",
+        "history":"Przeglądaj zakończone FIFA Night, wyniki i drabinki.",
         "awards":"Live rankingi rocznych FIFA Night Awards.",
     }
     hero(subtitles.get(start_view,subtitles["tournament"]))
-    cols=st.columns(5)
-    nav=[("tournament","🎮 TURNIEJ"),("duel","⚔️ 1 VS 1"),("stats","📊 STATYSTYKI"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
+    cols=st.columns(6)
+    nav=[("tournament","🎮 TURNIEJ"),("duel","⚔️ 1 VS 1"),("stats","📊 STATYSTYKI"),("history","🗂️ HISTORIA"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
     for col,(key,label) in zip(cols,nav):
         with col:
             if st.button(label,type="primary" if start_view==key else "secondary",use_container_width=True,key=f"start_nav_{key}"):
@@ -301,6 +302,8 @@ def render_start():
     render_pending_goal_milestones(compact=start_view not in ("tournament","stats"))
     if start_view=="stats":
         render_stats();return
+    if start_view=="history":
+        render_tournament_archive(readonly=False);return
     if start_view=="awards":
         render_awards();return
     if start_view=="settings":
@@ -970,34 +973,60 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str) -> str
 
 
 def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
-    """Scrollable bracket view that follows both winners and losers paths without changing match order."""
+    """One integrated Double Elimination map: Winners, Losers and Grand Final on one canvas."""
     layout=_de_bracket_layout(fmt); by_no={int(m["match_no"]):m for m in b["matches"]}; paths=_de_path_labels(fmt)
     if not layout.get("final"):
         st.info("Brak widoku drzewka dla tego formatu.");return
-    st.caption("W = zwycięzca meczu • P = przegrany. Numery M1, M2… są stałe, nawet gdy kolejność gry w terminarzu zmienia się dynamicznie.")
-    css="""
+    rounds=max(len(layout.get("wb") or []),len(layout.get("lb") or []))
+    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany • przegrany z Winners spada do Losers. Numery M1, M2… pozostają stałe.")
+    css=f"""
     <style>
-    .de-wrap{overflow-x:auto;padding:4px 2px 12px;scrollbar-width:thin}.de-lane{min-width:780px;margin:8px 0 18px}.de-lane-title{font-weight:950;font-size:1.05rem;margin:0 0 8px;letter-spacing:.02em}.de-rounds{display:flex;align-items:stretch;gap:12px}.de-round{min-width:220px;flex:1;display:flex;flex-direction:column;gap:10px;position:relative;padding-right:18px}.de-round:not(:last-child):after{content:'→';position:absolute;right:-3px;top:50%;transform:translateY(-50%);font-size:26px;font-weight:900;opacity:.45}.de-round-name{font-size:.72rem;font-weight:900;letter-spacing:.08em;opacity:.65;text-transform:uppercase;min-height:18px}.de-match{border:1px solid rgba(148,163,184,.34);border-radius:14px;padding:10px 11px;background:rgba(15,23,42,.035);box-shadow:0 2px 10px rgba(15,23,42,.04)}.de-match.current{border-width:2px}.de-match.played{opacity:.86}.de-match.locked{opacity:.58}.de-head{display:grid;grid-template-columns:auto 1fr auto;gap:6px;align-items:center;font-size:.67rem;margin-bottom:7px}.de-head span{font-weight:950}.de-head b{text-align:center;font-size:.64rem}.de-head em{font-style:normal;font-weight:900;font-size:.62rem}.de-player{font-weight:850;font-size:.88rem;line-height:1.2;min-height:18px}.de-player small{display:block;font-size:.66rem;font-weight:650;opacity:.62;margin-top:2px}.de-vs{font-size:.58rem;font-weight:900;opacity:.5;margin:2px 0}.de-path{margin-top:8px;padding-top:7px;border-top:1px dashed rgba(148,163,184,.3);font-size:.66rem;font-weight:750;opacity:.72;line-height:1.25}.de-bonus{font-size:.64rem;font-weight:850;margin-top:6px}.de-final-wrap{min-width:780px;display:flex;justify-content:center;margin:2px 0 8px}.de-final-col{width:min(360px,90%)}
+    .de-tree-scroll{{overflow-x:auto;padding:5px 2px 14px;scrollbar-width:thin}}
+    .de-tree{{display:grid;grid-template-columns:92px repeat({rounds},minmax(220px,1fr)) 280px;grid-template-rows:auto auto;gap:14px 16px;min-width:{390+rounds*235}px;align-items:stretch}}
+    .de-lane-tag{{display:flex;align-items:center;justify-content:center;border-radius:14px;font-weight:950;font-size:.72rem;letter-spacing:.08em;writing-mode:vertical-rl;transform:rotate(180deg);padding:10px 6px;border:1px solid rgba(148,163,184,.30)}}
+    .de-lane-tag.wb{{background:rgba(34,197,94,.06)}}.de-lane-tag.lb{{background:rgba(239,68,68,.05)}}
+    .de-cell{{position:relative;border-radius:16px;padding:8px;background:rgba(15,23,42,.018);border:1px dashed rgba(148,163,184,.20);min-height:124px}}
+    .de-cell:after{{content:'→';position:absolute;right:-16px;top:50%;transform:translate(50%,-50%);font-size:22px;font-weight:900;opacity:.35;z-index:2}}
+    .de-cell.last-route:after{{content:''}}
+    .de-round-name{{font-size:.68rem;font-weight:950;letter-spacing:.07em;opacity:.64;text-transform:uppercase;margin:0 0 7px;text-align:center;min-height:17px}}
+    .de-stack{{display:flex;flex-direction:column;gap:9px;justify-content:center;height:calc(100% - 23px)}}
+    .de-match{{border:1px solid rgba(148,163,184,.34);border-radius:13px;padding:9px 10px;background:rgba(15,23,42,.035);box-shadow:0 2px 8px rgba(15,23,42,.04)}}
+    .de-match.current{{border-width:2px;box-shadow:0 0 0 2px rgba(34,197,94,.12)}}.de-match.played{{opacity:.88}}.de-match.locked{{opacity:.56}}
+    .de-head{{display:grid;grid-template-columns:auto 1fr auto;gap:5px;align-items:center;font-size:.65rem;margin-bottom:6px}}.de-head span{{font-weight:950}}.de-head b{{text-align:center;font-size:.62rem}}.de-head em{{font-style:normal;font-weight:900;font-size:.60rem}}
+    .de-player{{font-weight:850;font-size:.84rem;line-height:1.18;min-height:17px}}.de-player small{{display:block;font-size:.64rem;font-weight:650;opacity:.62;margin-top:2px}}.de-vs{{font-size:.56rem;font-weight:900;opacity:.48;margin:2px 0}}
+    .de-path{{margin-top:7px;padding-top:6px;border-top:1px dashed rgba(148,163,184,.28);font-size:.63rem;font-weight:750;opacity:.74;line-height:1.23}}.de-bonus{{font-size:.62rem;font-weight:850;margin-top:5px}}
+    .de-final-cell{{display:flex;align-items:center;justify-content:center;position:relative;border-radius:18px;padding:10px;background:rgba(234,179,8,.035);border:1px dashed rgba(234,179,8,.28)}}
+    .de-final-cell:before{{content:'→';position:absolute;left:-16px;top:50%;transform:translate(-50%,-50%);font-size:24px;font-weight:900;opacity:.38}}
+    .de-final-inner{{width:100%}}.de-final-label{{font-size:.73rem;font-weight:1000;letter-spacing:.09em;text-align:center;margin-bottom:8px}}
+    .de-drop{{grid-column:1 / -1;text-align:center;font-size:.67rem;font-weight:750;opacity:.58;margin:-7px 0 -5px}}
     </style>
     """
-    chunks=[css,"<div class='de-wrap'>"]
-    for lane,title in (("wb","🌿 WINNERS BRACKET"),("lb","🩸 LOSERS BRACKET")):
-        rounds=layout[lane];chunks.append(f"<div class='de-lane'><div class='de-lane-title'>{title}</div><div class='de-rounds'>")
-        for idx,nos in enumerate(rounds):
-            chunks.append(f"<div class='de-round'><div class='de-round-name'>{_de_round_title(lane,idx,len(rounds))}</div>")
-            for no in nos:
-                m=by_no.get(no)
-                if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
-            chunks.append("</div>")
+    chunks=[css,"<div class='de-tree-scroll'><div class='de-tree'>"]
+    chunks.append("<div class='de-lane-tag wb' style='grid-column:1;grid-row:1'>🌿 WINNERS</div>")
+    for idx in range(rounds):
+        nos=layout.get("wb",[])[idx] if idx<len(layout.get("wb",[])) else []
+        last_cls=" last-route" if idx==rounds-1 else ""
+        chunks.append(f"<div class='de-cell{last_cls}' style='grid-column:{idx+2};grid-row:1'><div class='de-round-name'>{_de_round_title('wb',idx,len(layout.get('wb',[]))) if nos else ''}</div><div class='de-stack'>")
+        for no in nos:
+            m=by_no.get(no)
+            if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
         chunks.append("</div></div>")
-    chunks.append("<div class='de-final-wrap'><div class='de-final-col'><div class='de-round-name' style='text-align:center'>WIELKI FINAŁ</div>")
+    chunks.append("<div class='de-lane-tag lb' style='grid-column:1;grid-row:2'>🩸 LOSERS</div>")
+    for idx in range(rounds):
+        nos=layout.get("lb",[])[idx] if idx<len(layout.get("lb",[])) else []
+        last_cls=" last-route" if idx==rounds-1 else ""
+        chunks.append(f"<div class='de-cell{last_cls}' style='grid-column:{idx+2};grid-row:2'><div class='de-round-name'>{_de_round_title('lb',idx,len(layout.get('lb',[]))) if nos else ''}</div><div class='de-stack'>")
+        for no in nos:
+            m=by_no.get(no)
+            if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+        chunks.append("</div></div>")
+    chunks.append(f"<div class='de-final-cell' style='grid-column:{rounds+2};grid-row:1 / span 2'><div class='de-final-inner'><div class='de-final-label'>🏆 WIELKI FINAŁ</div>")
     for no in layout["final"]:
         m=by_no.get(no)
         if m: chunks.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
-    chunks.append("</div></div></div>")
+    chunks.append("</div></div></div></div>")
     st.markdown("".join(chunks),unsafe_allow_html=True)
-    st.caption("Drzewko pokazuje logiczną drogę w DE. Zakładka Lista nadal pokazuje faktyczną kolejność rozgrywania gotowych spotkań.")
-
+    st.caption("Drzewko i lista pokazują te same mecze. Lista służy do śledzenia faktycznej kolejności grania, a drzewko do prześledzenia całej drogi zawodników w DE.")
 
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];extra=b["meta"].get("extra") or {};st.subheader("📅 Terminarz")
@@ -1653,16 +1682,67 @@ def render_awards(readonly:bool=False):
         if not selected_rows:st.caption("Grafika Awards będzie uzupełniać się dopiero po wyborze laureatów przez organizatora.")
 
 
+
+def render_tournament_archive(readonly:bool=True):
+    st.subheader("🗂️ Historia turniejów")
+    show_tests=st.checkbox("Pokaż także turnieje testowe",value=False,key=f"archive_tests_{int(readonly)}")
+    rows=db.completed_tournaments(include_tests=show_tests,limit=300)
+    if not rows:
+        st.info("Nie ma jeszcze zakończonych turniejów do pokazania.")
+        return
+    by_id={str(x["id"]):x for x in rows}
+    def label(tid):
+        r=by_id[str(tid)];fmt=str(r.get("format_key") or "")
+        when=fmt_history_datetime(r.get("completed_at") or r.get("created_at"))
+        day=when.split(" ",1)[0]
+        if int(r.get("is_test") or 0): prefix="🧪 TEST"
+        elif fmt=="duel1v1": prefix="⚔️ 1 VS 1"
+        else: prefix=f"🏆 FIFA Night #{r.get('official_no') or '—'}"
+        champ=r.get("champion_name") or "—"
+        return f"{prefix} • {day} • {FORMAT_LABELS.get(fmt,fmt)} • {champ}"
+    ids=[str(x["id"]) for x in rows]
+    selected=st.selectbox("Wybierz turniej",ids,format_func=label,key=f"archive_select_{int(readonly)}")
+    if not selected:return
+    row=by_id[selected];b=db.bundle(selected);t=b.get("tournament") or row;meta=b.get("meta") or {};fmt=str(meta.get("format_key") or row.get("format_key") or "")
+    summary=db.tournament_summary(selected)
+    when=fmt_history_datetime(t.get("completed_at") or t.get("created_at"))
+    if int(t.get("is_test") or 0): badge="🧪 TURNIEJ TESTOWY"
+    elif fmt=="duel1v1": badge="⚔️ 1 VS 1"
+    else: badge=f"🏆 FIFA NIGHT #{row.get('official_no') or '—'}"
+    st.markdown(f"### {badge}")
+    st.caption(f"{when} • {FORMAT_LABELS.get(fmt,fmt)} • {int(row.get('player_count') or len(b.get('players') or []))} graczy")
+    champ=summary.get("champion") or row.get("champion_name") or "—"
+    if fmt=="duel1v1":
+        st.success(f"⚔️ **Zwycięzca: {champ}**")
+    else:
+        c1,c2,c3=st.columns(3)
+        c1.success(f"🏆 **1. {champ}**")
+        c2.info(f"🥈 **2. {summary.get('runner_up') or '—'}**")
+        third=summary.get("third_place") or {}
+        c3.info(f"🥉 **3. {third.get('name') or '—'}**")
+    players=b.get("players") or []
+    if players:
+        st.markdown("#### 👥 Uczestnicy")
+        st.caption(" • ".join(f"{p.get('name','?')} — {p.get('team') or '—'}" for p in players))
+    scorers=db.tournament_live_scorers(selected,5)
+    if scorers:
+        st.markdown("#### ⚽ Strzelcy turnieju")
+        st.caption(" • ".join(f"{x.get('name')} — {x.get('goals')}" for x in scorers))
+    st.divider()
+    render_schedule(t)
+
+
 def render_public_start():
     start_view=st.session_state.get("public_view","stats")
     hero("Tryb podglądu FIFA Night")
-    cols=st.columns(3)
-    nav=[("stats","📊 STATYSTYKI"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
+    cols=st.columns(4)
+    nav=[("stats","📊 STATYSTYKI"),("history","🗂️ HISTORIA"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
     for col,(key,label) in zip(cols,nav):
         with col:
             if st.button(label,type="primary" if start_view==key else "secondary",use_container_width=True,key=f"public_nav_{key}"):
                 st.session_state.public_view=key;rr()
-    if start_view=="awards":render_awards(readonly=True)
+    if start_view=="history":render_tournament_archive(readonly=True)
+    elif start_view=="awards":render_awards(readonly=True)
     elif start_view=="settings":render_access_settings()
     else:render_stats(readonly=True)
 
@@ -1731,12 +1811,13 @@ def render_tv_screen(tid:str):
 def render_viewer_live(t):
     title="1 vs 1" if t.get("format_key")=="duel1v1" else f"{t['player_count']} graczy"
     hero(f"{title} • {FORMAT_LABELS[t['format_key']]}")
-    opts=["📺 LIVE","📅 Terminarz","📊 Statystyki","🏆 AWARDS","⚙️ Ustawienia"]
+    opts=["📺 LIVE","📅 Terminarz","📊 Statystyki","🗂️ Historia","🏆 AWARDS","⚙️ Ustawienia"]
     view=st.segmented_control("Widok",opts,default=opts[0],key="viewer_view",label_visibility="collapsed") or opts[0]
     if view==opts[0]:render_tv_screen(t["id"])
     elif view==opts[1]:render_schedule(t)
     elif view==opts[2]:render_stats(t,readonly=True)
-    elif view==opts[3]:render_awards(readonly=True)
+    elif view==opts[3]:render_tournament_archive(readonly=True)
+    elif view==opts[4]:render_awards(readonly=True)
     else:render_access_settings()
 
 def reset_controls(t,loc):
@@ -1756,12 +1837,13 @@ def render_live(t):
     st.markdown(f'<span class="status-chip">{"🧪 TEST" if t["is_test"] else "🏆 OFICJALNY"}</span>',unsafe_allow_html=True)
     render_tournament_status_control(t,"live")
     if not int(t.get("is_test") or 0):render_pending_goal_milestones(compact=True)
-    opts=["🏠 Ekran główny","📺 TV","📅 Terminarz","📊 Statystyki","🏆 AWARDS","⚙️ Ustawienia"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
+    opts=["🏠 Ekran główny","📺 TV","📅 Terminarz","📊 Statystyki","🗂️ Historia","🏆 AWARDS","⚙️ Ustawienia"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
     if view==opts[0]:live(t["id"]);reset_controls(t,"live")
     elif view==opts[1]:render_tv_screen(t["id"])
     elif view==opts[2]:render_schedule(t)
     elif view==opts[3]:render_stats(t)
-    elif view==opts[4]:render_awards()
+    elif view==opts[4]:render_tournament_archive(readonly=False)
+    elif view==opts[5]:render_awards()
     else:render_access_settings()
 
 

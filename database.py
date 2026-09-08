@@ -2232,6 +2232,32 @@ class Database:
         return {"tournaments":ordered,"balances":balance_rows,"transfers":transfers,"total_pot_cents":total_contrib,
                 "pending_jackpot_cents":pending,"current_jackpot_cents":current_jackpot,"expanded_ids":[e["id"] for e in ordered]}
 
+    def completed_tournaments(self, include_tests: bool = False, limit: int = 200) -> list[dict]:
+        """Completed FIFA Night events for the read-only archive browser.
+
+        Official tournament numbering excludes tests and standalone 1v1, matching the
+        numbering used by summaries and milestones.
+        """
+        limit=max(1,min(500,int(limit or 200)))
+        with self.connect() as conn:
+            official=self._fetchall(conn,"""SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
+            numbers={str(r["id"]):i+1 for i,r in enumerate(official)}
+            where="WHERE t.status='completed'" if include_tests else "WHERE t.status='completed' AND t.is_test=0"
+            rows=self._fetchall(conn,f"""SELECT t.id,t.created_at,t.completed_at,t.is_test,t.champion_player_id,p.name champion_name,
+                    fm.player_count,fm.format_key
+                FROM tournaments t
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                LEFT JOIN players p ON p.id=t.champion_player_id
+                {where}
+                ORDER BY COALESCE(t.completed_at,t.created_at) DESC,t.created_at DESC,t.id DESC
+                LIMIT {limit}""")
+        out=[]
+        for r in rows:
+            item=dict(r);item["official_no"]=numbers.get(str(r.get("id")));out.append(item)
+        return out
+
     def last_completed_tournament(self) -> dict | None:
         with self.connect() as conn:
             t=self._fetchone(conn,"""SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
