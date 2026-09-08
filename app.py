@@ -944,7 +944,28 @@ def _de_round_title(lane:str, idx:int, count:int) -> str:
     return "WIELKI FINAŁ"
 
 
-def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str) -> str:
+def _de_lucky_labels(b:dict,fmt:str) -> dict[str,str]:
+    """Player badges used by the DE map for real lucky passes/BYEs."""
+    labels={}
+    meta=b.get("meta") or {}; draw=meta.get("draw") or {}; slots=draw.get("slots") or {}; extra=meta.get("extra") or {}
+    winners_bye_slots={"double5":["E"],"double6":["E","F"],"double7":["G"]}.get(fmt,[])
+    for slot in winners_bye_slots:
+        pid=slots.get(slot)
+        if pid: labels[str(pid)]="🎟️ SZCZĘŚLIWY LOS • wolny los w 1. rundzie Winners"
+    if fmt=="double7" and extra.get("d7_lb_bye_match"):
+        try:
+            lucky_no=int(extra.get("d7_lb_bye_match"))
+            mm={int(m["match_no"]):m for m in b.get("matches",[])}
+            src=mm.get(lucky_no)
+            if src and src.get("winner_player_id"):
+                loser=src.get("away_player_id") if src.get("winner_player_id")==src.get("home_player_id") else src.get("home_player_id")
+                if loser: labels[str(loser)]="🍀 SZCZĘŚLIWY LOS • wolny los w 1. rundzie Losers"
+        except Exception:
+            pass
+    return labels
+
+
+def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_labels:dict[str,str]|None=None) -> str:
     no=int(m["match_no"]); skipped=str(m.get("match_status") or "pending")=="skipped"; played=m.get("home_score") is not None
     ready=bool(m.get("home_player_id") and m.get("away_player_id")) and not played and not skipped
     if skipped: state="skipped"; badge="POMINIĘTY"
@@ -952,56 +973,64 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str) -> str
     elif cur_no==no: state="current"; badge="TERAZ"
     elif ready: state="ready"; badge="GOTOWY"
     else: state="locked"; badge="CZEKA"
+
+    lucky_labels=lucky_labels or {}
+    winner=str(m.get("winner_player_id") or "")
+    def player_html(side:str)->str:
+        pid=m.get(f"{side}_player_id")
+        if not pid:return ""
+        name=esc(m.get(f"{side}_name") or "?")
+        team=esc(m.get(f"{side}_team") or "")
+        result_cls=" winner" if played and str(pid)==winner else (" loser" if played and winner else "")
+        lucky=lucky_labels.get(str(pid))
+        lucky_html=f"<span class='lucky-pill'>{esc(lucky)}</span>" if lucky else ""
+        return f"<div class='de-player{result_cls}'><span class='de-name'>{name}</span>{f'<small>{team}</small>' if team else ''}{lucky_html}</div>"
+
     if m.get("home_player_id") and m.get("away_player_id"):
-        ht=f"<small>{esc(m.get('home_team'))}</small>" if m.get("home_team") else ""
-        at=f"<small>{esc(m.get('away_team'))}</small>" if m.get("away_team") else ""
-        h=f"{esc(m.get('home_name'))}{ht}"; a=f"{esc(m.get('away_name'))}{at}"
+        h=player_html("home"); a=player_html("away")
     else:
-        ph=source_placeholder(fmt,no)
-        parts=[x.strip() for x in ph.split("—",1)]
-        h=esc(parts[0] if parts else ph); a=esc(parts[1] if len(parts)>1 else "do ustalenia")
-    bonus="<div class='de-bonus'>⭐ Winners zaczyna finał 1:0</div>" if m.get("stage")=="FINAL" else ""
+        ph=source_placeholder(fmt,no); parts=[x.strip() for x in ph.split("—",1)]
+        h=f"<div class='de-player placeholder'><span class='de-name'>{esc(parts[0] if parts else ph)}</span></div>"
+        a=f"<div class='de-player placeholder'><span class='de-name'>{esc(parts[1] if len(parts)>1 else 'do ustalenia')}</span></div>"
+
+    bonus="<div class='de-bonus'>⭐ Winners Bracket zaczyna Wielki Finał od 1:0</div>" if m.get("stage")=="FINAL" else ""
+    # Split the path into two visually distinct directions instead of one tiny line of text.
+    path_parts=[x.strip() for x in str(path_label or "").split("•") if x.strip()]
+    path_html="".join(f"<span>{esc(x)}</span>" for x in path_parts)
     return f"""
       <div class="de-match {state}">
         <div class="de-head"><span>M{no}</span><b>{esc(stage_name(m))}</b><em>{esc(badge)}</em></div>
-        <div class="de-player">{h}</div>
+        {h}
         <div class="de-vs">VS</div>
-        <div class="de-player">{a}</div>
+        {a}
         {bonus}
-        <div class="de-path">{esc(path_label)}</div>
+        <div class="de-path">{path_html}</div>
       </div>
     """
 
 
 def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
-    """Compact, integrated Double Elimination map rendered as one real HTML canvas."""
+    """One compact left-to-right Double Elimination map. Fixed layout on every device."""
     layout=_de_bracket_layout(fmt); by_no={int(m["match_no"]):m for m in b["matches"]}; paths=_de_path_labels(fmt)
     if not layout.get("final"):
         st.info("Brak widoku drzewka dla tego formatu.");return
 
     wb=layout.get("wb") or []; lb=layout.get("lb") or []; max_rounds=max(len(wb),len(lb),1)
-    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany • przegrany z Winners spada do Losers.")
+    lucky_labels=_de_lucky_labels(b,fmt)
+    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany. Szczęśliwy los jest oznaczony bezpośrednio przy graczu.")
 
-    def distributed_positions(count:int,total:int)->list[int]:
-        if count<=0:return []
-        if count==1:return [total]
-        if count==total:return list(range(1,total+1))
-        # Spread shorter Winners routes across the same canvas without drawing empty boxes.
-        return [1+round(i*(total-1)/(count-1)) for i in range(count)]
-
-    wb_pos=distributed_positions(len(wb),max_rounds); lb_pos=distributed_positions(len(lb),max_rounds)
-
-    def lane_html(lane:str,rounds_list:list[list[int]],positions:list[int])->str:
+    def lane_html(lane:str,rounds_list:list[list[int]])->str:
         accent="#178a57" if lane=="wb" else "#c54848"
         title="WINNERS BRACKET" if lane=="wb" else "LOSERS BRACKET"
         icon="🌿" if lane=="wb" else "🩸"
         pieces=[f"<section class='lane {lane}'><div class='lane-title' style='--accent:{accent}'><span>{icon}</span>{title}</div><div class='lane-grid'>"]
+        # Keep the rounds adjacent. The previous version spread a 3-round Winners path
+        # over a 4-column Losers canvas, which visually created a fake missing round.
         for idx,nos in enumerate(rounds_list):
-            col=positions[idx]
-            pieces.append(f"<div class='round' style='grid-column:{col}'><div class='round-title'>{esc(_de_round_title(lane,idx,len(rounds_list)))}</div><div class='round-stack'>")
+            pieces.append(f"<div class='round'><div class='round-title'>{esc(_de_round_title(lane,idx,len(rounds_list)))}</div><div class='round-stack'>")
             for no in nos:
                 m=by_no.get(no)
-                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_labels))
             pieces.append("</div></div>")
         pieces.append("</div></section>")
         return "".join(pieces)
@@ -1009,57 +1038,83 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     final_html=[]
     for no in layout["final"]:
         m=by_no.get(no)
-        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,"")))
+        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_labels))
 
-    width=max(980,170+max_rounds*228+245)
-    height={"double4":610,"double5":690,"double6":760,"double7":830,"double8":900}.get(fmt,780)
+    # 4 DE rounds + Grand Final now fit inside a normal desktop viewport; phones keep
+    # the exact same left-to-right map and simply scroll horizontally.
+    col_w=174; gap=12; final_w=188
+    width=max(690,max_rounds*col_w+(max_rounds-1)*gap+final_w+72)
+    height={"double4":650,"double5":720,"double6":790,"double7":860,"double8":930}.get(fmt,800)
+    lb_lucky_note=""
+    if fmt=="double7":
+        extra=(b.get("meta") or {}).get("extra") or {}
+        if extra.get("d7_lb_bye_match"):
+            lucky_match=int(extra.get("d7_lb_bye_match"))
+            src=by_no.get(lucky_match)
+            lucky_name=""
+            if src and src.get("winner_player_id"):
+                loser=src.get("away_player_id") if src.get("winner_player_id")==src.get("home_player_id") else src.get("home_player_id")
+                pl=next((x for x in b.get("players",[]) if str(x.get("player_id"))==str(loser)),None)
+                lucky_name=(pl or {}).get("name") or "wybrany przegrany"
+            lb_lucky_note=f"<div class='lucky-note'>🍀 <b>Szczęśliwy los w Losers:</b> {esc(lucky_name)} omija pierwszy mecz eliminacyjny po spadku z Winners.</div>"
+        else:
+            lb_lucky_note="<div class='lucky-note muted'>🍀 Po 1. rundzie jeden z przegranych otrzyma szczęśliwy los w Losers.</div>"
+
     html_doc=f"""
     <!doctype html><html><head><meta charset='utf-8'><style>
     *{{box-sizing:border-box}} html,body{{margin:0;padding:0;background:transparent;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#202532}}
     .scroll{{overflow-x:auto;padding:2px 2px 12px;scrollbar-width:thin}}
-    .board{{min-width:{width}px;background:linear-gradient(180deg,#fbfcfe 0%,#f5f7fa 100%);border:1px solid #e3e7ee;border-radius:20px;padding:16px;box-shadow:0 8px 24px rgba(15,23,42,.05)}}
-    .main{{display:grid;grid-template-columns:minmax(0,1fr) 230px;gap:18px;align-items:stretch}}
-    .routes{{min-width:{max_rounds*228}px}}
-    .lane{{position:relative;padding:10px 8px 16px;border-radius:16px}}
-    .lane.wb{{background:linear-gradient(90deg,rgba(23,138,87,.045),rgba(23,138,87,.012))}}
-    .lane.lb{{background:linear-gradient(90deg,rgba(197,72,72,.045),rgba(197,72,72,.012));margin-top:18px}}
-    .lane-title{{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:12px;font-weight:950;letter-spacing:.09em;margin:0 4px 12px}}
-    .lane-title:after{{content:'';height:1px;flex:1;background:color-mix(in srgb,var(--accent) 25%,transparent)}}
-    .lane-grid{{display:grid;grid-template-columns:repeat({max_rounds},210px);column-gap:18px;align-items:center;min-height:180px}}
-    .round{{position:relative;align-self:stretch;display:flex;flex-direction:column;justify-content:center}}
-    .round:not(:last-child):after{{content:'›';position:absolute;right:-13px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#eef1f5;border:1px solid #d8dde6;color:#8a93a3;font-size:18px;font-weight:900;z-index:3}}
-    .round-title{{text-align:center;font-size:10px;font-weight:900;letter-spacing:.08em;color:#717887;text-transform:uppercase;margin-bottom:7px;min-height:14px}}
+    .board{{width:{width}px;max-width:none;background:#f8fafc;border:1px solid #e1e6ed;border-radius:18px;padding:14px;box-shadow:0 7px 22px rgba(15,23,42,.05)}}
+    .main{{display:grid;grid-template-columns:minmax(0,1fr) {final_w}px;gap:14px;align-items:stretch}}
+    .routes{{min-width:0}}
+    .lane{{position:relative;padding:10px 8px 14px;border-radius:15px;border:1px solid transparent}}
+    .lane.wb{{background:linear-gradient(90deg,#f2faf6,#f8fbfa);border-color:#dcefe5}}
+    .lane.lb{{background:linear-gradient(90deg,#fff6f6,#fbf8f8);border-color:#f0dddd;margin-top:14px}}
+    .lane-title{{display:flex;align-items:center;gap:7px;color:var(--accent);font-size:11px;font-weight:950;letter-spacing:.08em;margin:0 2px 10px}}
+    .lane-title:after{{content:'';height:1px;flex:1;background:color-mix(in srgb,var(--accent) 24%,transparent)}}
+    .lane-grid{{display:grid;grid-template-columns:repeat({max_rounds},{col_w}px);gap:{gap}px;align-items:stretch}}
+    .round{{position:relative;display:flex;flex-direction:column;justify-content:center;min-width:0}}
+    .round + .round:before{{content:'›';position:absolute;left:-17px;top:50%;transform:translateY(-50%);width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff;border:1px solid #d7dde6;color:#768091;font-size:16px;font-weight:900;z-index:4;box-shadow:0 2px 5px rgba(15,23,42,.05)}}
+    .round-title{{text-align:center;font-size:9px;font-weight:900;letter-spacing:.065em;color:#697383;text-transform:uppercase;margin-bottom:6px;min-height:22px;display:flex;align-items:flex-end;justify-content:center}}
     .round-stack{{display:flex;flex-direction:column;justify-content:center;gap:8px;height:100%}}
-    .de-match{{position:relative;background:#fff;border:1px solid #dce1e8;border-radius:12px;padding:9px 10px;box-shadow:0 3px 10px rgba(15,23,42,.055);min-height:104px}}
+    .de-match{{position:relative;background:#fff;border:1px solid #d8dee7;border-radius:11px;padding:8px 9px;box-shadow:0 3px 9px rgba(15,23,42,.05);min-height:100px}}
     .de-match.played{{border-left:4px solid #7d8797}} .de-match.current{{border:2px solid #19a463;box-shadow:0 0 0 3px rgba(25,164,99,.10)}}
-    .de-match.ready{{border-left:4px solid #e0a92d}} .de-match.locked{{opacity:.58;background:#f8f9fb}} .de-match.skipped{{opacity:.62}}
-    .de-head{{display:grid;grid-template-columns:auto 1fr auto;gap:5px;align-items:center;font-size:9px;margin-bottom:7px;color:#6f7785}}
-    .de-head span{{font-weight:1000;color:#343a46}} .de-head b{{text-align:center;font-size:9px;text-transform:uppercase}} .de-head em{{font-style:normal;font-weight:950;font-size:9px;color:#343a46}}
-    .de-player{{font-weight:850;font-size:12px;line-height:1.15;color:#242a35;white-space:normal;overflow-wrap:anywhere}}
-    .de-player small{{display:block;font-size:9px;font-weight:650;color:#7b8390;margin-top:2px}}
-    .de-vs{{font-size:8px;font-weight:900;color:#a0a6b0;margin:3px 0}}
-    .de-path{{margin-top:7px;padding-top:6px;border-top:1px dashed #e0e4ea;font-size:9px;font-weight:800;color:#757d8b;line-height:1.25}}
-    .de-bonus{{font-size:9px;font-weight:850;color:#a36d00;margin-top:5px}}
-    .drop{{display:flex;align-items:center;gap:8px;margin:8px 8px -8px;color:#8c6670;font-size:9px;font-weight:850;letter-spacing:.03em}}
-    .drop:before,.drop:after{{content:'';height:1px;background:#ead9dd;flex:1}} 
-    .final{{display:flex;flex-direction:column;justify-content:center;background:linear-gradient(180deg,#fffaf0,#fffdf7);border:1px solid #ead9a5;border-radius:16px;padding:12px;position:relative}}
-    .final:before{{content:'›';position:absolute;left:-11px;top:50%;transform:translate(-50%,-50%);width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff7da;border:1px solid #e5c863;color:#a67a00;font-size:20px;font-weight:900}}
-    .final-title{{text-align:center;font-size:12px;font-weight:1000;letter-spacing:.08em;color:#9b7200;margin-bottom:10px}}
-    .legend{{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px;font-size:9px;color:#747c89}}
-    .dot{{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}} .green{{background:#19a463}} .amber{{background:#e0a92d}} .grey{{background:#7d8797}}
-    @media(max-width:700px){{.board{{padding:10px}}.main{{gap:12px}}}}
+    .de-match.ready{{border-left:4px solid #e0a92d}} .de-match.locked{{opacity:.58;background:#f7f9fb}} .de-match.skipped{{opacity:.62}}
+    .de-head{{display:grid;grid-template-columns:auto 1fr auto;gap:4px;align-items:center;font-size:8px;margin-bottom:6px;color:#6f7785}}
+    .de-head span{{font-weight:1000;color:#343a46}} .de-head b{{text-align:center;font-size:8px;text-transform:uppercase}} .de-head em{{font-style:normal;font-weight:950;font-size:8px;color:#343a46}}
+    .de-player{{border-radius:8px;padding:3px 4px;margin:-1px -3px;color:#242a35;line-height:1.1}}
+    .de-player.winner{{background:#eef9f3}} .de-player.loser{{opacity:.68}}
+    .de-name{{display:block;font-weight:900;font-size:11px;overflow-wrap:anywhere}}
+    .de-player small{{display:block;font-size:8px;font-weight:650;color:#7b8390;margin-top:2px;overflow-wrap:anywhere}}
+    .de-player.placeholder{{background:#f4f6f8;color:#697383}}
+    .de-vs{{font-size:7px;font-weight:900;color:#a0a6b0;margin:2px 3px}}
+    .lucky-pill{{display:inline-block;margin-top:4px;padding:3px 5px;border-radius:999px;background:#fff4bf;border:1px solid #edd16b;color:#825f00;font-size:7px;font-weight:950;line-height:1.15}}
+    .de-path{{margin-top:6px;padding-top:5px;border-top:1px dashed #e0e4ea;display:flex;gap:4px;flex-wrap:wrap}}
+    .de-path span{{padding:2px 4px;border-radius:5px;background:#f2f4f7;font-size:7px;font-weight:850;color:#697383;line-height:1.2}}
+    .de-bonus{{font-size:7px;font-weight:900;color:#9a6b00;background:#fff8df;border-radius:6px;padding:4px 5px;margin-top:4px}}
+    .drop{{display:flex;align-items:center;gap:7px;margin:7px 7px -7px;color:#945d68;font-size:8px;font-weight:900;letter-spacing:.02em}}
+    .drop:before,.drop:after{{content:'';height:1px;background:#ead9dd;flex:1}}
+    .lucky-note{{margin:9px 8px 0;padding:6px 8px;border:1px solid #ecd47b;background:#fff9df;border-radius:9px;color:#785a00;font-size:8px;line-height:1.3}}
+    .lucky-note.muted{{color:#8b7a40;background:#fffdf2}}
+    .final{{display:flex;flex-direction:column;justify-content:center;align-self:stretch;background:linear-gradient(180deg,#fff8df,#fffdf5);border:1px solid #e5c85e;border-radius:15px;padding:10px;position:relative;box-shadow:inset 0 0 0 1px rgba(255,255,255,.7)}}
+    .final:before{{content:'›';position:absolute;left:-8px;top:50%;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:#fff5c8;border:1px solid #dfbd40;color:#9a7000;font-size:18px;font-weight:900;z-index:5}}
+    .final-title{{text-align:center;font-size:11px;font-weight:1000;letter-spacing:.07em;color:#8f6800;margin-bottom:8px}}
+    .final .de-match{{border-color:#dfc36a;box-shadow:0 4px 12px rgba(135,98,0,.10)}}
+    .legend{{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;font-size:8px;color:#747c89}}
+    .dot{{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:3px}} .green{{background:#19a463}} .amber{{background:#e0a92d}} .grey{{background:#7d8797}}
+    @media(max-width:700px){{.board{{padding:10px}}}}
     </style></head><body>
     <div class='scroll'><div class='board'><div class='main'><div class='routes'>
-    {lane_html('wb',wb,wb_pos)}
+    {lane_html('wb',wb)}
     <div class='drop'>↓ przegrani z Winners trafiają do Losers ↓</div>
-    {lane_html('lb',lb,lb_pos)}
+    {lb_lucky_note}
+    {lane_html('lb',lb)}
     </div><aside class='final'><div class='final-title'>🏆 WIELKI FINAŁ</div>{''.join(final_html)}</aside></div>
-    <div class='legend'><span><i class='dot green'></i>TERAZ</span><span><i class='dot amber'></i>GOTOWY</span><span><i class='dot grey'></i>ROZEGRANY</span><span>W → dalej po wygranej</span><span>P → dalej po porażce</span></div>
+    <div class='legend'><span><i class='dot green'></i>TERAZ</span><span><i class='dot amber'></i>GOTOWY</span><span><i class='dot grey'></i>ROZEGRANY</span><span>🎟️ / 🍀 szczęśliwy los</span></div>
     </div></div></body></html>
     """
-    components.html(html_doc,height=height,scrolling=False)
+    components.html(html_doc,height=height,scrolling=True)
     st.caption("Drzewko pokazuje logiczną drogę przez DE. Faktyczną kolejność grania nadal najlepiej śledzić w widoku Lista.")
-
 
 def _render_match_scorer_details(tid:str,m:dict,no:int):
     """Expandable match details used in both the live schedule and tournament archive."""
