@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -107,6 +108,108 @@ def controller_access() -> bool:
     """Whether this browser session may change tournament data."""
     return bool(st.session_state.get("_controller_access",False))
 
+
+def fifa_night_api_url() -> str:
+    value = str(os.getenv("FIFA_NIGHT_API_URL") or "").strip()
+    if value:
+        return value.rstrip("/")
+    try:
+        value = str(st.secrets.get("FIFA_NIGHT_API_URL") or "").strip()
+    except Exception:
+        value = ""
+    return value.rstrip("/")
+
+
+def render_vision_ocr_test():
+    st.divider()
+    st.markdown("### 🧪 Test odczytu EA FC — Google OCR")
+    st.caption("Prototyp: wysyła 1–2 zdjęcia do FastAPI na Renderze i pokazuje surowy tekst z Google Cloud Vision. Nic nie zapisuje do Neona.")
+    if not controller_access():
+        st.info("Włącz sterowanie na tym urządzeniu, aby korzystać z testu OCR.")
+        return
+    if not admin_password():
+        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets.")
+        return
+
+    default_url = fifa_night_api_url()
+    api_url = st.text_input(
+        "Adres FastAPI na Renderze",
+        value=default_url,
+        placeholder="https://twoje-fifa-night-api.onrender.com",
+        key="vision_test_api_url",
+    ).strip().rstrip("/")
+    st.caption("Adres Rendera nie jest sekretem. Później możemy zapisać go jako FIFA_NIGHT_API_URL w Streamlit Secrets.")
+
+    uploaded = st.file_uploader(
+        "Dodaj 1 albo 2 zdjęcia ekranu EA FC",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="vision_test_images",
+    )
+    if uploaded:
+        if len(uploaded) > 2:
+            st.warning("Do testu zostaną użyte tylko pierwsze 2 zdjęcia.")
+        cols = st.columns(min(2, len(uploaded[:2])))
+        for col, item in zip(cols, uploaded[:2]):
+            with col:
+                st.image(item, caption=item.name, use_container_width=True)
+
+    go = st.button("🔍 ANALIZUJ OCR", type="primary", use_container_width=True, key="vision_test_go")
+    if not go:
+        return
+    if not api_url:
+        st.error("Wpisz adres FastAPI na Renderze.")
+        return
+    files = uploaded[:2] if uploaded else []
+    if not files:
+        st.error("Dodaj co najmniej jedno zdjęcie.")
+        return
+
+    multipart = []
+    for item in files:
+        mime = item.type or "image/jpeg"
+        multipart.append(("images", (item.name, item.getvalue(), mime)))
+
+    started = time.perf_counter()
+    with st.spinner("Google Vision odczytuje ekran EA FC..."):
+        try:
+            response = requests.post(
+                f"{api_url}/api/v1/vision/test-scan",
+                files=multipart,
+                headers={"X-Admin-Password": admin_password()},
+                timeout=45,
+            )
+        except requests.RequestException as exc:
+            st.error(f"Nie udało się połączyć z FastAPI: {exc}")
+            return
+    roundtrip = time.perf_counter() - started
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+    if not response.ok:
+        detail = data.get("detail") if isinstance(data, dict) else response.text[:500]
+        st.error(f"Błąd API ({response.status_code}): {detail}")
+        return
+
+    st.success(f"OCR zakończony • cały request: {roundtrip:.2f} s • Google Vision: {int(data.get('processing_time_ms') or 0)/1000:.2f} s")
+    st.caption("Koszt Google Vision przy obecnym miesięcznym wolumenie testów powinien mieścić się w darmowym limicie; ten ekran na razie nie liczy kosztu z billingu Google.")
+    for image in data.get("images") or []:
+        st.markdown(f"#### Zdjęcie {image.get('image_index')} — {image.get('filename')}")
+        if image.get("google_error"):
+            st.error(str(image.get("google_error")))
+        raw = str(image.get("raw_text") or "").strip()
+        if raw:
+            st.text_area(
+                "Surowy tekst OCR",
+                value=raw,
+                height=260,
+                key=f"vision_raw_{image.get('image_index')}_{len(raw)}",
+            )
+            st.caption(f"Wykryte elementy tekstowe: {image.get('detected_items', 0)}")
+        else:
+            st.warning("Google Vision nie odczytał tekstu z tego zdjęcia.")
+
 def render_access_settings():
     st.subheader("⚙️ Ustawienia dostępu")
     if controller_access():
@@ -137,6 +240,8 @@ def render_access_settings():
             else:
                 st.error("Nieprawidłowe hasło.")
         st.caption("Dostęp jest zapamiętany w bieżącej sesji przeglądarki. Po zamknięciu sesji, ponownym otwarciu aplikacji lub jej wybudzeniu może być potrzebne ponowne wpisanie hasła.")
+    render_vision_ocr_test()
+
 
 def render_history_admin():
     st.markdown("### 🔐 Historia i baza")
