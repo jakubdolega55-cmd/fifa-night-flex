@@ -296,3 +296,18 @@ W profilu gracza znajduje się także `🏆 Gablota` z trofeami, odznakami, wybr
 
 ## Uproszczona nawigacja
 Główne panele poza aktywną rozgrywką to tylko `🎮 FIFA NIGHT`, `📊 STATYSTYKI`, `🏆 AWARDS` i `⚙️ USTAWIENIA`. W panelu FIFA Night wybiera się od razu wariant `1 vs 1` albo liczbę graczy `3–8` — bez dodatkowego przełącznika trybu. Historia turniejów znajduje się w `Statystyki → Historia`. Drużyny i strzelcy są zebrani razem w `Statystyki → Drużyny i strzelcy`.
+
+### Hotfix 29 — oficjalny FIFA Night zakończony przed końcem
+
+Oficjalnego turnieju 3–8 graczy nie trzeba już ani dogrywać do końca, ani resetować, jeśli wieczór kończy się wcześniej. Na ekranie aktywnego oficjalnego turnieju organizator ma opcję `⏹️ Zakończ FIFA Night jako niedokończony`.
+
+Po takim zamknięciu:
+- wszystkie faktycznie rozegrane mecze pozostają oficjalne i liczą się do statystyk graczy, H2H, rekordów, statystyk drużyn, strzelców, Awards, odznak meczowych i globalnych kamieni milowych;
+- nierozgrane spotkania nie dostają sztucznych wyników i w historii są oznaczone jako `NIE ROZEGRANO`;
+- turniej zostaje w `Statystyki → Historia` jako `NIEDOKOŃCZONY` i zachowuje swój numer FIFA Night;
+- nie ma mistrza, podium, tytułu ani rozliczenia finansowego/jackpotu;
+- nie można go później wznowić — jest zamkniętym wpisem historycznym.
+
+`Reset bieżącego turnieju` nadal usuwa cały bieżący turniej razem z rozegranymi wynikami i służy do sytuacji, w których danych nie chcemy zachowywać.
+
+Przy okazji `AWARDS → Kamienie milowe → Oś historii` nie używa już przewijanej tabeli. Wpisy są grupowane po dacie (`DD-MM-RRRR`) w rozwijanych sekcjach, a pod datą pokazana jest pełna lista kamieni milowych z danego dnia — bez limitu 10/15 pozycji.

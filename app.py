@@ -195,17 +195,19 @@ def render_history_admin():
     last=db.last_completed_tournament()
     if last:
         fmt=FORMAT_LABELS.get(last.get("format_key"),"Klasyczny turniej 6-osobowy")
-        st.caption(f"Ostatni turniej: {last.get('player_count','?')} graczy • {fmt} • mistrz: {last.get('champion_name') or '?'}")
+        unfinished=str(last.get("status") or "")=="abandoned"
+        ending="niedokończony" if unfinished else f"mistrz: {last.get('champion_name') or '?'}"
+        st.caption(f"Ostatni turniej: {last.get('player_count','?')} graczy • {fmt} • {ending}")
         with st.form("delete_last_history"):
             pwd=st.text_input("Hasło administratora",type="password",key="del_last_pwd")
-            yes=st.checkbox("Tak, usuń ostatni zakończony turniej nietestowy")
+            yes=st.checkbox("Tak, usuń ostatni zamknięty turniej nietestowy")
             go=st.form_submit_button("🗑️ USUŃ OSTATNI TURNIEJ",use_container_width=True)
         if go:
             if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
             elif not yes: st.error("Zaznacz potwierdzenie.")
             else:
                 deleted=db.delete_last_completed_tournament();st.success("Ostatni turniej został usunięty." if deleted else "Brak turnieju do usunięcia.");rr()
-    else: st.caption("Brak zakończonych turniejów nietestowych do usunięcia.")
+    else: st.caption("Brak zamkniętych turniejów nietestowych do usunięcia.")
     with st.form("clear_all_history"):
         pwd=st.text_input("Hasło administratora",type="password",key="clear_all_pwd")
         confirm=st.text_input("Wpisz USUŃ HISTORIĘ")
@@ -1045,11 +1047,12 @@ def _de_lucky_match_labels(b:dict,fmt:str) -> dict[int,dict[str,str]]:
     return labels
 
 
-def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_labels:dict[str,str]|None=None) -> str:
+def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_labels:dict[str,str]|None=None,abandoned:bool=False) -> str:
     no=int(m["match_no"]); skipped=str(m.get("match_status") or "pending")=="skipped"; played=m.get("home_score") is not None
     ready=bool(m.get("home_player_id") and m.get("away_player_id")) and not played and not skipped
     if skipped: state="skipped"; badge="POMINIĘTY"
     elif played: state="played"; badge=result_text(m)
+    elif abandoned: state="locked"; badge="NIE ROZEGRANO"
     elif cur_no==no: state="current"; badge="TERAZ"
     elif ready: state="ready"; badge="GOTOWY"
     else: state="locked"; badge="CZEKA"
@@ -1097,6 +1100,7 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
 
     wb=layout.get("wb") or []; lb=layout.get("lb") or []; max_rounds=max(len(wb),len(lb),1)
     lucky_by_match=_de_lucky_match_labels(b,fmt)
+    abandoned=str(t.get("status") or "")=="abandoned"
     st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany. Szczęśliwy los jest oznaczony tylko przy meczu, do którego gracz wszedł dzięki wolnemu losowi.")
 
     def lane_html(lane:str,rounds_list:list[list[int]])->str:
@@ -1110,7 +1114,7 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
             pieces.append(f"<div class='round'><div class='round-title'>{esc(_de_round_title(lane,idx,len(rounds_list)))}</div><div class='round-stack'>")
             for no in nos:
                 m=by_no.get(no)
-                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{})))
+                if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{}),abandoned))
             pieces.append("</div></div>")
         pieces.append("</div></section>")
         return "".join(pieces)
@@ -1118,7 +1122,7 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     final_html=[]
     for no in layout["final"]:
         m=by_no.get(no)
-        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{})))
+        if m:final_html.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{}),abandoned))
 
     # 4 DE rounds + Grand Final now fit inside a normal desktop viewport; phones keep
     # the exact same left-to-right map and simply scroll horizontally.
@@ -1203,14 +1207,15 @@ def _render_match_scorer_details(tid:str,m:dict,no:int):
 
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];extra=b["meta"].get("extra") or {};st.subheader("📅 Terminarz")
-    cur=db.current_match_from(b["matches"],extra)
+    abandoned=str(t.get("status") or "")=="abandoned"
+    cur=None if abandoned else db.current_match_from(b["matches"],extra)
     cur_no=int(cur["match_no"]) if cur else None
     if fmt in DE_FORMATS:
         view=st.segmented_control("Widok terminarza",["📋 Lista","🌳 Drzewko"],default="📋 Lista",key=f"de_schedule_view_{t['id']}",label_visibility="collapsed") or "📋 Lista"
         if view=="🌳 Drzewko":
             render_de_bracket(t,b,fmt,cur_no);return
     matches=db.live_schedule_from(b["matches"],extra)
-    ready_pending=[m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
+    ready_pending=[] if abandoned else [m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
     next_no=int(ready_pending[1]["match_no"]) if len(ready_pending)>1 and cur_no is not None and int(ready_pending[0]["match_no"])==cur_no else None
     if cur_no is not None:
         st.caption("Kolejność jest aktualizowana po każdym wyniku. Gotowe mecze są ustawiane zgodnie z faktyczną kolejnością gry, a zablokowane spotkania przesuwają się po ustaleniu uczestników.")
@@ -1227,11 +1232,12 @@ def render_schedule(t):
             names=f"{esc(m['home_name'])} — {esc(m['away_name'])}"
             if skipped:result="POMINIĘTY";icon="⏭️";live_tag=" • POMINIĘTY"
             elif played:result=result_text(m);icon="✅";live_tag=""
+            elif abandoned:result="NIE ROZEGRANO";icon="⚪";live_tag=""
             elif no==cur_no:result="—";icon="▶️";live_tag=" • TERAZ"
             elif no==next_no:result="—";icon="⏭️";live_tag=" • NASTĘPNY"
             else:result="—";icon="⏳";live_tag=" • GOTOWY" if ready else ""
         else:
-            names=source_placeholder(fmt,no);result="—";icon="🔒";live_tag=" • CZEKA NA ROZSTRZYGNIĘCIE"
+            names=source_placeholder(fmt,no);result=("NIE ROZEGRANO" if abandoned else "—");icon=("⚪" if abandoned else "🔒");live_tag=("" if abandoned else " • CZEKA NA ROZSTRZYGNIĘCIE")
         bonus=" • START 1:0 DLA WINNERS" if fmt in ("double4","double5","double6","double7","double8") and m["stage"]=="FINAL" else ""
         tags=milestone_by_match.get(no,[])
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
@@ -1243,10 +1249,10 @@ def render_schedule(t):
 
 def render_stats(t=None,readonly:bool=False):
     st.subheader("📊 Statystyki wszech czasów")
-    st.caption("Oficjalne mecze, turnieje i 1 vs 1. Mecze 1v1 liczą się do statystyk meczowych, ale nie do tytułów i finałów.")
+    st.caption("Oficjalne mecze, turnieje i 1 vs 1. Rozegrane mecze z niedokończonego oficjalnego turnieju nadal liczą się do statystyk meczowych i Awards, ale taki turniej nie daje mistrza, podium ani tytułu.")
     stats=db.all_time_stats()
     if not stats:
-        st.info("Brak zakończonych oficjalnych rozgrywek. Historia testów nadal jest dostępna poniżej.")
+        st.info("Brak rozegranych oficjalnych meczów. Historia testów nadal jest dostępna poniżej.")
         render_tournament_archive(readonly=readonly)
         return
     tab1,tab_records,tab_players,tab_misc,tab_finance,tab_history=st.tabs(["🏆 Ranking","🏛️ Rekordy","👤 Gracze","⚽ Drużyny i strzelcy","💸 Rozliczenia","🗂️ Historia"])
@@ -1595,13 +1601,21 @@ def render_global_milestones(readonly:bool=False):
     timeline=ms.get("timeline") or []
     if timeline:
         st.markdown("#### 💎 Oś historii")
-        rows=[]
+        grouped={}
         for x in reversed(timeline):
             when=fmt_history_datetime(x.get("earned_at"))
-            where=(f"FIFA Night #{x.get('tournament_no')}" if x.get("tournament_no") else "")
-            if x.get("match_no") is not None:where+=(" • " if where else "")+f"mecz {x.get('match_no')}"
-            rows.append({"Data i godzina":when,"Kamień milowy":f"{x['icon']} {x['title']}","Gdzie":where or "—","Co się wydarzyło":x.get("detail") or "—"})
-        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+            day,time=(when.split(" ",1)+[""])[:2] if " " in when else (when,"")
+            day=(day or "—").replace(".","-")
+            grouped.setdefault(day,[]).append((time,x))
+        for idx,(day,items) in enumerate(grouped.items()):
+            with st.expander(f"📅 {day}",expanded=(idx==0)):
+                for tm,x in items:
+                    where=(f"FIFA Night #{x.get('tournament_no')}" if x.get("tournament_no") else "")
+                    if x.get("match_no") is not None:where+=(" • " if where else "")+f"mecz {x.get('match_no')}"
+                    place=f" • {where}" if where else ""
+                    detail=f" — {x.get('detail')}" if x.get("detail") else ""
+                    clock=f"**{tm}** • " if tm else ""
+                    st.markdown(f"- {clock}{x.get('icon','💎')} **{x.get('title','Kamień milowy')}**{place}{detail}")
     else:
         st.info("Pierwsze kamienie milowe pojawią się po rozegraniu oficjalnych spotkań.")
     if ms.get("pending_goal_scorers") and not readonly:
@@ -1622,7 +1636,7 @@ def render_awards(readonly:bool=False):
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🏆 Turnieje",overview.get("tournaments",0));c2.metric("⚔️ 1v1",overview.get("duels",0));c3.metric("🎮 Mecze",overview.get("matches",0));c4.metric("⚽ Gole",overview.get("goals",0));c5.metric("👥 Gracze",overview.get("players",0))
     if not cats:
-        st.warning(f"Brak zakończonych oficjalnych rozgrywek w {year} roku.")
+        st.warning(f"Brak wystarczających oficjalnych danych do Awards w {year} roku.")
         return
 
     award_cats=[c for c in cats if c.get("award")]
@@ -1878,38 +1892,41 @@ def render_tournament_archive(readonly:bool=True):
     show_tests=st.checkbox("Pokaż także turnieje testowe",value=False,key=f"archive_tests_{int(readonly)}")
     rows=db.completed_tournaments(include_tests=show_tests,limit=300)
     if not rows:
-        st.info("Nie ma jeszcze zakończonych turniejów do pokazania.")
+        st.info("Nie ma jeszcze zapisanych rozgrywek do pokazania.")
         return
     by_id={str(x["id"]):x for x in rows}
     def label(tid):
-        r=by_id[str(tid)];fmt=str(r.get("format_key") or "")
-        when=fmt_history_datetime(r.get("completed_at") or r.get("created_at"))
-        day=when.split(" ",1)[0]
-        if int(r.get("is_test") or 0): prefix="🧪 TEST"
-        elif fmt=="duel1v1": prefix="⚔️ 1 VS 1"
-        else: prefix=f"🏆 FIFA Night #{r.get('official_no') or '—'}"
-        champ=r.get("champion_name") or "—"
+        r=by_id[str(tid)];fmt=str(r.get("format_key") or "");unfinished=str(r.get("status") or "")=="abandoned"
+        when=fmt_history_datetime(r.get("completed_at") or r.get("created_at"));day=when.split(" ",1)[0]
+        if int(r.get("is_test") or 0):prefix="🧪 TEST"
+        elif fmt=="duel1v1":prefix="⚔️ 1 VS 1"
+        elif unfinished:prefix=f"⚠️ FIFA Night #{r.get('official_no') or '—'} • NIEDOKOŃCZONY"
+        else:prefix=f"🏆 FIFA Night #{r.get('official_no') or '—'}"
+        champ=("bez mistrza" if unfinished else (r.get("champion_name") or "—"))
         return f"{prefix} • {day} • {FORMAT_LABELS.get(fmt,fmt)} • {champ}"
     ids=[str(x["id"]) for x in rows]
     selected=st.selectbox("Wybierz turniej",ids,format_func=label,key=f"archive_select_{int(readonly)}")
     if not selected:return
     row=by_id[selected];b=db.bundle(selected);t=b.get("tournament") or row;meta=b.get("meta") or {};fmt=str(meta.get("format_key") or row.get("format_key") or "")
-    summary=db.tournament_summary(selected)
+    unfinished=str(t.get("status") or row.get("status") or "")=="abandoned"
     when=fmt_history_datetime(t.get("completed_at") or t.get("created_at"))
-    if int(t.get("is_test") or 0): badge="🧪 TURNIEJ TESTOWY"
-    elif fmt=="duel1v1": badge="⚔️ 1 VS 1"
-    else: badge=f"🏆 FIFA NIGHT #{row.get('official_no') or '—'}"
+    if int(t.get("is_test") or 0):badge="🧪 TURNIEJ TESTOWY"
+    elif fmt=="duel1v1":badge="⚔️ 1 VS 1"
+    elif unfinished:badge=f"⚠️ FIFA NIGHT #{row.get('official_no') or '—'} • NIEDOKOŃCZONY"
+    else:badge=f"🏆 FIFA NIGHT #{row.get('official_no') or '—'}"
     st.markdown(f"### {badge}")
     st.caption(f"{when} • {FORMAT_LABELS.get(fmt,fmt)} • {int(row.get('player_count') or len(b.get('players') or []))} graczy")
-    champ=summary.get("champion") or row.get("champion_name") or "—"
-    if fmt=="duel1v1":
-        st.success(f"⚔️ **Zwycięzca: {champ}**")
+    matches=b.get("matches") or [];played=sum(1 for m in matches if m.get("home_score") is not None);skipped=sum(1 for m in matches if str(m.get("match_status") or "pending")=="skipped")
+    if unfinished:
+        st.warning(f"Turniej zakończono przed końcem. Rozegrano **{played}** z {len(matches)} zaplanowanych meczów"+(f" • pominięto {skipped}" if skipped else "")+". Rozegrane wyniki i strzelcy pozostają w oficjalnych statystykach oraz danych do Awards. Ten turniej nie ma mistrza, podium, tytułu ani rozliczenia.")
     else:
-        c1,c2,c3=st.columns(3)
-        c1.success(f"🏆 **1. {champ}**")
-        c2.info(f"🥈 **2. {summary.get('runner_up') or '—'}**")
-        third=summary.get("third_place") or {}
-        c3.info(f"🥉 **3. {third.get('name') or '—'}**")
+        summary=db.tournament_summary(selected)
+        champ=summary.get("champion") or row.get("champion_name") or "—"
+        if fmt=="duel1v1":
+            st.success(f"⚔️ **Zwycięzca: {champ}**")
+        else:
+            c1,c2,c3=st.columns(3);c1.success(f"🏆 **1. {champ}**");c2.info(f"🥈 **2. {summary.get('runner_up') or '—'}**")
+            third=summary.get("third_place") or {};c3.info(f"🥉 **3. {third.get('name') or '—'}**")
     players=b.get("players") or []
     if players:
         st.markdown("#### 👥 Uczestnicy")
@@ -1918,8 +1935,7 @@ def render_tournament_archive(readonly:bool=True):
     if scorers:
         st.markdown("#### ⚽ Strzelcy turnieju")
         st.caption(" • ".join(f"{x.get('name')} — {x.get('goals')}" for x in scorers))
-    st.divider()
-    render_schedule(t)
+    st.divider();render_schedule(t)
 
 
 def render_public_start():
@@ -2068,9 +2084,27 @@ def render_viewer_live(t):
     else:render_access_settings()
 
 def reset_controls(t,loc):
-    if t.get("status")=="completed": return
+    if t.get("status") in ("completed","abandoned"): return
     st.divider()
+    is_official=not int(t.get("is_test") or 0)
+    is_tournament=str(t.get("format_key") or "")!="duel1v1"
+    if is_official and is_tournament:
+        with st.expander("⏹️ Zakończ FIFA Night jako niedokończony"):
+            st.caption("Użyj tego, gdy oficjalny turniej kończy się wcześniej i nie będziecie do niego wracać. Rozegrane mecze, gole, strzelcy, H2H i dane do Awards zostają w historii. Nie ma mistrza, podium, tytułu ani rozliczenia tego turnieju.")
+            with st.form(f"abandon_{loc}_{t['id']}"):
+                yes=st.checkbox("Tak, kończymy ten oficjalny FIFA Night bez rozgrywania pozostałych meczów")
+                go=st.form_submit_button("⏹️ ZAKOŃCZ JAKO NIEDOKOŃCZONY",use_container_width=True)
+            if go:
+                if not yes:st.error("Najpierw zaznacz potwierdzenie.")
+                else:
+                    try:
+                        result=db.abandon_tournament(t["id"])
+                        official_player_names_cached.clear();tournament_summary_png_cached.clear()
+                        st.success(f"FIFA Night zapisany jako niedokończony. Zachowano {result.get('played',0)} rozegranych meczów.")
+                        rr()
+                    except ValueError as e:st.error(str(e))
     with st.expander("🔄 Reset bieżącego turnieju"):
+        st.caption("Reset usuwa cały bieżący turniej razem z rozegranymi wynikami. Do oficjalnego turnieju, którego statystyki chcesz zachować, użyj opcji powyżej.")
         with st.form(f"reset_{loc}_{t['id']}"):
             yes=st.checkbox("Tak, usuń bieżący turniej");go=st.form_submit_button("Usuń i zacznij od nowa",use_container_width=True)
         if go:

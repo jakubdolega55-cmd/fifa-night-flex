@@ -339,14 +339,18 @@ class Database:
         return changed
 
     def official_player_names(self) -> list[str]:
-        """Nicki graczy, którzy wystąpili w co najmniej jednym zakończonym turnieju nietestowym."""
+        """Nicki graczy z co najmniej jednej zamkniętej oficjalnej rozgrywki.
+
+        Obejmuje także rozegrane części oficjalnych turniejów zamkniętych jako
+        niedokończone; testy pozostają wykluczone.
+        """
         with self.connect() as conn:
             rows = self._fetchall(conn, """
                 SELECT DISTINCT p.name
                 FROM players p
                 JOIN tournament_players tp ON tp.player_id = p.id
                 JOIN tournaments t ON t.id = tp.tournament_id
-                WHERE t.status='completed' AND t.is_test=0
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
                 ORDER BY p.name
             """)
             return [str(r["name"]) for r in rows if r.get("name")]
@@ -646,7 +650,7 @@ class Database:
             FROM matches m JOIN tournaments t ON t.id=m.tournament_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-            WHERE t.status='completed' AND t.is_test=0 AND m.home_score IS NOT NULL
+            WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
         """)
         stats=defaultdict(lambda:{"m":0,"points":0.0,"gf":0,"ga":0})
         for r in rows:
@@ -676,7 +680,7 @@ class Database:
                 FROM matches m JOIN tournaments t ON t.id=m.tournament_id
                 LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
                 LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-                WHERE t.status='completed' AND t.is_test=0 AND m.home_score IS NOT NULL
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
             """)
         agg=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
         for r in rows:
@@ -1604,11 +1608,11 @@ class Database:
             rows=self._fetchall(conn,"""SELECT ms.normalized_scorer,MIN(ms.scorer_name) AS scorer_name,SUM(ms.goals) AS goals,
                     COUNT(DISTINCT ms.tournament_id||':'||ms.match_no) AS matches_scored
                 FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
-                WHERE t.status='completed' AND t.is_test=0
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
                 GROUP BY ms.normalized_scorer ORDER BY goals DESC,matches_scored DESC,scorer_name""")
             teams=self._fetchall(conn,"""SELECT ms.normalized_scorer,ms.team_name,SUM(ms.goals) AS goals
                 FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
-                WHERE t.status='completed' AND t.is_test=0
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
                 GROUP BY ms.normalized_scorer,ms.team_name ORDER BY goals DESC""")
         by=defaultdict(list)
         for r in teams: by[r["normalized_scorer"]].append((r["team_name"],int(r["goals"])))
@@ -1621,7 +1625,7 @@ class Database:
             LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-            WHERE t.status='completed' AND t.is_test=0 AND m.home_score IS NOT NULL"""
+            WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL"""
         params=()
         if exclude_tid:
             sql += " AND m.tournament_id<>?"; params=(exclude_tid,)
@@ -1684,18 +1688,19 @@ class Database:
         if not matches:return {}
         tids=sorted({m["tournament_id"] for m in matches})
         qmarks=','.join('?' for _ in tids)
-        trs=self._fetchall(conn,f"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+        trs=self._fetchall(conn,f"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
             FROM tournaments t LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
             WHERE t.id IN ({qmarks}) ORDER BY COALESCE(t.completed_at,t.created_at)""",tuple(tids))
         tournament_ids={str(r["id"]) for r in trs if str(r.get("format_key") or "")!='duel1v1'}
+        completed_tournament_ids={str(r["id"]) for r in trs if str(r.get("format_key") or "")!='duel1v1' and str(r.get("status") or "")=="completed"}
         tps=self._fetchall(conn,f"SELECT tournament_id,player_id FROM tournament_players WHERE tournament_id IN ({qmarks})",tuple(tids))
         players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
-        finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in tournament_ids]
+        finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in completed_tournament_ids]
         ps=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
         for tp in tps:
             if str(tp["tournament_id"]) in tournament_ids: ps[tp["player_id"]]["tournaments"]+=1
         for t in trs:
-            if str(t["id"]) in tournament_ids and t.get("champion_player_id"): ps[t["champion_player_id"]]["titles"]+=1
+            if str(t["id"]) in completed_tournament_ids and t.get("champion_player_id"): ps[t["champion_player_id"]]["titles"]+=1
         for m in finals:
             for pid in (m.get("home_player_id"),m.get("away_player_id")):
                 if pid: ps[pid]["finals"]+=1
@@ -1888,7 +1893,7 @@ class Database:
             if not int(t.get("is_test") or 0):
                 rows=self._fetchall(conn,"""
                     SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                    WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                    WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                     ORDER BY COALESCE(t.completed_at,t.created_at), t.created_at, t.id
                 """)
                 for i,row in enumerate(rows,1):
@@ -2146,6 +2151,33 @@ class Database:
             if fmt in ("groups6", "groups6_full", "groups7", "groups7_sf", "groups8_sf", "groups8_barrage"): return {"A":self._table_from_conn(conn,tid,"A"),"B":self._table_from_conn(conn,tid,"B")}
             return {}
 
+    def abandon_tournament(self, tid: str) -> dict:
+        """Close an official tournament early without deleting already played matches.
+
+        The event remains official and visible in history, but has no champion, podium or
+        settlement. Played matches/scorers stay available to match-based statistics,
+        Awards, team/scorer stats, H2H, badges and global match/goal milestones.
+        """
+        with self.connect() as conn:
+            t=self._fetchone(conn,"SELECT id,status,is_test FROM tournaments WHERE id=?",(tid,))
+            if not t: raise ValueError("Nie znaleziono turnieju.")
+            if str(t.get("status") or "")!="active": raise ValueError("Tylko trwający turniej można zakończyć jako niedokończony.")
+            if int(t.get("is_test") or 0): raise ValueError("Turniej testowy można po prostu zresetować.")
+            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+            if not meta or str(meta.get("format_key") or "")=="duel1v1":
+                raise ValueError("Mecz 1 vs 1 musi zostać normalnie zakończony wynikiem.")
+            played=self._fetchone(conn,"SELECT COUNT(*) AS n FROM matches WHERE tournament_id=? AND home_score IS NOT NULL",(tid,))
+            played_n=int((played or {}).get("n") or 0)
+            if played_n<=0:
+                raise ValueError("Nie rozegrano jeszcze żadnego meczu. Jeśli chcesz zrezygnować z turnieju, użyj resetu.")
+            total=self._fetchone(conn,"SELECT COUNT(*) AS n FROM matches WHERE tournament_id=?",(tid,))
+            total_n=int((total or {}).get("n") or 0)
+            closed_at=now_iso()
+            conn.execute(self._sql("UPDATE tournaments SET status='abandoned',phase='abandoned',champion_player_id=NULL,completed_at=? WHERE id=?"),(closed_at,tid))
+            if self._setting_get_conn(conn,CURRENT_KEY)==tid:
+                self._setting_set_conn(conn,CURRENT_KEY,"")
+            return {"id":tid,"played":played_n,"total":total_n,"closed_at":closed_at}
+
     def reset_current(self, tid: str) -> None:
         with self.connect() as conn:
             conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,)); self._setting_set_conn(conn,CURRENT_KEY,"")
@@ -2243,7 +2275,7 @@ class Database:
         with self.connect() as conn:
             ledger,_names,_jackpot=self._finance_ledger_conn(conn)
             official=self._fetchall(conn,"""SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
             numbers={str(r["id"]):i+1 for i,r in enumerate(official)}
         rows=list(reversed(ledger))[:limit]
@@ -2320,19 +2352,20 @@ class Database:
                 "pending_jackpot_cents":pending,"current_jackpot_cents":current_jackpot,"expanded_ids":[e["id"] for e in ordered]}
 
     def completed_tournaments(self, include_tests: bool = False, limit: int = 200) -> list[dict]:
-        """Completed FIFA Night events for the read-only archive browser.
+        """Archived FIFA Night events for the read-only history browser.
 
-        Official tournament numbering excludes tests and standalone 1v1, matching the
-        numbering used by summaries and milestones.
+        Besides normally completed events this includes official tournaments closed early
+        with status ``abandoned``. Official numbering counts every official non-duel FIFA
+        Night event, so an unfinished night keeps its historical number.
         """
         limit=max(1,min(500,int(limit or 200)))
         with self.connect() as conn:
             official=self._fetchall(conn,"""SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
             numbers={str(r["id"]):i+1 for i,r in enumerate(official)}
-            where="WHERE t.status='completed'" if include_tests else "WHERE t.status='completed' AND t.is_test=0"
-            rows=self._fetchall(conn,f"""SELECT t.id,t.created_at,t.completed_at,t.is_test,t.champion_player_id,p.name champion_name,
+            where="WHERE t.status IN ('completed','abandoned')" if include_tests else "WHERE t.status IN ('completed','abandoned') AND t.is_test=0"
+            rows=self._fetchall(conn,f"""SELECT t.id,t.status,t.created_at,t.completed_at,t.is_test,t.champion_player_id,p.name champion_name,
                     fm.player_count,fm.format_key
                 FROM tournaments t
                 JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
@@ -2347,9 +2380,9 @@ class Database:
 
     def last_completed_tournament(self) -> dict | None:
         with self.connect() as conn:
-            t=self._fetchone(conn,"""SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
+            t=self._fetchone(conn,"""SELECT t.id,t.status,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
                 FROM tournaments t LEFT JOIN players p ON p.id=t.champion_player_id
-                WHERE t.status='completed' AND t.is_test=0
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
                   AND EXISTS (SELECT 1 FROM flex_tournament_meta fm WHERE fm.tournament_id=t.id AND fm.format_key<>'duel1v1')
                 ORDER BY COALESCE(t.completed_at,t.created_at) DESC LIMIT 1""")
             if not t: return None
@@ -2373,9 +2406,10 @@ class Database:
     def delete_last_completed_tournament(self) -> dict | None:
         with self.connect() as conn:
             if self._setting_get_conn(conn,"fifa_history_locked")=="1": raise ValueError("Historia jest zablokowana.")
-            t=self._fetchone(conn,"""SELECT t.id,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
+            t=self._fetchone(conn,"""SELECT t.id,t.status,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
                 FROM tournaments t LEFT JOIN players p ON p.id=t.champion_player_id
-                WHERE t.status='completed' AND t.is_test=0
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
+                  AND EXISTS (SELECT 1 FROM flex_tournament_meta fm WHERE fm.tournament_id=t.id AND fm.format_key<>'duel1v1')
                 ORDER BY COALESCE(t.completed_at,t.created_at) DESC LIMIT 1""")
             if not t: return None
             cnt=self._fetchone(conn,"SELECT COUNT(*) AS c FROM tournament_players WHERE tournament_id=?",(t["id"],)); t["player_count"]=int(cnt["c"]) if cnt else 0
@@ -2394,7 +2428,11 @@ class Database:
             self._setting_set_conn(conn,CURRENT_KEY,"")
 
     def team_stats(self) -> list[dict]:
-        """Statystyki klubów z zakończonych turniejów oficjalnych (Classic + Flex)."""
+        """Statystyki klubów z rozegranych oficjalnych meczów (Classic + Flex).
+
+        Mecze z oficjalnych turniejów zamkniętych jako niedokończone liczą się do
+        bilansu drużyn, ale tytuły pochodzą wyłącznie z ukończonych turniejów.
+        """
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
             champions=self._fetchall(conn,"""SELECT tp.team,tp.player_id,p.name
@@ -2580,13 +2618,13 @@ class Database:
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
             names={str(r["id"]):str(r["name"]) for r in self._fetchall(conn,"SELECT id,name FROM players")}
-            events=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+            events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
             tps=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,tp.team,tp.group_name,tp.tie_order
                 FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
-                WHERE t.status='completed' AND t.is_test=0""")
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
             ledger,_finance_names,_jackpot=self._finance_ledger_conn(conn)
         team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
         group_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("group_name") or "") for r in tps}
@@ -2650,6 +2688,7 @@ class Database:
         # so they are evaluated per completed tournament instead of as global streaks.
         elimination_stages={"QF","BARRAGE","SF","LB","LB_FINAL","FINAL","RESET_FINAL"}
         proper_events=[e for e in events if str(e.get("format_key") or "")!="duel1v1"]
+        completed_events=[e for e in events if str(e.get("status") or "")=="completed"]
         defending_champion_by_tid={}
         prev_champ_for_event=None
         for e in proper_events:
@@ -2699,9 +2738,10 @@ class Database:
 
                 prior_losses[loser].add(winner)
 
-        # Tournament achievements.
+        # Tournament achievements require a completed tournament. An unfinished official
+        # event keeps its match achievements, but never creates a title/podium badge.
         previous_champ=None
-        for e in events:
+        for e in completed_events:
             tid=str(e["id"]);champ=str(e.get("champion_player_id") or "");when=str(e.get("completed_at") or e.get("created_at") or "")
             if not champ:
                 previous_champ=None;continue
@@ -2836,16 +2876,16 @@ class Database:
         """
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
-            events_all=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+            events_all=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
             tps=self._fetchall(conn,"""SELECT tp.tournament_id,tp.player_id,tp.team,p.name
                 FROM tournament_players tp JOIN players p ON p.id=tp.player_id
-                JOIN tournaments t ON t.id=tp.tournament_id WHERE t.status='completed' AND t.is_test=0""")
+                JOIN tournaments t ON t.id=tp.tournament_id WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
             scorer_rows=self._fetchall(conn,"""SELECT ms.tournament_id,ms.match_no,ms.side,ms.scorer_name,ms.goals
                 FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
-                WHERE t.status='completed' AND t.is_test=0 ORDER BY ms.tournament_id,ms.match_no,ms.side,ms.scorer_name""")
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 ORDER BY ms.tournament_id,ms.match_no,ms.side,ms.scorer_name""")
             resolutions=self._goal_milestone_resolutions_conn(conn)
         names={str(r["player_id"]):str(r["name"]) for r in tps};team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
         fixed={self._norm_team_name(x) for x in FIXED_TEAMS}
@@ -2873,8 +2913,9 @@ class Database:
         # First-time history moments that do not depend on a threshold series.
         if matches:
             m=matches[0];add("first_match","🌟","Pierwszy oficjalny mecz FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"first",1)
-        if tournaments:
-            e=tournaments[0];champ=str(e.get("champion_player_id") or "");add("first_champion","🏆","Pierwszy mistrz FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,names.get(champ,"?"),"first",2)
+        first_champion_event=next((e for e in tournaments if str(e.get("status") or "")=="completed" and e.get("champion_player_id")),None)
+        if first_champion_event:
+            e=first_champion_event;champ=str(e.get("champion_player_id") or "");add("first_champion","🏆","Pierwszy mistrz FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,names.get(champ,"?"),"first",2)
         first_pen=next((m for m in matches if m.get("home_penalties") is not None and m.get("away_penalties") is not None),None)
         if first_pen:add("first_penalties","🥅","Pierwsze karne",self._event_when_match(first_pen),first_pen["tournament_id"],first_pen["match_no"],mdetail(first_pen),"first",3)
         first_cs=next((m for m in matches if 0 in actual_score_pair(m)),None)
@@ -2890,7 +2931,8 @@ class Database:
         first_de=next((e for e in tournaments if str(e.get("format_key") or "").startswith("double")),None)
         if first_de:
             champ=str(first_de.get("champion_player_id") or "")
-            add("first_de","⚔️","Pierwszy Double Elimination",first_de.get("completed_at") or first_de.get("created_at"),first_de["id"],None,f"Mistrz: {names.get(champ,'?')}","first",7)
+            de_detail=(f"Mistrz: {names.get(champ,'?')}" if champ else "Turniej zakończony jako niedokończony")
+            add("first_de","⚔️","Pierwszy Double Elimination",first_de.get("completed_at") or first_de.get("created_at"),first_de["id"],None,de_detail,"first",7)
         first_duel=next((e for e in events_all if str(e.get("format_key"))=="duel1v1"),None)
         if first_duel:
             dm=next((m for m in matches if str(m.get("tournament_id"))==str(first_duel["id"])),None)
@@ -2931,7 +2973,9 @@ class Database:
         # Tournament number milestones.
         for idx,e in enumerate(tournaments,1):
             if idx in (10,25,50):
-                champ=str(e.get("champion_player_id") or "");add(f"tournament_{idx}","🏆",f"{idx}. FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,f"Mistrz: {names.get(champ,'?')}","tournament",idx)
+                champ=str(e.get("champion_player_id") or "")
+                detail=(f"Mistrz: {names.get(champ,'?')}" if champ else "Turniej zakończony jako niedokończony")
+                add(f"tournament_{idx}","🏆",f"{idx}. FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,detail,"tournament",idx)
 
         # Global match wins (not player win badges). Draws do not advance this counter.
         wins=0
@@ -3034,9 +3078,9 @@ class Database:
         import math, statistics
         year=int(year); like=f"{year}-%"
         with self.connect() as conn:
-            events=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
+            events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,fm.format_key
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""",(like,))
             if not events:
                 return {"year":year,"categories":[],"overview":{"tournaments":0,"duels":0,"matches":0,"goals":0,"players":0}}
@@ -3056,12 +3100,13 @@ class Database:
             first_dates=self._fetchall(conn,"""SELECT tp.player_id,MIN(COALESCE(t.completed_at,t.created_at)) AS first_date
                 FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
                 JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 GROUP BY tp.player_id""")
             finance_ledger,finance_names,_jp=self._finance_ledger_conn(conn)
             placements={tid:self._placement_order_conn(conn,tid) for tid in tids}
 
         event_by={str(e["id"]):e for e in events}; tournament_ids={tid for tid,e in event_by.items() if str(e.get("format_key"))!='duel1v1'}
+        completed_tournament_ids={tid for tid,e in event_by.items() if tid in tournament_ids and str(e.get("status") or "")=="completed"}
         duel_ids=set(tids)-tournament_ids
         name_by={str(r["player_id"]):str(r["name"]) for r in tps}
         team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
@@ -3095,7 +3140,7 @@ class Database:
                 cteam=" ".join(str(team_by.get((tid,champ),"") or "").split())
                 if cteam and self._norm_team_name(cteam) not in fixed_norm:
                     ps[champ]["wc_titles"]+=1
-        for tid in tournament_ids:
+        for tid in completed_tournament_ids:
             finals=[m for m in matches if str(m["tournament_id"])==tid and m.get("stage") in ("FINAL","RESET_FINAL")]
             if finals:
                 f=finals[-1]
@@ -3509,30 +3554,31 @@ class Database:
         nomination_summary.sort(key=lambda x:(x["top3"],x["top5"],x["first"],x["name"]),reverse=True)
 
         overview={"tournaments":len(tournament_ids),"duels":len(duel_ids),"matches":len(matches),"goals":sum(int(m["home_score"])+int(m["away_score"]) for m in matches),
-                  "players":len({str(r["player_id"]) for r in tps}),"titles":len(tournament_ids),"top_player":(cats[0]["candidates"][0]["name"] if cats and cats[0]["candidates"] else None),
+                  "players":len({str(r["player_id"]) for r in tps}),"titles":len(completed_tournament_ids),"top_player":(cats[0]["candidates"][0]["name"] if cats and cats[0]["candidates"] else None),
                   "top_team":(next((c for c in cats if c["key"]=="team_best"),{}).get("candidates") or [{}])[0].get("name") if teamitems else None}
         return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year),"nomination_summary":nomination_summary}
 
     def all_time_stats(self) -> list[dict]:
         """Shared official stats. Duels count as matches, never as tournament titles/finals."""
         with self.connect() as conn:
-            events=self._fetchall(conn,"""SELECT t.id,t.champion_player_id,fm.format_key
+            events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,fm.format_key
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status='completed' AND t.is_test=0""")
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
             if not events: return []
             all_ids={str(r["id"]) for r in events}
             tournament_ids={str(r["id"]) for r in events if str(r.get("format_key") or "")!='duel1v1'}
+            completed_tournament_ids={str(r["id"]) for r in events if str(r.get("format_key") or "")!='duel1v1' and str(r.get("status") or "")=="completed"}
             players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
             tps=self._fetchall(conn,"SELECT tournament_id,player_id FROM tournament_players")
             matches=self._fetchall(conn,"SELECT * FROM matches WHERE home_score IS NOT NULL ORDER BY tournament_id,match_no")
-        finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in tournament_ids]
+        finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in completed_tournament_ids]
         stats=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"pen_wins":0,"duels":0,"duel_wins":0})
         for tp in tps:
             tid=str(tp["tournament_id"]); pid=tp["player_id"]
             if tid in tournament_ids: stats[pid]["tournaments"]+=1
             if tid in all_ids and tid not in tournament_ids: stats[pid]["duels"]+=1
         for t in events:
-            if str(t["id"]) in tournament_ids and t.get("champion_player_id"): stats[t["champion_player_id"]]["titles"]+=1
+            if str(t["id"]) in completed_tournament_ids and t.get("champion_player_id"): stats[t["champion_player_id"]]["titles"]+=1
         for m in finals:
             if m.get("home_player_id"): stats[m["home_player_id"]]["finals"]+=1
             if m.get("away_player_id"): stats[m["away_player_id"]]["finals"]+=1
