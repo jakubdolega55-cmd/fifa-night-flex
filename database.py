@@ -1689,6 +1689,94 @@ class Database:
             """)
         return [{**r,**{k:int(r.get(k) or 0) for k in ("yellows","reds","penalties_awarded","penalties_scored","penalties_missed","own_goals")}} for r in rows]
 
+    def player_detailed_event_stats(self, pid: str) -> dict:
+        """Detailed new-era event counters for one FIFA Night player.
+
+        These statistics intentionally use only official, non-test matches for which
+        match_events exist. Older matches remain valid in the legacy statistics but
+        cannot contribute to cards, penalties or minute-based records.
+        """
+        pid=str(pid or "")
+        empty={
+            "coverage_matches":0,"yellow_cards":0,"red_cards":0,"cards_total":0,
+            "penalties_awarded":0,"penalties_scored":0,"penalties_missed":0,
+            "own_goals":0,"detailed_goals":0,"goals_90_plus":0,"extra_time_goals":0,
+            "fastest_goal":None,"latest_goal":None,
+        }
+        if not pid:return empty
+        with self.connect() as conn:
+            coverage=self._fetchone(conn,"""
+                SELECT COUNT(*) AS c FROM (
+                    SELECT DISTINCT m.tournament_id,m.match_no
+                    FROM matches m
+                    JOIN tournaments t ON t.id=m.tournament_id
+                    JOIN match_events me ON me.tournament_id=m.tournament_id AND me.match_no=m.match_no
+                    WHERE t.is_test=0 AND t.status IN ('completed','abandoned')
+                      AND (m.home_player_id=? OR m.away_player_id=?)
+                ) x
+            """,(pid,pid))
+            actor=self._fetchone(conn,"""
+                SELECT
+                    SUM(CASE WHEN me.event_type='yellow_card' THEN 1 ELSE 0 END) AS yellow_cards,
+                    SUM(CASE WHEN me.event_type='red_card' THEN 1 ELSE 0 END) AS red_cards,
+                    SUM(CASE WHEN me.event_type IN ('penalty_goal','penalty_miss') THEN 1 ELSE 0 END) AS penalties_awarded,
+                    SUM(CASE WHEN me.event_type='penalty_goal' THEN 1 ELSE 0 END) AS penalties_scored,
+                    SUM(CASE WHEN me.event_type='penalty_miss' THEN 1 ELSE 0 END) AS penalties_missed,
+                    SUM(CASE WHEN me.event_type='own_goal' AND COALESCE(me.synthetic_de,0)=0 THEN 1 ELSE 0 END) AS own_goals
+                FROM match_events me
+                JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.is_test=0 AND t.status IN ('completed','abandoned') AND me.actor_player_id=?
+            """,(pid,)) or {}
+            goals=self._fetchall(conn,"""
+                SELECT me.minute,me.stoppage,me.minute_label,me.footballer_name,me.credited_team_name,
+                       me.event_type,me.created_at
+                FROM match_events me
+                JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.is_test=0 AND t.status IN ('completed','abandoned')
+                  AND me.credited_player_id=?
+                  AND me.event_type IN ('normal_goal','penalty_goal')
+                  AND COALESCE(me.synthetic_de,0)=0
+            """,(pid,))
+        def minute_value(g):
+            try:m=int(g.get("minute"))
+            except Exception:return None
+            try:s=int(g.get("stoppage") or 0)
+            except Exception:s=0
+            return m*100+s
+        timed=[g for g in goals if minute_value(g) is not None]
+        fastest=min(timed,key=minute_value) if timed else None
+        latest=max(timed,key=minute_value) if timed else None
+        def goal_desc(g):
+            if not g:return None
+            label=str(g.get("minute_label") or "").strip()
+            if not label:
+                try:
+                    m=int(g.get("minute"));stp=int(g.get("stoppage") or 0);label=f"{m}+{stp}" if stp else str(m)
+                except Exception:label="?"
+            return {
+                "minute_label":label,
+                "footballer_name":str(g.get("footballer_name") or "?"),
+                "team_name":str(g.get("credited_team_name") or ""),
+                "event_type":str(g.get("event_type") or "normal_goal"),
+            }
+        out={**empty}
+        out.update({
+            "coverage_matches":int((coverage or {}).get("c") or 0),
+            "yellow_cards":int(actor.get("yellow_cards") or 0),
+            "red_cards":int(actor.get("red_cards") or 0),
+            "penalties_awarded":int(actor.get("penalties_awarded") or 0),
+            "penalties_scored":int(actor.get("penalties_scored") or 0),
+            "penalties_missed":int(actor.get("penalties_missed") or 0),
+            "own_goals":int(actor.get("own_goals") or 0),
+            "detailed_goals":len(goals),
+            "goals_90_plus":sum(1 for g in goals if int(g.get("minute") or 0)==90 and int(g.get("stoppage") or 0)>0),
+            "extra_time_goals":sum(1 for g in goals if int(g.get("minute") or 0)>90),
+            "fastest_goal":goal_desc(fastest),
+            "latest_goal":goal_desc(latest),
+        })
+        out["cards_total"]=out["yellow_cards"]+out["red_cards"]
+        return out
+
     def team_scorer_options(self, team_name: str) -> list[dict]:
         nt=self._norm_team_name(team_name)
         with self.connect() as conn:

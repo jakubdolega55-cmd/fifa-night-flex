@@ -2003,6 +2003,36 @@ def render_stats(t=None,readonly:bool=False):
             c1.metric("🏆 Tytuły",profile["titles"]);c2.metric("🏁 Finały",profile["finals"]);c3.metric("🔥 Wygrane",profile["w"],f"{profile['win_pct']}%")
             c4.metric("⚽ Bramki",profile["gf"],f"{profile['gd']:+d} bilans")
             st.caption("Forma — ostatnie 5: **"+" ".join(profile.get("form") or [])+"**" if profile.get("form") else "Brak ostatnich meczów")
+
+            event_stats=db.player_detailed_event_stats(opts[selected])
+            st.markdown("#### 🧾 Dyscyplina, karne i minuty")
+            if int(event_stats.get("coverage_matches") or 0)>0:
+                st.caption(
+                    f"Dane szczegółowe z **{int(event_stats.get('coverage_matches') or 0)}** oficjalnych meczów zapisanych z przebiegiem zdarzeń. "
+                    "Starsze mecze bez minut i kartek nie są sztucznie liczone jako zera."
+                )
+                ec1,ec2,ec3,ec4,ec5,ec6=st.columns(6)
+                ec1.metric("🟨 Żółte",int(event_stats.get("yellow_cards") or 0))
+                ec2.metric("🟥 Czerwone",int(event_stats.get("red_cards") or 0))
+                ec3.metric("🎯 Karne otrzymane",int(event_stats.get("penalties_awarded") or 0))
+                ec4.metric("⚽ Z karnych",int(event_stats.get("penalties_scored") or 0))
+                ec5.metric("❌ Karne zmarnowane",int(event_stats.get("penalties_missed") or 0))
+                ec6.metric("↩️ Samobóje drużyny",int(event_stats.get("own_goals") or 0))
+
+                gr1,gr2,gr3,gr4=st.columns(4)
+                fastest=event_stats.get("fastest_goal")
+                latest=event_stats.get("latest_goal")
+                fastest_value=(f"{fastest.get('minute_label')}′" if fastest else "—")
+                fastest_help=(fastest.get("footballer_name") if fastest else None)
+                latest_value=(f"{latest.get('minute_label')}′" if latest else "—")
+                latest_help=(latest.get("footballer_name") if latest else None)
+                gr1.metric("⚡ Najszybszy gol",fastest_value,fastest_help)
+                gr2.metric("⏱️ Najpóźniejszy gol",latest_value,latest_help)
+                gr3.metric("🕘 Gole 90+",int(event_stats.get("goals_90_plus") or 0))
+                gr4.metric("➕ Gole w dogrywce",int(event_stats.get("extra_time_goals") or 0))
+            else:
+                st.caption("Brak jeszcze oficjalnych meczów tego gracza zapisanych ze szczegółowym przebiegiem.")
+
             st.markdown("#### 🏆 Gablota")
             selected_pid=str(opts[selected]);pa_profile=next((x for x in players_ach if str(x.get("player_id"))==selected_pid),{})
             tc1,tc2,tc3=st.columns(3)
