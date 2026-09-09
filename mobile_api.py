@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from PIL import Image, ImageOps
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -253,10 +253,108 @@ def health() -> dict[str, Any]:
 
 VISION_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 VISION_MAX_IMAGE_BYTES = 12 * 1024 * 1024
+VISION_MAX_IMAGES = 5
 
 
 def _google_vision_api_key() -> str:
     return str(os.getenv("GOOGLE_VISION_API_KEY") or "").strip()
+
+
+def _openai_api_key() -> str:
+    return str(os.getenv("OPENAI_API_KEY") or "").strip()
+
+
+def _gemini_api_key() -> str:
+    return str(os.getenv("GEMINI_API_KEY") or "").strip()
+
+
+AI_EVENT_SCAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "left_label": {"type": ["string", "null"]},
+        "right_label": {"type": ["string", "null"]},
+        "score_left": {"type": ["integer", "null"], "minimum": 0, "maximum": 99},
+        "score_right": {"type": ["integer", "null"], "minimum": 0, "maximum": 99},
+        "match_clock": {"type": ["string", "null"]},
+        "score_confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+        "events": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "image_indices": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 5}},
+                    "minute": {"type": ["integer", "null"], "minimum": 0, "maximum": 130},
+                    "stoppage": {"type": ["integer", "null"], "minimum": 0, "maximum": 30},
+                    "minute_label": {"type": ["string", "null"]},
+                    "side": {"type": "string", "enum": ["left", "right", "unknown"]},
+                    "event_type": {
+                        "type": "string",
+                        "enum": ["goal", "yellow_card", "red_card", "substitution", "penalty_miss", "other", "unknown"],
+                    },
+                    "player": {"type": ["string", "null"]},
+                    "related_player": {"type": ["string", "null"]},
+                    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+                },
+                "required": [
+                    "image_indices", "minute", "stoppage", "minute_label", "side",
+                    "event_type", "player", "related_player", "confidence"
+                ],
+            },
+        },
+        "event_list_complete": {"type": "boolean"},
+        "needs_more_images": {"type": "boolean"},
+        "notes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "left_label", "right_label", "score_left", "score_right", "match_clock",
+        "score_confidence", "events", "event_list_complete", "needs_more_images", "notes"
+    ],
+}
+
+
+AI_EVENT_SCAN_PROMPT = """You are a visual extraction engine for EA Sports FC post-match EVENT screens.
+All supplied images belong to the SAME match. There may be 1 to 5 screenshots and adjacent screenshots may overlap.
+
+Extract only facts that are actually visible. Do not invent missing goals or events from the final score.
+Read the score and the two labels at the top when visible. Use left/right exactly as shown on screen.
+
+Most important: classify events using the VISUAL ICON and layout, not only OCR text.
+- football/ball icon = goal
+- yellow rectangular card = yellow_card
+- red rectangular card = red_card
+- a pair of player names with green up / red down arrows = substitution, NOT a goal
+- if an icon or event cannot be identified reliably, use unknown
+Different events can occur in the same minute on opposite sides.
+
+Return each visible event once. If the same event appears on overlapping screenshots, merge it and include all matching image_indices.
+Preserve player names as displayed. Do not guess full names.
+If the screenshots clearly show only a scrolled fragment of the event timeline, set event_list_complete=false and needs_more_images=true.
+If the full event list is visible across all supplied screenshots, set event_list_complete=true and needs_more_images=false.
+A final score such as 6:5 does NOT mean that 11 goal events must be visible in the supplied images.
+"""
+
+
+def _extract_openai_output_text(payload: dict[str, Any]) -> str:
+    for item in payload.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = str(content.get("text") or "").strip()
+                if text:
+                    return text
+    return ""
+
+
+def _extract_gemini_output_text(payload: dict[str, Any]) -> str:
+    for candidate in payload.get("candidates") or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts") or []:
+            if isinstance(part, dict) and str(part.get("text") or "").strip():
+                return str(part.get("text") or "").strip()
+    return ""
 
 
 def _require_vision_test_admin(x_admin_password: str | None) -> None:
@@ -302,18 +400,27 @@ def _normalize_image_for_google(raw: bytes, index: int) -> tuple[bytes, str, int
 @app.post("/api/v1/vision/test-scan")
 async def vision_test_scan(
     images: list[UploadFile] = File(...),
+    provider: str = Form(default="google_ocr"),
     x_admin_password: str | None = Header(default=None, alias="X-Admin-Password"),
 ) -> dict[str, Any]:
-    """Temporary OCR prototype. Reads 1-2 EA FC screenshots and does not save anything to Neon."""
+    """Temporary EA FC vision benchmark. Accepts 1-5 images and never writes to Neon."""
     _require_vision_test_admin(x_admin_password)
-    api_key = _google_vision_api_key()
-    if not api_key:
-        raise HTTPException(503, "GOOGLE_VISION_API_KEY nie jest ustawiony na serwerze API.")
-    if not 1 <= len(images) <= 2:
-        raise HTTPException(422, "Wyślij 1 albo 2 zdjęcia.")
+    provider = str(provider or "google_ocr").strip().lower()
+    aliases = {
+        "google": "google_ocr",
+        "google_cloud_vision": "google_ocr",
+        "ocr": "google_ocr",
+        "openai": "openai_luna",
+        "luna": "openai_luna",
+        "gemini": "gemini_38_flash",
+    }
+    provider = aliases.get(provider, provider)
+    if provider not in {"google_ocr", "openai_luna", "gemini_38_flash"}:
+        raise HTTPException(422, "Nieznany provider testu Vision.")
+    if not 1 <= len(images) <= VISION_MAX_IMAGES:
+        raise HTTPException(422, f"Wyślij od 1 do {VISION_MAX_IMAGES} zdjęć.")
 
-    requests_payload: list[dict[str, Any]] = []
-    file_meta: list[dict[str, Any]] = []
+    prepared: list[dict[str, Any]] = []
     for index, image in enumerate(images, start=1):
         content_type = str(image.content_type or "").lower()
         if content_type not in VISION_ALLOWED_TYPES:
@@ -324,70 +431,212 @@ async def vision_test_scan(
         if len(raw) > VISION_MAX_IMAGE_BYTES:
             raise HTTPException(413, f"Zdjęcie {index} ma więcej niż 12 MB.")
         normalized, normalized_type, width, height = _normalize_image_for_google(raw, index)
-        requests_payload.append({
-            "image": {"content": base64.b64encode(normalized).decode("ascii")},
-            "features": [{"type": "TEXT_DETECTION"}],
-        })
-        file_meta.append({
+        prepared.append({
             "image_index": index,
             "filename": image.filename or f"image_{index}",
             "content_type": content_type,
             "bytes": len(raw),
+            "normalized": normalized,
             "normalized_content_type": normalized_type,
             "normalized_bytes": len(normalized),
             "width": width,
             "height": height,
         })
 
-    started = time.perf_counter()
-    url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-            response = await client.post(url, json={"requests": requests_payload})
-    except httpx.TimeoutException as exc:
-        raise HTTPException(504, "Google Vision nie odpowiedział w ciągu 30 sekund.") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Nie udało się połączyć z Google Vision: {exc}") from exc
+    if provider == "google_ocr":
+        api_key = _google_vision_api_key()
+        if not api_key:
+            raise HTTPException(503, "GOOGLE_VISION_API_KEY nie jest ustawiony na serwerze API.")
+        requests_payload = [
+            {
+                "image": {"content": base64.b64encode(item["normalized"]).decode("ascii")},
+                "features": [{"type": "TEXT_DETECTION"}],
+            }
+            for item in prepared
+        ]
+        started = time.perf_counter()
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+                response = await client.post(url, json={"requests": requests_payload})
+        except httpx.TimeoutException as exc:
+            raise HTTPException(504, "Google Vision nie odpowiedział w ciągu 30 sekund.") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Nie udało się połączyć z Google Vision: {exc}") from exc
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        if response.status_code >= 400:
+            message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:500]
+            raise HTTPException(502, f"Google Vision API zwrócił błąd: {message}")
+        google_responses = payload.get("responses") or []
+        parsed_images: list[dict[str, Any]] = []
+        for idx, meta in enumerate(prepared):
+            item = google_responses[idx] if idx < len(google_responses) else {}
+            google_error = item.get("error") or None
+            annotations = item.get("textAnnotations") or []
+            raw_text = str((annotations[0] or {}).get("description") or "") if annotations else ""
+            text_items = [
+                {"text": str(a.get("description") or ""), "box": _annotation_box(a)}
+                for a in annotations[1:]
+                if str(a.get("description") or "").strip()
+            ]
+            parsed_images.append({
+                **{k: v for k, v in meta.items() if k != "normalized"},
+                "ok": not bool(google_error),
+                "raw_text": raw_text,
+                "text_items": text_items,
+                "detected_items": len(text_items),
+                "google_error": google_error,
+            })
+        return {
+            "provider": "google_ocr",
+            "model": "Cloud Vision TEXT_DETECTION",
+            "processing_time_ms": elapsed_ms,
+            "image_count": len(parsed_images),
+            "images": parsed_images,
+            "saved_to_database": False,
+        }
 
+    if provider == "openai_luna":
+        api_key = _openai_api_key()
+        if not api_key:
+            raise HTTPException(503, "OPENAI_API_KEY nie jest ustawiony na serwerze API.")
+        content: list[dict[str, Any]] = [{"type": "input_text", "text": AI_EVENT_SCAN_PROMPT}]
+        for item in prepared:
+            encoded = base64.b64encode(item["normalized"]).decode("ascii")
+            content.append({"type": "input_text", "text": f"IMAGE {item['image_index']}"})
+            content.append({
+                "type": "input_image",
+                "image_url": f"data:image/jpeg;base64,{encoded}",
+                "detail": "high",
+            })
+        body = {
+            "model": "gpt-5.6-luna",
+            "store": False,
+            "reasoning": {"effort": "low"},
+            "input": [{"role": "user", "content": content}],
+            "text": {
+                "verbosity": "low",
+                "format": {
+                    "type": "json_schema",
+                    "name": "ea_fc_event_scan",
+                    "strict": True,
+                    "schema": AI_EVENT_SCAN_SCHEMA,
+                },
+            },
+        }
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+                response = await client.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json=body,
+                )
+        except httpx.TimeoutException as exc:
+            raise HTTPException(504, "OpenAI nie odpowiedział w ciągu 60 sekund.") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Nie udało się połączyć z OpenAI: {exc}") from exc
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        if response.status_code >= 400:
+            message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:800]
+            raise HTTPException(502, f"OpenAI API zwrócił błąd: {message}")
+        raw_text = _extract_openai_output_text(payload)
+        try:
+            result = json.loads(raw_text)
+        except Exception as exc:
+            raise HTTPException(502, f"OpenAI nie zwrócił poprawnego JSON: {raw_text[:800]}") from exc
+        usage = payload.get("usage") or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        estimated_cost = input_tokens * 0.20 / 1_000_000 + output_tokens * 1.20 / 1_000_000
+        return {
+            "provider": "openai_luna",
+            "model": "gpt-5.6-luna",
+            "processing_time_ms": elapsed_ms,
+            "image_count": len(prepared),
+            "result": result,
+            "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens)},
+            "estimated_cost_usd": round(estimated_cost, 8),
+            "saved_to_database": False,
+        }
+
+    api_key = _gemini_api_key()
+    if not api_key:
+        raise HTTPException(503, "GEMINI_API_KEY nie jest ustawiony na serwerze API.")
+    parts: list[dict[str, Any]] = [{"text": AI_EVENT_SCAN_PROMPT}]
+    for item in prepared:
+        parts.append({"text": f"IMAGE {item['image_index']}"})
+        parts.append({
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": base64.b64encode(item["normalized"]).decode("ascii"),
+            }
+        })
+    body = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {
+            "temperature": 0,
+            "responseFormat": {
+                "text": {
+                    "mimeType": "application/json",
+                    "schema": AI_EVENT_SCAN_SCHEMA,
+                }
+            },
+        },
+    }
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            response = await client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+                headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+                json=body,
+            )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(504, "Gemini nie odpowiedział w ciągu 60 sekund.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Nie udało się połączyć z Gemini: {exc}") from exc
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     try:
         payload = response.json()
     except Exception:
         payload = {}
     if response.status_code >= 400:
-        message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:500]
-        raise HTTPException(502, f"Google Vision API zwrócił błąd: {message}")
-
-    google_responses = payload.get("responses") or []
-    parsed_images: list[dict[str, Any]] = []
-    for idx, meta in enumerate(file_meta):
-        item = google_responses[idx] if idx < len(google_responses) else {}
-        google_error = item.get("error") or None
-        annotations = item.get("textAnnotations") or []
-        raw_text = str((annotations[0] or {}).get("description") or "") if annotations else ""
-        text_items = [
-            {
-                "text": str(a.get("description") or ""),
-                "box": _annotation_box(a),
-            }
-            for a in annotations[1:]
-            if str(a.get("description") or "").strip()
-        ]
-        parsed_images.append({
-            **meta,
-            "ok": not bool(google_error),
-            "raw_text": raw_text,
-            "text_items": text_items,
-            "detected_items": len(text_items),
-            "google_error": google_error,
-        })
-
+        message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:800]
+        raise HTTPException(502, f"Gemini API zwrócił błąd: {message}")
+    raw_text = _extract_gemini_output_text(payload)
+    try:
+        result = json.loads(raw_text)
+    except Exception as exc:
+        raise HTTPException(502, f"Gemini nie zwrócił poprawnego JSON: {raw_text[:800]}") from exc
+    usage = payload.get("usageMetadata") or {}
+    input_tokens = int(usage.get("promptTokenCount") or 0)
+    answer_tokens = int(usage.get("candidatesTokenCount") or 0)
+    thinking_tokens = int(usage.get("thoughtsTokenCount") or 0)
+    output_tokens = answer_tokens + thinking_tokens
+    paid_estimate = input_tokens * 0.75 / 1_000_000 + output_tokens * 3.75 / 1_000_000
     return {
-        "provider": "google_cloud_vision",
-        "feature": "TEXT_DETECTION",
+        "provider": "gemini_38_flash",
+        "model": "gemini-3.8-flash",
         "processing_time_ms": elapsed_ms,
-        "image_count": len(parsed_images),
-        "images": parsed_images,
+        "image_count": len(prepared),
+        "result": result,
+        "usage": {
+            "input_tokens": input_tokens,
+            "answer_tokens": answer_tokens,
+            "thinking_tokens": thinking_tokens,
+            "total_tokens": int(usage.get("totalTokenCount") or input_tokens + output_tokens),
+        },
+        "paid_tier_estimated_cost_usd": round(paid_estimate, 8),
+        "free_tier_may_apply": True,
         "saved_to_database": False,
     }
 

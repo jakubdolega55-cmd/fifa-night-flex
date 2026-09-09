@@ -122,10 +122,10 @@ def fifa_night_api_url() -> str:
 
 def render_vision_ocr_test():
     st.divider()
-    st.markdown("### 🧪 Test odczytu EA FC — Google OCR")
-    st.caption("Prototyp: wysyła 1–2 zdjęcia do FastAPI na Renderze i pokazuje surowy tekst z Google Cloud Vision. Nic nie zapisuje do Neona.")
+    st.markdown("### 🧪 Test rozpoznawania EA FC — OCR / AI")
+    st.caption("Prototyp: wysyła 1–5 screenów z zakładki Wydarzenia do FastAPI na Renderze. Nic nie zapisuje do Neona.")
     if not controller_access():
-        st.info("Włącz sterowanie na tym urządzeniu, aby korzystać z testu OCR.")
+        st.info("Włącz sterowanie na tym urządzeniu, aby korzystać z testu.")
         return
     if not admin_password():
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets.")
@@ -138,29 +138,45 @@ def render_vision_ocr_test():
         placeholder="https://twoje-fifa-night-api.onrender.com",
         key="vision_test_api_url",
     ).strip().rstrip("/")
-    st.caption("Adres Rendera nie jest sekretem. Później możemy zapisać go jako FIFA_NIGHT_API_URL w Streamlit Secrets.")
+
+    provider_label = st.selectbox(
+        "Sposób analizy",
+        [
+            "Google OCR — darmowy baseline",
+            "OpenAI GPT-5.6 Luna — vision",
+            "Gemini 3.8 Flash — vision",
+        ],
+        key="vision_test_provider",
+    )
+    provider_map = {
+        "Google OCR — darmowy baseline": "google_ocr",
+        "OpenAI GPT-5.6 Luna — vision": "openai_luna",
+        "Gemini 3.8 Flash — vision": "gemini_38_flash",
+    }
+    provider = provider_map[provider_label]
 
     uploaded = st.file_uploader(
-        "Dodaj 1 albo 2 zdjęcia ekranu EA FC",
+        "Dodaj od 1 do 5 screenów ekranu Wydarzenia EA FC",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
         key="vision_test_images",
     )
     if uploaded:
-        if len(uploaded) > 2:
-            st.warning("Do testu zostaną użyte tylko pierwsze 2 zdjęcia.")
-        cols = st.columns(min(2, len(uploaded[:2])))
-        for col, item in zip(cols, uploaded[:2]):
-            with col:
-                st.image(item, caption=item.name, use_container_width=True)
+        if len(uploaded) > 5:
+            st.warning("Do testu zostanie użytych tylko pierwszych 5 zdjęć.")
+        shown = uploaded[:5]
+        cols = st.columns(min(3, len(shown)))
+        for idx, item in enumerate(shown):
+            with cols[idx % len(cols)]:
+                st.image(item, caption=f"{idx+1}. {item.name}", use_container_width=True)
 
-    go = st.button("🔍 ANALIZUJ OCR", type="primary", use_container_width=True, key="vision_test_go")
+    go = st.button("🔍 ANALIZUJ", type="primary", use_container_width=True, key="vision_test_go")
     if not go:
         return
     if not api_url:
         st.error("Wpisz adres FastAPI na Renderze.")
         return
-    files = uploaded[:2] if uploaded else []
+    files = uploaded[:5] if uploaded else []
     if not files:
         st.error("Dodaj co najmniej jedno zdjęcie.")
         return
@@ -170,14 +186,20 @@ def render_vision_ocr_test():
         mime = item.type or "image/jpeg"
         multipart.append(("images", (item.name, item.getvalue(), mime)))
 
+    spinner = {
+        "google_ocr": "Google Vision odczytuje tekst...",
+        "openai_luna": "OpenAI analizuje wydarzenia i ikony...",
+        "gemini_38_flash": "Gemini analizuje wydarzenia i ikony...",
+    }[provider]
     started = time.perf_counter()
-    with st.spinner("Google Vision odczytuje ekran EA FC..."):
+    with st.spinner(spinner):
         try:
             response = requests.post(
                 f"{api_url}/api/v1/vision/test-scan",
                 files=multipart,
+                data={"provider": provider},
                 headers={"X-Admin-Password": admin_password()},
-                timeout=45,
+                timeout=75,
             )
         except requests.RequestException as exc:
             st.error(f"Nie udało się połączyć z FastAPI: {exc}")
@@ -188,27 +210,89 @@ def render_vision_ocr_test():
     except Exception:
         data = None
     if not response.ok:
-        detail = data.get("detail") if isinstance(data, dict) else response.text[:500]
+        detail = data.get("detail") if isinstance(data, dict) else response.text[:700]
         st.error(f"Błąd API ({response.status_code}): {detail}")
         return
 
-    st.success(f"OCR zakończony • cały request: {roundtrip:.2f} s • Google Vision: {int(data.get('processing_time_ms') or 0)/1000:.2f} s")
-    st.caption("Koszt Google Vision przy obecnym miesięcznym wolumenie testów powinien mieścić się w darmowym limicie; ten ekran na razie nie liczy kosztu z billingu Google.")
-    for image in data.get("images") or []:
-        st.markdown(f"#### Zdjęcie {image.get('image_index')} — {image.get('filename')}")
-        if image.get("google_error"):
-            st.error(str(image.get("google_error")))
-        raw = str(image.get("raw_text") or "").strip()
-        if raw:
-            st.text_area(
-                "Surowy tekst OCR",
-                value=raw,
-                height=260,
-                key=f"vision_raw_{image.get('image_index')}_{len(raw)}",
-            )
-            st.caption(f"Wykryte elementy tekstowe: {image.get('detected_items', 0)}")
+    model = str(data.get("model") or data.get("provider") or "")
+    provider_time = int(data.get("processing_time_ms") or 0) / 1000
+    st.success(f"Gotowe • {model} • cały request: {roundtrip:.2f} s • provider: {provider_time:.2f} s")
+
+    if provider == "google_ocr":
+        st.caption("Google OCR pokazuje tylko tekst. Nie rozumie pewnie ikon gola/kartki/zmiany — traktujemy go jako darmowy punkt odniesienia.")
+        for image in data.get("images") or []:
+            st.markdown(f"#### Zdjęcie {image.get('image_index')} — {image.get('filename')}")
+            if image.get("google_error"):
+                st.error(str(image.get("google_error")))
+            raw = str(image.get("raw_text") or "").strip()
+            if raw:
+                st.text_area(
+                    "Surowy tekst OCR",
+                    value=raw,
+                    height=260,
+                    key=f"vision_raw_{image.get('image_index')}_{len(raw)}",
+                )
+                st.caption(f"Wykryte elementy tekstowe: {image.get('detected_items', 0)}")
+            else:
+                st.warning("Google Vision nie odczytał tekstu z tego zdjęcia.")
+        return
+
+    result = data.get("result") or {}
+    score_left = result.get("score_left")
+    score_right = result.get("score_right")
+    left_label = result.get("left_label") or "Lewa strona"
+    right_label = result.get("right_label") or "Prawa strona"
+    if score_left is not None and score_right is not None:
+        st.markdown(f"## {left_label} **{score_left} : {score_right}** {right_label}")
+    else:
+        st.warning("Model nie odczytał jednoznacznie wyniku.")
+
+    events = result.get("events") or []
+    goals = [e for e in events if e.get("event_type") == "goal"]
+    other = [e for e in events if e.get("event_type") != "goal"]
+
+    st.markdown("#### ⚽ Rozpoznane gole widoczne na screenach")
+    if goals:
+        for e in goals:
+            minute = e.get("minute_label") or (str(e.get("minute")) + "'" if e.get("minute") is not None else "?")
+            side = "⬅️" if e.get("side") == "left" else "➡️" if e.get("side") == "right" else "❔"
+            imgs = ",".join(str(x) for x in (e.get("image_indices") or []))
+            st.write(f"{side} **{e.get('player') or '?'}** — {minute} • pewność: {e.get('confidence')} • zdj. {imgs}")
+    else:
+        st.info("Model nie rozpoznał żadnego widocznego gola.")
+
+    with st.expander("Inne rozpoznane wydarzenia", expanded=True):
+        if other:
+            for e in other:
+                minute = e.get("minute_label") or (str(e.get("minute")) + "'" if e.get("minute") is not None else "?")
+                related = f" / {e.get('related_player')}" if e.get("related_player") else ""
+                st.write(f"{minute} • {e.get('event_type')} • {e.get('player') or '?'}{related} • {e.get('side')} • {e.get('confidence')}")
         else:
-            st.warning("Google Vision nie odczytał tekstu z tego zdjęcia.")
+            st.write("Brak innych wydarzeń.")
+
+    if result.get("needs_more_images"):
+        st.warning("Model uważa, że nie widzi pełnej listy wydarzeń — potrzebne są kolejne screeny po przewinięciu.")
+    elif result.get("event_list_complete"):
+        st.success("Model uważa, że dostarczone screeny obejmują pełną listę wydarzeń.")
+
+    notes = result.get("notes") or []
+    if notes:
+        st.caption("Uwagi modelu: " + " | ".join(str(x) for x in notes))
+
+    usage = data.get("usage") or {}
+    if provider == "openai_luna":
+        st.caption(
+            f"Tokeny: input {usage.get('input_tokens', 0)}, output {usage.get('output_tokens', 0)} • "
+            f"szacowany koszt tego wywołania: ${float(data.get('estimated_cost_usd') or 0):.6f}"
+        )
+    else:
+        st.caption(
+            f"Tokeny: input {usage.get('input_tokens', 0)}, odpowiedź {usage.get('answer_tokens', 0)}, thinking {usage.get('thinking_tokens', 0)} • "
+            f"szacunek dla płatnego tieru: ${float(data.get('paid_tier_estimated_cost_usd') or 0):.6f}; na Gemini może obowiązywać free tier."
+        )
+
+    with st.expander("Surowy JSON modelu"):
+        st.json(result)
 
 def render_access_settings():
     st.subheader("⚙️ Ustawienia dostępu")
