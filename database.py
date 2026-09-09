@@ -25,7 +25,7 @@ from logic import (
 )
 from scorer_seeds import SCORER_SEEDS
 
-DB_API_VERSION = 1800
+DB_API_VERSION = 1801
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -161,6 +161,15 @@ class Database:
                 team_name TEXT NOT NULL, normalized_team TEXT NOT NULL, scorer_name TEXT NOT NULL,
                 normalized_scorer TEXT NOT NULL, goals INTEGER NOT NULL,
                 UNIQUE (tournament_id, match_no, side, normalized_scorer))""",
+            """CREATE TABLE IF NOT EXISTS match_events (
+                id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, match_no INTEGER NOT NULL,
+                event_order INTEGER NOT NULL, event_type TEXT NOT NULL,
+                minute INTEGER, stoppage INTEGER, minute_label TEXT,
+                actor_player_id TEXT, credited_player_id TEXT,
+                actor_team_name TEXT, credited_team_name TEXT,
+                footballer_name TEXT, normalized_footballer TEXT, related_footballer_name TEXT,
+                synthetic_de INTEGER NOT NULL DEFAULT 0, confidence TEXT, source_images_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL)""",
         ]
         with self.connect() as conn:
             for s in stmts: conn.execute(s)
@@ -196,6 +205,7 @@ class Database:
             final=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,final_no))
             conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
             conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
+            conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
             conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=? AND match_no=?"),(tid,reset_no))
             if final and final.get("winner_player_id"):
                 conn.execute(self._sql("UPDATE tournaments SET status='completed',phase='completed',champion_player_id=?,completed_at=COALESCE(completed_at,?) WHERE id=?"),
@@ -1540,6 +1550,145 @@ class Database:
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             self._resolve_all_conn(conn,tid,meta["format_key"])
 
+    def match_ai_context(self, tid: str, match_no: int) -> dict:
+        """Authoritative FIFA Night context for a vision scan.
+
+        The physical EA FC screen may place either club on the left/right.  The app
+        therefore identifies participants by the club assigned in tournament_players,
+        not by UI side.  home/away is kept only as an internal bracket slot needed by
+        the existing result engine.
+        """
+        with self.connect() as conn:
+            row=self._fetchone(conn,"""
+                SELECT m.*,fm.format_key,
+                       hp.name AS home_player_name,ap.name AS away_player_name,
+                       htp.team AS home_team,atp.team AS away_team
+                FROM matches m
+                JOIN flex_tournament_meta fm ON fm.tournament_id=m.tournament_id
+                LEFT JOIN players hp ON hp.id=m.home_player_id
+                LEFT JOIN players ap ON ap.id=m.away_player_id
+                LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
+                LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
+                WHERE m.tournament_id=? AND m.match_no=?
+            """,(tid,int(match_no)))
+        if not row:
+            raise ValueError("Nie znaleziono meczu.")
+        if not row.get("home_player_id") or not row.get("away_player_id"):
+            raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
+        fmt=str(row.get("format_key") or "")
+        stage=str(row.get("stage") or "")
+        is_de_final=fmt.startswith("double") and stage=="FINAL"
+        participants=[
+            {"slot":"home","player_id":str(row.get("home_player_id") or ""),"player_name":str(row.get("home_player_name") or ""),"team":str(row.get("home_team") or "")},
+            {"slot":"away","player_id":str(row.get("away_player_id") or ""),"player_name":str(row.get("away_player_name") or ""),"team":str(row.get("away_team") or "")},
+        ]
+        return {
+            "tournament_id":str(tid),"match_no":int(match_no),"stage":stage,"format_key":fmt,
+            "participants":participants,
+            # Existing DE logic stores the Winners Bracket +1 on the internal home slot.
+            "de_wb_advantage_player_id":str(row.get("home_player_id") or "") if is_de_final else None,
+            "de_wb_advantage_team":str(row.get("home_team") or "") if is_de_final else None,
+            "de_wb_bonus":1 if is_de_final else 0,
+        }
+
+    def match_events(self, tid: str, match_no: int) -> list[dict]:
+        """Detailed event timeline available for new scanned/confirmed matches."""
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""
+                SELECT * FROM match_events
+                WHERE tournament_id=? AND match_no=?
+                ORDER BY event_order,id
+            """,(tid,int(match_no)))
+        for r in rows:
+            try:r["source_images"]=json.loads(r.get("source_images_json") or "[]")
+            except Exception:r["source_images"]=[]
+            r["synthetic_de"]=bool(int(r.get("synthetic_de") or 0))
+        return rows
+
+    def _save_match_events_conn(self, conn, tid: str, match_no: int, events: list[dict] | None) -> None:
+        """Replace the detailed timeline for one match.
+
+        Events are already mapped by the backend from the club shown on the EA FC
+        screen to the FIFA Night participant who owns that assigned club.
+        """
+        conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=? AND match_no=?"),(tid,int(match_no)))
+        if not events:return
+        allowed={"normal_goal","penalty_goal","own_goal","penalty_miss","yellow_card","red_card","substitution"}
+        for idx,raw in enumerate(events,1):
+            et=str(raw.get("event_type") or "").strip()
+            if et not in allowed:continue
+            minute=raw.get("minute");stoppage=raw.get("stoppage")
+            try: minute=int(minute) if minute is not None else None
+            except Exception: minute=None
+            try: stoppage=int(stoppage) if stoppage is not None else None
+            except Exception: stoppage=None
+            footballer=" ".join(str(raw.get("footballer_name") or "").strip().split())
+            related=" ".join(str(raw.get("related_footballer_name") or "").strip().split())
+            actor_team=" ".join(str(raw.get("actor_team_name") or "").strip().split())
+            credited_team=" ".join(str(raw.get("credited_team_name") or "").strip().split())
+            order=raw.get("event_order")
+            try:order=int(order)
+            except Exception:order=idx
+            sources=raw.get("source_images") or []
+            sources=[int(x) for x in sources if str(x).isdigit()]
+            conn.execute(self._sql("""
+                INSERT INTO match_events (
+                    id,tournament_id,match_no,event_order,event_type,minute,stoppage,minute_label,
+                    actor_player_id,credited_player_id,actor_team_name,credited_team_name,
+                    footballer_name,normalized_footballer,related_footballer_name,
+                    synthetic_de,confidence,source_images_json,created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """),(
+                str(uuid.uuid4()),tid,int(match_no),order,et,minute,stoppage,str(raw.get("minute_label") or ""),
+                str(raw.get("actor_player_id") or "") or None,str(raw.get("credited_player_id") or "") or None,
+                actor_team,credited_team,footballer,self._norm_scorer_name(footballer),related,
+                1 if raw.get("synthetic_de") else 0,str(raw.get("confidence") or ""),json.dumps(sources),now_iso()
+            ))
+
+    def _aggregate_scorers_from_events(self, events: list[dict] | None, home_pid: str, away_pid: str,
+                                       home_team: str, away_team: str) -> dict:
+        """Convert detailed goal events back to the legacy match_scorers payload.
+
+        Penalty goals count for the footballer. Own goals (including the technical DE
+        bonus) never do. This keeps all existing scorer/Awards code working unchanged.
+        """
+        totals={"home":defaultdict(int),"away":defaultdict(int)}
+        for e in events or []:
+            if str(e.get("event_type") or "") not in {"normal_goal","penalty_goal"}:continue
+            if e.get("synthetic_de"):continue
+            name=" ".join(str(e.get("footballer_name") or "").strip().split())
+            if not name:continue
+            credited=str(e.get("credited_player_id") or "")
+            if credited==str(home_pid):totals["home"][name]+=1
+            elif credited==str(away_pid):totals["away"][name]+=1
+        return {
+            "home":{"team":home_team,"items":[{"name":n,"goals":g} for n,g in totals["home"].items()]},
+            "away":{"team":away_team,"items":[{"name":n,"goals":g} for n,g in totals["away"].items()]},
+        }
+
+    def player_event_stats(self) -> list[dict]:
+        """Raw new-era discipline/penalty counters for FIFA Night players.
+
+        Used later by Statistics/Awards. Penalties awarded include both scored and
+        missed penalties. Shoot-out kicks are never written to match_events.
+        """
+        with self.connect() as conn:
+            rows=self._fetchall(conn,"""
+                SELECT p.id AS player_id,p.name AS player_name,
+                       SUM(CASE WHEN me.event_type='yellow_card' THEN 1 ELSE 0 END) AS yellows,
+                       SUM(CASE WHEN me.event_type='red_card' THEN 1 ELSE 0 END) AS reds,
+                       SUM(CASE WHEN me.event_type IN ('penalty_goal','penalty_miss') THEN 1 ELSE 0 END) AS penalties_awarded,
+                       SUM(CASE WHEN me.event_type='penalty_goal' THEN 1 ELSE 0 END) AS penalties_scored,
+                       SUM(CASE WHEN me.event_type='penalty_miss' THEN 1 ELSE 0 END) AS penalties_missed,
+                       SUM(CASE WHEN me.event_type='own_goal' AND COALESCE(me.synthetic_de,0)=0 THEN 1 ELSE 0 END) AS own_goals
+                FROM players p
+                JOIN match_events me ON me.actor_player_id=p.id
+                JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
+                GROUP BY p.id,p.name ORDER BY p.name
+            """)
+        return [{**r,**{k:int(r.get(k) or 0) for k in ("yellows","reds","penalties_awarded","penalties_scored","penalties_missed","own_goals")}} for r in rows]
+
     def team_scorer_options(self, team_name: str) -> list[dict]:
         nt=self._norm_team_name(team_name)
         with self.connect() as conn:
@@ -2072,7 +2221,7 @@ class Database:
                 home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL WHERE tournament_id=? AND match_no=?"""),(now_iso(),tid,int(match_no)))
             self._resolve_all_conn(conn,tid,fmt)
 
-    def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None) -> None:
+    def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None, events: list[dict] | None = None) -> None:
         with self.connect() as conn:
             m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,match_no))
             if not m or not m.get("home_player_id") or not m.get("away_player_id"): raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
@@ -2083,6 +2232,15 @@ class Database:
             knockout = m["stage"] not in ("GROUP","LEAGUE")
             if knockout and hs==ass and (hp is None or ap is None or hp==ap): raise ValueError("W fazie pucharowej remis wymaga karnych.")
             winner=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"],hp,ap)
+            if events is not None:
+                teams=self._fetchone(conn,"""SELECT htp.team AS home_team,atp.team AS away_team
+                    FROM matches mm
+                    LEFT JOIN tournament_players htp ON htp.tournament_id=mm.tournament_id AND htp.player_id=mm.home_player_id
+                    LEFT JOIN tournament_players atp ON atp.tournament_id=mm.tournament_id AND atp.player_id=mm.away_player_id
+                    WHERE mm.tournament_id=? AND mm.match_no=?""",(tid,match_no)) or {}
+                self._save_match_events_conn(conn,tid,match_no,events)
+                scorers=self._aggregate_scorers_from_events(events,str(m["home_player_id"]),str(m["away_player_id"]),
+                                                            str(teams.get("home_team") or ""),str(teams.get("away_team") or ""))
             self._save_scorers_conn(conn,tid,match_no,hs,ass,scorers)
             conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=?,match_status='played' WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
@@ -2120,6 +2278,7 @@ class Database:
             if not last:return None
             no=int(last["match_no"])
             conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,no))
+            conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=? AND match_no=?"),(tid,no))
             conn.execute(self._sql("UPDATE matches SET home_score=NULL,away_score=NULL,home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL,played_at=NULL,match_status='pending' WHERE tournament_id=? AND match_no=?"),(tid,no))
             # Rebuild participants only for genuinely pending games. Skipped league matches stay terminal.
             conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL WHERE tournament_id=? AND home_score IS NULL AND COALESCE(match_status,'pending')='pending'"),(tid,))
@@ -2180,7 +2339,7 @@ class Database:
 
     def reset_current(self, tid: str) -> None:
         with self.connect() as conn:
-            conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,)); self._setting_set_conn(conn,CURRENT_KEY,"")
+            conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,)); self._setting_set_conn(conn,CURRENT_KEY,"")
 
     def start_new(self) -> None:
         with self.connect() as conn: self._setting_set_conn(conn,CURRENT_KEY,"")
@@ -2189,7 +2348,7 @@ class Database:
         with self.connect() as conn:
             ids=[r["tournament_id"] for r in self._fetchall(conn,"SELECT tournament_id FROM flex_tournament_meta")]
             for tid in ids:
-                conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,))
+                conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,)); conn.execute(self._sql("DELETE FROM tournaments WHERE id=?"),(tid,))
             conn.execute("DELETE FROM flex_tournament_meta")
             self._setting_set_conn(conn,CURRENT_KEY,"")
 
@@ -2397,6 +2556,7 @@ class Database:
     def _delete_tournament_conn(self, conn, tid: str) -> None:
         conn.execute(self._sql("DELETE FROM flex_match_sources WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=?"),(tid,))
+        conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM flex_tournament_meta WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"),(tid,))
         conn.execute(self._sql("DELETE FROM tournament_players WHERE tournament_id=?"),(tid,))
@@ -2420,6 +2580,7 @@ class Database:
             if self._setting_get_conn(conn,"fifa_history_locked")=="1": raise ValueError("Historia jest zablokowana.")
             conn.execute("DELETE FROM flex_match_sources")
             conn.execute("DELETE FROM match_scorers")
+            conn.execute("DELETE FROM match_events")
             conn.execute("DELETE FROM flex_tournament_meta")
             conn.execute("DELETE FROM matches")
             conn.execute("DELETE FROM tournament_players")
