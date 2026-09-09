@@ -4,3 +4,4 @@ psycopg[pool,binary]>=3.2
 httpx>=0.28,<1
 python-multipart>=0.0.20,<1
 streamlit>=1.50
+Pillow>=10.0

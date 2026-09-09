@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import hashlib
 import hmac
 import json
@@ -12,6 +13,7 @@ from typing import Any
 
 import httpx
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from PIL import Image, ImageOps
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -273,6 +275,30 @@ def _annotation_box(item: dict[str, Any]) -> list[dict[str, int]]:
     ]
 
 
+def _normalize_image_for_google(raw: bytes, index: int) -> tuple[bytes, str, int, int]:
+    """Decode user upload with Pillow and re-encode as a standard RGB JPEG for Google Vision."""
+    try:
+        with Image.open(io.BytesIO(raw)) as img:
+            img = ImageOps.exif_transpose(img)
+            width, height = img.size
+            if width < 1 or height < 1:
+                raise ValueError("invalid dimensions")
+            if img.mode != "RGB":
+                # JPEG has no alpha channel; flatten transparent pixels onto white.
+                if "A" in img.getbands():
+                    rgba = img.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, "white")
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    img = background
+                else:
+                    img = img.convert("RGB")
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=92, optimize=True)
+            return out.getvalue(), "image/jpeg", width, height
+    except Exception as exc:
+        raise HTTPException(422, f"Zdjęcie {index}: nie udało się odczytać pliku jako obrazu ({exc}).") from exc
+
+
 @app.post("/api/v1/vision/test-scan")
 async def vision_test_scan(
     images: list[UploadFile] = File(...),
@@ -297,8 +323,9 @@ async def vision_test_scan(
             raise HTTPException(422, f"Zdjęcie {index} jest puste.")
         if len(raw) > VISION_MAX_IMAGE_BYTES:
             raise HTTPException(413, f"Zdjęcie {index} ma więcej niż 12 MB.")
+        normalized, normalized_type, width, height = _normalize_image_for_google(raw, index)
         requests_payload.append({
-            "image": {"content": base64.b64encode(raw).decode("ascii")},
+            "image": {"content": base64.b64encode(normalized).decode("ascii")},
             "features": [{"type": "TEXT_DETECTION"}],
         })
         file_meta.append({
@@ -306,6 +333,10 @@ async def vision_test_scan(
             "filename": image.filename or f"image_{index}",
             "content_type": content_type,
             "bytes": len(raw),
+            "normalized_content_type": normalized_type,
+            "normalized_bytes": len(normalized),
+            "width": width,
+            "height": height,
         })
 
     started = time.perf_counter()
