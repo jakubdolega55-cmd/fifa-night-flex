@@ -413,9 +413,17 @@ async def vision_test_scan(
         "openai": "openai_luna",
         "luna": "openai_luna",
         "gemini": "gemini_38_flash",
+        "gemini_flash": "gemini_25_flash",
+        "gemini_flash_lite": "gemini_25_flash_lite",
     }
     provider = aliases.get(provider, provider)
-    if provider not in {"google_ocr", "openai_luna", "gemini_38_flash"}:
+    if provider not in {
+        "google_ocr",
+        "openai_luna",
+        "gemini_38_flash",
+        "gemini_25_flash",
+        "gemini_25_flash_lite",
+    }:
         raise HTTPException(422, "Nieznany provider testu Vision.")
     if not 1 <= len(images) <= VISION_MAX_IMAGES:
         raise HTTPException(422, f"Wyślij od 1 do {VISION_MAX_IMAGES} zdjęć.")
@@ -568,6 +576,13 @@ async def vision_test_scan(
             "saved_to_database": False,
         }
 
+    gemini_models = {
+        "gemini_38_flash": "gemini-3.8-flash",
+        "gemini_25_flash": "gemini-2.5-flash",
+        "gemini_25_flash_lite": "gemini-2.5-flash-lite",
+    }
+    gemini_model = gemini_models[provider]
+
     api_key = _gemini_api_key()
     if not api_key:
         raise HTTPException(503, "GEMINI_API_KEY nie jest ustawiony na serwerze API.")
@@ -596,7 +611,7 @@ async def vision_test_scan(
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             response = await client.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent",
                 headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
                 json=body,
             )
@@ -622,10 +637,19 @@ async def vision_test_scan(
     answer_tokens = int(usage.get("candidatesTokenCount") or 0)
     thinking_tokens = int(usage.get("thoughtsTokenCount") or 0)
     output_tokens = answer_tokens + thinking_tokens
-    paid_estimate = input_tokens * 0.75 / 1_000_000 + output_tokens * 3.75 / 1_000_000
+
+    # Current benchmark only needs a rough paid-tier estimate. Keep rates per model
+    # isolated here so they are easy to refresh without touching the extraction logic.
+    paid_rates = {
+        "gemini_38_flash": (0.75, 3.75),
+        "gemini_25_flash": (0.30, 2.50),
+        "gemini_25_flash_lite": (0.10, 0.40),
+    }
+    input_rate, output_rate = paid_rates[provider]
+    paid_estimate = input_tokens * input_rate / 1_000_000 + output_tokens * output_rate / 1_000_000
     return {
-        "provider": "gemini_38_flash",
-        "model": "gemini-3.8-flash",
+        "provider": provider,
+        "model": gemini_model,
         "processing_time_ms": elapsed_ms,
         "image_count": len(prepared),
         "result": result,

@@ -145,6 +145,8 @@ def render_vision_ocr_test():
             "Google OCR — darmowy baseline",
             "OpenAI GPT-5.6 Luna — vision",
             "Gemini 3.8 Flash — vision",
+            "Gemini 2.5 Flash — vision",
+            "Gemini 2.5 Flash-Lite — vision",
         ],
         key="vision_test_provider",
     )
@@ -152,6 +154,8 @@ def render_vision_ocr_test():
         "Google OCR — darmowy baseline": "google_ocr",
         "OpenAI GPT-5.6 Luna — vision": "openai_luna",
         "Gemini 3.8 Flash — vision": "gemini_38_flash",
+        "Gemini 2.5 Flash — vision": "gemini_25_flash",
+        "Gemini 2.5 Flash-Lite — vision": "gemini_25_flash_lite",
     }
     provider = provider_map[provider_label]
 
@@ -189,7 +193,9 @@ def render_vision_ocr_test():
     spinner = {
         "google_ocr": "Google Vision odczytuje tekst...",
         "openai_luna": "OpenAI analizuje wydarzenia i ikony...",
-        "gemini_38_flash": "Gemini analizuje wydarzenia i ikony...",
+        "gemini_38_flash": "Gemini 3.8 Flash analizuje wydarzenia i ikony...",
+        "gemini_25_flash": "Gemini 2.5 Flash analizuje wydarzenia i ikony...",
+        "gemini_25_flash_lite": "Gemini 2.5 Flash-Lite analizuje wydarzenia i ikony...",
     }[provider]
     started = time.perf_counter()
     with st.spinner(spinner):
@@ -286,9 +292,15 @@ def render_vision_ocr_test():
             f"szacowany koszt tego wywołania: ${float(data.get('estimated_cost_usd') or 0):.6f}"
         )
     else:
+        paid_cost = data.get("paid_tier_estimated_cost_usd")
+        cost_text = (
+            f"szacunek dla płatnego tieru: ${float(paid_cost):.6f}"
+            if paid_cost is not None
+            else "koszt płatnego tieru: nie liczony w tym teście"
+        )
         st.caption(
             f"Tokeny: input {usage.get('input_tokens', 0)}, odpowiedź {usage.get('answer_tokens', 0)}, thinking {usage.get('thinking_tokens', 0)} • "
-            f"szacunek dla płatnego tieru: ${float(data.get('paid_tier_estimated_cost_usd') or 0):.6f}; na Gemini może obowiązywać free tier."
+            f"{cost_text}; na Gemini może obowiązywać free tier."
         )
 
     with st.expander("Surowy JSON modelu"):
