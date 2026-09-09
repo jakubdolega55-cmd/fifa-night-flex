@@ -920,10 +920,57 @@ def render_match_context(m):
 
 
 
+def _absence_reason_label(reason:str) -> str:
+    return "🟥 czerwona kartka" if str(reason)=="red_card" else "🚑 kontuzja" if str(reason)=="injury" else str(reason or "absencja")
+
+
+def _absence_targets_for_schedule(tid:str, schedule:list[dict]) -> dict[int,list[dict]]:
+    """Map every active one-match absence to the player's next ACTUALLY pending match.
+
+    This deliberately follows the current LIVE order (including deferred matches), not
+    numeric match_no. One absence is shown only at the first pending match involving
+    that FIFA Night player, so TV does not incorrectly warn for several future games.
+    """
+    active=db.active_absences(tid)
+    if not active:return {}
+    pending=[m for m in schedule if m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped" and m.get("home_player_id") and m.get("away_player_id")]
+    out={}
+    for a in active:
+        pid=str(a.get("player_id") or "")
+        target=next((m for m in pending if pid in {str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")}),None)
+        if target:
+            out.setdefault(int(target.get("match_no") or 0),[]).append(a)
+    return out
+
+
+def _absence_text(absences:list[dict]) -> str:
+    parts=[]
+    for a in absences or []:
+        footballer=str(a.get("footballer_name") or "?")
+        owner=str(a.get("player_name") or "?")
+        team=str(a.get("team_name") or "")
+        reason=_absence_reason_label(str(a.get("reason") or ""))
+        club=f" / {team}" if team else ""
+        parts.append(f"{footballer} ({owner}{club}) — {reason}")
+    return " • ".join(parts)
+
+
+def render_match_absences(match:dict, targets:dict[int,list[dict]], *, compact:bool=False) -> None:
+    rows=targets.get(int(match.get("match_no") or 0),[]) if match else []
+    if not rows:return
+    text=_absence_text(rows)
+    if compact:
+        st.warning(f"🚫 **Pauzują:** {text}")
+    else:
+        st.markdown("#### 🚫 Absencje na ten mecz")
+        st.warning(text)
+        st.caption("Czerwona kartka i kontuzja oznaczają pauzę dokładnie w następnym faktycznie rozegranym meczu tego gracza FIFA Night.")
+
+
 
 MATCH_SCAN_EVENT_TYPES = [
     "normal_goal", "penalty_goal", "own_goal", "penalty_miss",
-    "yellow_card", "red_card", "substitution", "unknown",
+    "yellow_card", "red_card", "injury", "substitution", "unknown",
 ]
 MATCH_SCAN_EVENT_LABELS = {
     "normal_goal": "⚽ gol",
@@ -932,6 +979,7 @@ MATCH_SCAN_EVENT_LABELS = {
     "penalty_miss": "❌🎯 niewykorzystany karny",
     "yellow_card": "🟨 żółta kartka",
     "red_card": "🟥 czerwona kartka",
+    "injury": "🚑 kontuzja",
     "substitution": "🔁 zmiana",
     "unknown": "❓ inne / niepewne",
 }
@@ -1189,8 +1237,9 @@ def _render_match_scan_result(data:dict, tid:str, m:dict):
     goal_types={"normal_goal","penalty_goal","own_goal"}
     goals=[e for e in events if e.get("event_type") in goal_types]
     cards=[e for e in events if e.get("event_type") in {"yellow_card","red_card"}]
+    injuries=[e for e in events if e.get("event_type")=="injury"]
     penalties_missed=[e for e in events if e.get("event_type")=="penalty_miss"]
-    other=[e for e in events if e.get("event_type") not in goal_types|{"yellow_card","red_card","penalty_miss"}]
+    other=[e for e in events if e.get("event_type") not in goal_types|{"yellow_card","red_card","injury","penalty_miss"}]
 
     st.markdown("#### ⚽ Bramki")
     if not goals:
@@ -1230,12 +1279,15 @@ def _render_match_scan_result(data:dict, tid:str, m:dict):
     else:
         st.warning("⚠️ Odczyt wymaga sprawdzenia przed zapisaniem.")
 
-    if cards or penalties_missed or other:
-        with st.expander("🟨🟥 Pozostałe wydarzenia",expanded=False):
+    if cards or injuries or penalties_missed or other:
+        with st.expander("🟨🟥🚑 Pozostałe wydarzenia",expanded=False):
             for e in cards:
                 minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
                 icon="🟥" if e.get("event_type")=="red_card" else "🟨"
                 st.write(f"{icon} {minute} • {e.get('footballer_name') or '?'} → **{e.get('actor_player_name') or '?'}**")
+            for e in injuries:
+                minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
+                st.write(f"🚑 {minute} • kontuzja: {e.get('footballer_name') or '?'} → **{e.get('actor_player_name') or '?'}**")
             for e in penalties_missed:
                 minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
                 st.write(f"❌⚽ {minute} • niewykorzystany karny: {e.get('footballer_name') or '?'} → **{e.get('actor_player_name') or '?'}**")
@@ -1289,7 +1341,7 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
                 st.error("Brak ADMIN_PASSWORD w Streamlit Secrets.")
             else:
                 multipart=[("images",(f.name,f.getvalue(),f.type or "image/jpeg")) for f in uploaded]
-                with st.spinner("OpenAI odczytuje wynik, gole, karne, samobóje i kartki oraz dopasowuje drużyny do graczy FIFA Night..."):
+                with st.spinner("OpenAI odczytuje wynik, gole, karne, samobóje, kartki i kontuzje oraz dopasowuje drużyny do graczy FIFA Night..."):
                     try:
                         r=requests.post(
                             f"{api_url}/api/v1/tournaments/{tid}/matches/{no}/scan-preview",
@@ -1517,6 +1569,8 @@ def live(tid:str):
     if render_special_event(tid,b): return
     b=db.bundle(tid);cur=db.current_match_from(b["matches"],meta.get("extra") or {})
     if not cur:st.info("Czekam na rozstrzygnięcie poprzedniego etapu…");return
+    live_schedule=db.live_schedule_from(b.get("matches") or [],meta.get("extra") or {})
+    absence_targets=_absence_targets_for_schedule(tid,live_schedule)
     total=max_matches(fmt)
     if not int(t.get("is_test") or 0):
         global_jubilee=db.upcoming_global_match_milestone()
@@ -1526,6 +1580,7 @@ def live(tid:str):
     if fmt in ("double4","double5","double6","double7","double8") and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    render_match_absences(cur,absence_targets)
     render_match_context(cur)
     if fmt in ("league3_final","league4_final","league5_final") and cur.get("stage")=="LEAGUE":
         pending_league=[x for x in b.get("matches",[]) if x.get("stage")=="LEAGUE" and x.get("home_score") is None and str(x.get("match_status") or "pending")!="skipped"]
@@ -1547,7 +1602,9 @@ def live(tid:str):
             except ValueError as e:st.error(str(e))
     score_form(tid,cur,fmt)
     nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
-    if nxt:st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")
+    if nxt:
+        st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")
+        render_match_absences(nxt,absence_targets,compact=True)
     if st.button("↩️ Cofnij ostatni wynik / pominięcie",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
         st.session_state.pop("pending_ko",None);db.undo_last_result(tid);rf()
     tables=db.standings(tid)
@@ -1853,6 +1910,8 @@ def _render_match_scorer_details(tid:str,m:dict,no:int):
                     line=f"{minute} 🟨 {footballer} → {actor}"
                 elif et=="red_card":
                     line=f"{minute} 🟥 {footballer} → {actor}"
+                elif et=="injury":
+                    line=f"{minute} 🚑 Kontuzja: {footballer} → {actor}"
                 elif et=="substitution":
                     pair=f"{footballer} / {related}" if related else footballer
                     line=f"{minute} 🔁 Zmiana: {pair} → {actor}"
@@ -2768,6 +2827,7 @@ def render_tv_screen(tid:str):
     cur=db.current_match_from(b.get("matches") or [],extra)
     schedule=db.live_schedule_from(b.get("matches") or [],extra)
     ready=[m for m in schedule if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
+    absence_targets=_absence_targets_for_schedule(tid,schedule)
 
     if tv_mode=="🔄 AUTO" and auto_slide==1:
         st.markdown("### 🗺️ Sytuacja turnieju")
@@ -2822,11 +2882,15 @@ def render_tv_screen(tid:str):
     st.markdown(f"<div style='text-align:center;font-weight:900;color:#22c55e;letter-spacing:.08em;margin-bottom:.35rem'>▶️ TERAZ</div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    render_match_absences(cur,absence_targets,compact=True)
     # Kolejne gotowe spotkania w faktycznej kolejności LIVE.
     later=[m for m in ready if int(m.get("match_no") or 0)!=int(cur.get("match_no") or 0)]
     if later:
         st.markdown(f"### ⏭️ Następny: **{esc(later[0].get('home_name'))} vs {esc(later[0].get('away_name'))}**")
-        if len(later)>1:st.caption(f"Potem: {later[1].get('home_name')} vs {later[1].get('away_name')}")
+        render_match_absences(later[0],absence_targets,compact=True)
+        if len(later)>1:
+            st.caption(f"Potem: {later[1].get('home_name')} vs {later[1].get('away_name')}")
+            render_match_absences(later[1],absence_targets,compact=True)
     else:
         st.caption("Kolejny mecz zostanie ustalony po tym spotkaniu.")
     scorers=db.tournament_live_scorers(tid,3)

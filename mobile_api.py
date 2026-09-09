@@ -292,7 +292,7 @@ AI_EVENT_SCAN_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "enum": [
                             "normal_goal", "penalty_goal", "own_goal",
-                            "yellow_card", "red_card", "substitution",
+                            "yellow_card", "red_card", "injury", "substitution",
                             "penalty_miss", "other", "unknown"
                         ],
                     },
@@ -332,6 +332,8 @@ EA FC icon rules used by FIFA Night:
 - RED football/ball icon = own_goal. It is NOT a missed penalty.
 - yellow rectangular card = yellow_card
 - red rectangular card = red_card
+- injury/medical event (injury symbol, medical/cross icon or explicit injury indication) = injury
+- classify injury ONLY when the event is visibly an injury; until the exact EA FC icon is confirmed, use unknown when uncertain
 - player names with green up / red down arrows = substitution, NOT a goal
 - use penalty_miss only when the screen visibly shows a missed-penalty event distinct from the RED own-goal ball
 - if an icon cannot be identified reliably, use unknown
@@ -341,6 +343,9 @@ Goal field rules:
 - penalty_goal: player = scorer; side = scorer's visible side; credited_side = same side; own_goal_by = null
 - own_goal: player MUST be null; own_goal_by = the player whose name is shown with the red-ball icon; side = that player's visible side; credited_side = the OPPOSITE side
 - own goals count toward the match score but must never be credited as a scorer goal
+
+For injury: player = the visibly injured footballer; side = that footballer's visible side; credited_side = unknown.
+A red card or injury is only an extracted event. FIFA Night's backend decides any next-match absence rule.
 
 Different events can occur in the same minute on opposite sides.
 Return each visible event once. If the same event appears on overlapping screenshots, merge it and include all matching image_indices.
