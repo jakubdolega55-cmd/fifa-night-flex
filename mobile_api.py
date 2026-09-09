@@ -584,12 +584,12 @@ async def vision_test_scan(
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 0,
-            "responseFormat": {
-                "text": {
-                    "mimeType": "application/json",
-                    "schema": AI_EVENT_SCAN_SCHEMA,
-                }
-            },
+            # generateContent REST expects the legacy structured-output fields here.
+            # responseFormat.text.mimeType uses enum values in the REST schema and
+            # rejects the literal "application/json". responseMimeType +
+            # responseJsonSchema accepts standard JSON Schema (including nullable types).
+            "responseMimeType": "application/json",
+            "responseJsonSchema": AI_EVENT_SCAN_SCHEMA,
         },
     }
     started = time.perf_counter()
