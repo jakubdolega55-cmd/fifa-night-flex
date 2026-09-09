@@ -253,7 +253,6 @@ def health() -> dict[str, Any]:
 
 VISION_ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
 VISION_MAX_IMAGE_BYTES = 12 * 1024 * 1024
-VISION_MAX_IMAGES = 5
 
 
 def _google_vision_api_key() -> str:
@@ -284,22 +283,28 @@ AI_EVENT_SCAN_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "image_indices": {"type": "array", "items": {"type": "integer", "minimum": 1, "maximum": 5}},
+                    "image_indices": {"type": "array", "items": {"type": "integer", "minimum": 1}},
                     "minute": {"type": ["integer", "null"], "minimum": 0, "maximum": 130},
                     "stoppage": {"type": ["integer", "null"], "minimum": 0, "maximum": 30},
                     "minute_label": {"type": ["string", "null"]},
                     "side": {"type": "string", "enum": ["left", "right", "unknown"]},
                     "event_type": {
                         "type": "string",
-                        "enum": ["goal", "yellow_card", "red_card", "substitution", "penalty_miss", "other", "unknown"],
+                        "enum": [
+                            "normal_goal", "penalty_goal", "own_goal",
+                            "yellow_card", "red_card", "substitution",
+                            "penalty_miss", "other", "unknown"
+                        ],
                     },
                     "player": {"type": ["string", "null"]},
+                    "own_goal_by": {"type": ["string", "null"]},
                     "related_player": {"type": ["string", "null"]},
+                    "credited_side": {"type": "string", "enum": ["left", "right", "unknown"]},
                     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
                 },
                 "required": [
                     "image_indices", "minute", "stoppage", "minute_label", "side",
-                    "event_type", "player", "related_player", "confidence"
+                    "event_type", "player", "own_goal_by", "related_player", "credited_side", "confidence"
                 ],
             },
         },
@@ -315,25 +320,104 @@ AI_EVENT_SCAN_SCHEMA: dict[str, Any] = {
 
 
 AI_EVENT_SCAN_PROMPT = """You are a visual extraction engine for EA Sports FC post-match EVENT screens.
-All supplied images belong to the SAME match. There may be 1 to 5 screenshots and adjacent screenshots may overlap.
+All supplied images belong to the SAME match. There may be any number of screenshots and adjacent screenshots may overlap.
 
 Extract only facts that are actually visible. Do not invent missing goals or events from the final score.
 Read the score and the two labels at the top when visible. Use left/right exactly as shown on screen.
 
-Most important: classify events using the VISUAL ICON and layout, not only OCR text.
-- football/ball icon = goal
+CRITICAL: classify events from the VISUAL ICON, not from OCR text or assumptions.
+EA FC icon rules used by FIFA Night:
+- plain WHITE football/ball icon = normal_goal
+- WHITE football/ball icon with a small CHECK/TICK badge = penalty_goal (a scored penalty during the match)
+- RED football/ball icon = own_goal. It is NOT a missed penalty.
 - yellow rectangular card = yellow_card
 - red rectangular card = red_card
-- a pair of player names with green up / red down arrows = substitution, NOT a goal
-- if an icon or event cannot be identified reliably, use unknown
-Different events can occur in the same minute on opposite sides.
+- player names with green up / red down arrows = substitution, NOT a goal
+- use penalty_miss only when the screen visibly shows a missed-penalty event distinct from the RED own-goal ball
+- if an icon cannot be identified reliably, use unknown
 
+Goal field rules:
+- normal_goal: player = scorer; side = scorer's visible side; credited_side = same side; own_goal_by = null
+- penalty_goal: player = scorer; side = scorer's visible side; credited_side = same side; own_goal_by = null
+- own_goal: player MUST be null; own_goal_by = the player whose name is shown with the red-ball icon; side = that player's visible side; credited_side = the OPPOSITE side
+- own goals count toward the match score but must never be credited as a scorer goal
+
+Different events can occur in the same minute on opposite sides.
 Return each visible event once. If the same event appears on overlapping screenshots, merge it and include all matching image_indices.
 Preserve player names as displayed. Do not guess full names.
-If the screenshots clearly show only a scrolled fragment of the event timeline, set event_list_complete=false and needs_more_images=true.
-If the full event list is visible across all supplied screenshots, set event_list_complete=true and needs_more_images=false.
-A final score such as 6:5 does NOT mean that 11 goal events must be visible in the supplied images.
+
+The complete list of ALL events (cards/substitutions) is less important than the complete list of GOALS.
+If the screenshots omit some cards or substitutions but all goals can still be accounted for, do not invent those missing events.
+Set event_list_complete only for the whole event timeline. The server will independently validate goal completeness against the score.
+A final score never authorizes you to invent a missing goal.
 """
+
+
+GOAL_EVENT_TYPES = {"normal_goal", "penalty_goal", "own_goal"}
+
+def _opposite_side(side: str) -> str:
+    return "right" if side == "left" else "left" if side == "right" else "unknown"
+
+def _normalize_and_validate_event_scan_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Normalize goal semantics and derive hard goal-vs-score validation on the server."""
+    events = result.get("events") or []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "unknown")
+        side = str(event.get("side") or "unknown")
+        if event_type == "own_goal":
+            # A player shown next to the red own-goal ball is NOT a scorer.
+            if not event.get("own_goal_by") and event.get("player"):
+                event["own_goal_by"] = event.get("player")
+            event["player"] = None
+            event["credited_side"] = _opposite_side(side)
+        elif event_type in {"normal_goal", "penalty_goal"}:
+            event["own_goal_by"] = None
+            event["credited_side"] = side if side in {"left", "right"} else "unknown"
+        else:
+            event["own_goal_by"] = None
+            event["credited_side"] = "unknown"
+
+    score_left = result.get("score_left")
+    score_right = result.get("score_right")
+    goal_events = [e for e in events if isinstance(e, dict) and e.get("event_type") in GOAL_EVENT_TYPES]
+    recognized_left = sum(1 for e in goal_events if e.get("credited_side") == "left")
+    recognized_right = sum(1 for e in goal_events if e.get("credited_side") == "right")
+    recognized_unknown = sum(1 for e in goal_events if e.get("credited_side") not in {"left", "right"})
+
+    validation: dict[str, Any] = {
+        "recognized_goal_events": len(goal_events),
+        "recognized_left": recognized_left,
+        "recognized_right": recognized_right,
+        "recognized_unknown": recognized_unknown,
+        "expected_left": score_left,
+        "expected_right": score_right,
+        "complete": False,
+        "status": "score_unknown",
+        "missing_left": None,
+        "missing_right": None,
+        "extra_left": None,
+        "extra_right": None,
+    }
+    if isinstance(score_left, int) and isinstance(score_right, int):
+        validation["missing_left"] = max(score_left - recognized_left, 0)
+        validation["missing_right"] = max(score_right - recognized_right, 0)
+        validation["extra_left"] = max(recognized_left - score_left, 0)
+        validation["extra_right"] = max(recognized_right - score_right, 0)
+        exact = (recognized_left == score_left and recognized_right == score_right and recognized_unknown == 0)
+        validation["complete"] = exact
+        if exact:
+            validation["status"] = "complete"
+        elif recognized_left > score_left or recognized_right > score_right:
+            validation["status"] = "overcount"
+        elif recognized_unknown:
+            validation["status"] = "needs_review"
+        else:
+            validation["status"] = "missing_goals"
+
+    result["goal_validation"] = validation
+    return result
 
 
 def _extract_openai_output_text(payload: dict[str, Any]) -> str:
@@ -403,7 +487,7 @@ async def vision_test_scan(
     provider: str = Form(default="google_ocr"),
     x_admin_password: str | None = Header(default=None, alias="X-Admin-Password"),
 ) -> dict[str, Any]:
-    """Temporary EA FC vision benchmark. Accepts 1-5 images and never writes to Neon."""
+    """Temporary EA FC vision benchmark. Accepts one or more images and never writes to Neon."""
     _require_vision_test_admin(x_admin_password)
     provider = str(provider or "google_ocr").strip().lower()
     aliases = {
@@ -426,8 +510,8 @@ async def vision_test_scan(
         "gemini_35_flash_lite",
     }:
         raise HTTPException(422, "Nieznany provider testu Vision.")
-    if not 1 <= len(images) <= VISION_MAX_IMAGES:
-        raise HTTPException(422, f"Wyślij od 1 do {VISION_MAX_IMAGES} zdjęć.")
+    if not images:
+        raise HTTPException(422, "Dodaj co najmniej jedno zdjęcie.")
 
     prepared: list[dict[str, Any]] = []
     for index, image in enumerate(images, start=1):
@@ -562,6 +646,7 @@ async def vision_test_scan(
             result = json.loads(raw_text)
         except Exception as exc:
             raise HTTPException(502, f"OpenAI nie zwrócił poprawnego JSON: {raw_text[:800]}") from exc
+        result = _normalize_and_validate_event_scan_result(result)
         usage = payload.get("usage") or {}
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
@@ -634,6 +719,7 @@ async def vision_test_scan(
         result = json.loads(raw_text)
     except Exception as exc:
         raise HTTPException(502, f"Gemini nie zwrócił poprawnego JSON: {raw_text[:800]}") from exc
+    result = _normalize_and_validate_event_scan_result(result)
     usage = payload.get("usageMetadata") or {}
     input_tokens = int(usage.get("promptTokenCount") or 0)
     answer_tokens = int(usage.get("candidatesTokenCount") or 0)

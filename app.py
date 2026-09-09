@@ -123,7 +123,7 @@ def fifa_night_api_url() -> str:
 def render_vision_ocr_test():
     st.divider()
     st.markdown("### 🧪 Test rozpoznawania EA FC — OCR / AI")
-    st.caption("Prototyp: wysyła 1–5 screenów z zakładki Wydarzenia do FastAPI na Renderze. Nic nie zapisuje do Neona.")
+    st.caption("Prototyp: wysyła tyle screenów z zakładki Wydarzenia, ile potrzeba. Nic nie zapisuje do Neona.")
     if not controller_access():
         st.info("Włącz sterowanie na tym urządzeniu, aby korzystać z testu.")
         return
@@ -162,15 +162,13 @@ def render_vision_ocr_test():
     provider = provider_map[provider_label]
 
     uploaded = st.file_uploader(
-        "Dodaj od 1 do 5 screenów ekranu Wydarzenia EA FC",
+        "Dodaj screeny ekranu Wydarzenia EA FC (tyle, ile potrzeba)",
         type=["jpg", "jpeg", "png", "webp"],
         accept_multiple_files=True,
         key="vision_test_images",
     )
     if uploaded:
-        if len(uploaded) > 5:
-            st.warning("Do testu zostanie użytych tylko pierwszych 5 zdjęć.")
-        shown = uploaded[:5]
+        shown = uploaded
         cols = st.columns(min(3, len(shown)))
         for idx, item in enumerate(shown):
             with cols[idx % len(cols)]:
@@ -182,7 +180,7 @@ def render_vision_ocr_test():
     if not api_url:
         st.error("Wpisz adres FastAPI na Renderze.")
         return
-    files = uploaded[:5] if uploaded else []
+    files = uploaded if uploaded else []
     if not files:
         st.error("Dodaj co najmniej jedno zdjęcie.")
         return
@@ -257,18 +255,46 @@ def render_vision_ocr_test():
         st.warning("Model nie odczytał jednoznacznie wyniku.")
 
     events = result.get("events") or []
-    goals = [e for e in events if e.get("event_type") == "goal"]
-    other = [e for e in events if e.get("event_type") != "goal"]
+    goal_types = {"normal_goal", "penalty_goal", "own_goal"}
+    goals = [e for e in events if e.get("event_type") in goal_types]
+    other = [e for e in events if e.get("event_type") not in goal_types]
 
-    st.markdown("#### ⚽ Rozpoznane gole widoczne na screenach")
+    st.markdown("#### ⚽ Rozpoznane bramki")
     if goals:
         for e in goals:
             minute = e.get("minute_label") or (str(e.get("minute")) + "'" if e.get("minute") is not None else "?")
-            side = "⬅️" if e.get("side") == "left" else "➡️" if e.get("side") == "right" else "❔"
+            credited = e.get("credited_side")
+            side = "⬅️" if credited == "left" else "➡️" if credited == "right" else "❔"
             imgs = ",".join(str(x) for x in (e.get("image_indices") or []))
-            st.write(f"{side} **{e.get('player') or '?'}** — {minute} • pewność: {e.get('confidence')} • zdj. {imgs}")
+            typ = e.get("event_type")
+            if typ == "own_goal":
+                who = e.get("own_goal_by") or "nieznany zawodnik"
+                label = f"**SAMOBÓJ** ({who})"
+            elif typ == "penalty_goal":
+                label = f"**{e.get('player') or '?'}** (karny)"
+            else:
+                label = f"**{e.get('player') or '?'}**"
+            st.write(f"{side} {label} — {minute} • pewność: {e.get('confidence')} • zdj. {imgs}")
     else:
-        st.info("Model nie rozpoznał żadnego widocznego gola.")
+        st.info("Model nie rozpoznał żadnej widocznej bramki.")
+
+    validation = result.get("goal_validation") or {}
+    if validation.get("status") == "complete":
+        st.success(
+            f"✅ Bramki zgadzają się z wynikiem: "
+            f"{validation.get('recognized_left')}:{validation.get('recognized_right')} "
+            f"({validation.get('recognized_goal_events')} zdarzeń bramkowych)."
+        )
+    elif validation.get("status") == "missing_goals":
+        st.warning(
+            "⚠️ Nie mamy kompletu bramek. "
+            f"Brakuje: lewa strona {validation.get('missing_left')}, "
+            f"prawa strona {validation.get('missing_right')}. Dodaj kolejne zdjęcia lub sprawdź odczyt."
+        )
+    elif validation.get("status") == "overcount":
+        st.error("⚠️ Rozpoznano więcej bramek niż wskazuje wynik — wymagany ręczny przegląd / deduplikacja.")
+    elif validation.get("status") == "needs_review":
+        st.warning("⚠️ Co najmniej jednej bramki nie udało się jednoznacznie przypisać do strony.")
 
     with st.expander("Inne rozpoznane wydarzenia", expanded=True):
         if other:
@@ -279,10 +305,13 @@ def render_vision_ocr_test():
         else:
             st.write("Brak innych wydarzeń.")
 
-    if result.get("needs_more_images"):
-        st.warning("Model uważa, że nie widzi pełnej listy wydarzeń — potrzebne są kolejne screeny po przewinięciu.")
-    elif result.get("event_list_complete"):
-        st.success("Model uważa, że dostarczone screeny obejmują pełną listę wydarzeń.")
+    # Komplet wszystkich kartek/zmian jest tylko informacją diagnostyczną.
+    # O tym, czy potrzebujemy kolejnych screenów do wyniku, decyduje walidacja bramek powyżej.
+    if validation.get("status") != "complete":
+        if result.get("needs_more_images"):
+            st.caption("Model widzi, że lista wydarzeń może być przewinięta / niepełna.")
+    elif not result.get("event_list_complete"):
+        st.caption("Lista wszystkich kartek/zmian może być niepełna, ale komplet bramek zgadza się z wynikiem.")
 
     notes = result.get("notes") or []
     if notes:
