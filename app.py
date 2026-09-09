@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import os
+import re
 import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -110,14 +111,14 @@ def controller_access() -> bool:
 
 
 def fifa_night_api_url() -> str:
+    """Backend address is stable; env/Secrets can still override it if we ever migrate Render."""
     value = str(os.getenv("FIFA_NIGHT_API_URL") or "").strip()
-    if value:
-        return value.rstrip("/")
-    try:
-        value = str(st.secrets.get("FIFA_NIGHT_API_URL") or "").strip()
-    except Exception:
-        value = ""
-    return value.rstrip("/")
+    if not value:
+        try:
+            value = str(st.secrets.get("FIFA_NIGHT_API_URL") or "").strip()
+        except Exception:
+            value = ""
+    return (value or "https://fifa-night-api.onrender.com").rstrip("/")
 
 
 def render_vision_ocr_test():
@@ -131,13 +132,7 @@ def render_vision_ocr_test():
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets.")
         return
 
-    default_url = fifa_night_api_url()
-    api_url = st.text_input(
-        "Adres FastAPI na Renderze",
-        value=default_url,
-        placeholder="https://twoje-fifa-night-api.onrender.com",
-        key="vision_test_api_url",
-    ).strip().rstrip("/")
+    api_url = fifa_night_api_url()
 
     provider_label = st.selectbox(
         "Sposób analizy",
@@ -178,7 +173,7 @@ def render_vision_ocr_test():
     if not go:
         return
     if not api_url:
-        st.error("Wpisz adres FastAPI na Renderze.")
+        st.error("Brak skonfigurowanego adresu FastAPI.")
         return
     files = uploaded if uploaded else []
     if not files:
@@ -585,10 +580,14 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
                 names.append(st.selectbox(f"Gracz {i+1}",official_names,index=None,key=f"p_{count}_{i}",placeholder="Wpisz nick lub wybierz z listy",accept_new_options=True))
             with c_cash:
                 cash_flags.append(st.checkbox("💰 Gra za kasę",value=True,key=f"cash_{count}_{i}"))
-        if count in (3,4,5):
+        if count in (3,4):
             teams=BASE_TEAMS.copy()
-            st.markdown("**Draft drużyn:** losujemy kolejność, potem każdy wybiera klub z puli stałej albo dostępny Wild Card.")
+            st.markdown("**Wybór drużyn:** losujemy kolejność, potem każdy wybiera klub z puli stałej albo dostępny Wild Card.")
             st.caption("Stałe: Bayern • Barcelona • PSG • Liverpool. Wild Card może być użyty kilka razy, ale konkretny klub tylko raz.")
+        elif count==5:
+            teams=BASE_TEAMS.copy()
+            st.markdown("**Koło fortuny drużyn:** 4 stałe drużyny + 1 Wild Card.")
+            st.caption("Pula: Bayern • Barcelona • PSG • Liverpool + 1 slot Wild Card. Jeśli wypadnie Wild Card, wybierasz konkretny klub; Real Madryt jest banned.")
         elif count==6:
             teams=SIX_TEAMS.copy();st.caption("Pula: Bayern • Barcelona • PSG • Liverpool + 2 sloty Wild Card. Man City jest Wild Cardem.")
         elif count==7:
@@ -853,7 +852,7 @@ def structure_draw(tid:str):
 
 def render_structure(t):
     title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
-    step="Etap 3/3" if int(t["player_count"]) in (3,4,5) else "Etap 2/2"
+    step="Etap 3/3" if int(t["player_count"]) in (3,4) else "Etap 2/2"
     hero(f"{step} • {title}")
     render_tournament_status_control(t,"structure")
     structure_draw(t["id"]);reset_controls(t,"structure")
@@ -933,6 +932,246 @@ def render_match_context(m):
     last=ctx.get("last")
     if last:st.caption(f"Ostatnio: {last.get('home_name')} {last.get('home_score')}:{last.get('away_score')} {last.get('away_name')}")
 
+
+
+
+MATCH_SCAN_EVENT_TYPES = [
+    "normal_goal", "penalty_goal", "own_goal", "penalty_miss",
+    "yellow_card", "red_card", "substitution", "unknown",
+]
+MATCH_SCAN_EVENT_LABELS = {
+    "normal_goal": "⚽ gol",
+    "penalty_goal": "🎯 gol z karnego",
+    "own_goal": "↩️ samobój",
+    "penalty_miss": "❌🎯 niewykorzystany karny",
+    "yellow_card": "🟨 żółta kartka",
+    "red_card": "🟥 czerwona kartka",
+    "substitution": "🔁 zmiana",
+    "unknown": "❓ inne / niepewne",
+}
+
+
+def _scan_participants(data:dict) -> list[dict]:
+    return [p for p in ((data.get("context") or {}).get("participants") or []) if p.get("player_id")]
+
+
+def _scan_participant_map(data:dict) -> dict[str,dict]:
+    return {str(p.get("player_id")):p for p in _scan_participants(data)}
+
+
+def _scan_other_player_id(data:dict, player_id:str) -> str | None:
+    ids=[str(p.get("player_id")) for p in _scan_participants(data)]
+    return next((x for x in ids if x and x!=str(player_id or "")),None)
+
+
+def _parse_scan_minute(value, fallback_minute=None, fallback_stoppage=None):
+    raw=str(value or "").strip().replace("’", "'").replace("′", "'")
+    raw=raw.rstrip("'").strip()
+    m=re.fullmatch(r"(\d{1,3})(?:\s*\+\s*(\d{1,2}))?",raw)
+    if not m:
+        minute=fallback_minute if fallback_minute is None else int(fallback_minute)
+        stoppage=fallback_stoppage if fallback_stoppage is None else int(fallback_stoppage)
+        if minute is None:return None,None,""
+        label=f"{minute}+{stoppage}'" if stoppage else f"{minute}'"
+        return minute,stoppage,label
+    minute=int(m.group(1));stoppage=int(m.group(2)) if m.group(2) else None
+    label=f"{minute}+{stoppage}'" if stoppage else f"{minute}'"
+    return minute,stoppage,label
+
+
+def _scan_editor_seed(data:dict) -> dict:
+    fn=((data.get("result") or {}).get("fifa_night") or {})
+    events=[]
+    for i,e in enumerate(fn.get("events") or [],1):
+        row=dict(e)
+        row["_ui_id"]=f"ai_{i}"
+        row["include"]=True
+        events.append(row)
+    return {
+        "scan_id":str(data.get("_ui_scan_id") or time.time_ns()),
+        "home_score":fn.get("home_score"),
+        "away_score":fn.get("away_score"),
+        "home_penalties":fn.get("home_penalties"),
+        "away_penalties":fn.get("away_penalties"),
+        "events":events,
+        "next_id":len(events)+1,
+    }
+
+
+def _scan_event_sort_key(e:dict):
+    minute=e.get("minute")
+    stoppage=e.get("stoppage")
+    return (999 if minute is None else int(minute), -1 if stoppage is None else int(stoppage), int(e.get("_original_order") or 9999))
+
+
+def _prepare_scan_events_for_save(data:dict, edited_rows:list[dict]) -> list[dict]:
+    participants=_scan_participant_map(data)
+    context=data.get("context") or {}
+    out=[]
+    for original_order,row in enumerate(edited_rows,1):
+        if not row.get("include",True):continue
+        typ=str(row.get("event_type") or "unknown")
+        if typ=="unknown":continue
+        actor_pid=str(row.get("actor_player_id") or "")
+        actor=participants.get(actor_pid)
+        if not actor:continue
+        minute,stoppage,label=_parse_scan_minute(row.get("minute_label"),row.get("minute"),row.get("stoppage"))
+        footballer=" ".join(str(row.get("footballer_name") or "").strip().split())
+        related=" ".join(str(row.get("related_footballer_name") or "").strip().split())
+        credited_pid=None
+        if typ in {"normal_goal","penalty_goal"}:
+            credited_pid=actor_pid
+        elif typ=="own_goal":
+            credited_pid=_scan_other_player_id(data,actor_pid)
+        credited=participants.get(str(credited_pid or ""))
+        out.append({
+            "_original_order":original_order,
+            "event_type":typ,
+            "minute":minute,"stoppage":stoppage,"minute_label":label,
+            "footballer_name":footballer,
+            "related_footballer_name":related,
+            "actor_player_id":actor_pid,
+            "actor_player_name":actor.get("player_name"),
+            "actor_team_name":actor.get("team"),
+            "credited_player_id":credited_pid,
+            "credited_player_name":credited.get("player_name") if credited else None,
+            "credited_team_name":credited.get("team") if credited else None,
+            "synthetic_de":False,
+            "confidence":row.get("confidence") or "manual",
+            "source_images":list(row.get("source_images") or []),
+        })
+    out.sort(key=_scan_event_sort_key)
+    for idx,e in enumerate(out,1):e["event_order"]=idx
+    wb_pid=str(context.get("de_wb_advantage_player_id") or "")
+    if context.get("de_wb_bonus") and wb_pid:
+        for e in out:
+            if e.get("event_type")=="own_goal" and str(e.get("credited_player_id") or "")==wb_pid:
+                e["synthetic_de"]=True
+                break
+    return out
+
+
+def _scan_goal_validation_for_save(data:dict, hs:int, ass:int, events:list[dict]) -> dict:
+    participants=_scan_participant_map(data)
+    context=data.get("context") or {}
+    home_pid=str(next((p.get("player_id") for p in _scan_participants(data) if p.get("slot")=="home"),"") or "")
+    away_pid=str(next((p.get("player_id") for p in _scan_participants(data) if p.get("slot")=="away"),"") or "")
+    goal_types={"normal_goal","penalty_goal","own_goal"}
+    hg=sum(1 for e in events if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "")==home_pid)
+    ag=sum(1 for e in events if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "")==away_pid)
+    missing_names=[e for e in events if e.get("event_type") in {"normal_goal","penalty_goal"} and not str(e.get("footballer_name") or "").strip()]
+    unknown_credit=[e for e in events if e.get("event_type") in goal_types and not e.get("credited_player_id")]
+    return {
+        "home_goals":hg,"away_goals":ag,
+        "complete":hg==int(hs) and ag==int(ass) and not unknown_credit and not missing_names,
+        "missing_home":max(int(hs)-hg,0),"missing_away":max(int(ass)-ag,0),
+        "over":hg>int(hs) or ag>int(ass),
+        "unknown_credit":len(unknown_credit),"missing_goal_names":len(missing_names),
+        "context":context,"participants":participants,
+    }
+
+
+def _render_match_scan_editor(data:dict, tid:str, m:dict):
+    no=int(m["match_no"])
+    edit_key=f"match_scan_edit_{tid}_{no}"
+    scan_id=str(data.get("_ui_scan_id") or "scan")
+    edit=st.session_state.get(edit_key)
+    if not isinstance(edit,dict) or str(edit.get("scan_id"))!=scan_id:
+        edit=_scan_editor_seed(data);st.session_state[edit_key]=edit
+    participants=_scan_participant_map(data)
+    participant_ids=list(participants)
+    if len(participant_ids)!=2:
+        st.error("Nie można zapisać odczytu: mecz nie ma dwóch jednoznacznie dopasowanych graczy FIFA Night.")
+        return
+
+    st.markdown("#### ✅ Sprawdź / popraw i zapisz")
+    st.caption("Możesz poprawić wynik, minutę, typ zdarzenia, piłkarza albo gracza FIFA Night. Dopiero przycisk Zatwierdź zapisze dane do Neona.")
+    c1,mid,c2=st.columns([1,.18,1])
+    with c1:
+        hs=st.number_input(m.get("home_name") or "Gracz 1",min_value=0,max_value=99,value=int(edit.get("home_score") or 0),step=1,key=f"scan_hs_{tid}_{no}_{scan_id}")
+    with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
+    with c2:
+        ass=st.number_input(m.get("away_name") or "Gracz 2",min_value=0,max_value=99,value=int(edit.get("away_score") or 0),step=1,key=f"scan_as_{tid}_{no}_{scan_id}")
+
+    knockout=str(m.get("stage") or "") not in ("GROUP","LEAGUE")
+    pens_default=edit.get("home_penalties") is not None and edit.get("away_penalties") is not None
+    show_pens=bool(pens_default or (knockout and int(hs)==int(ass)))
+    use_pens=False;hp=ap=None
+    if show_pens:
+        use_pens=st.checkbox("🎯 Mecz rozstrzygnięty serią karnych",value=pens_default,key=f"scan_use_pens_{tid}_{no}_{scan_id}")
+        if use_pens:
+            pc1,pc2=st.columns(2)
+            with pc1:hp=st.number_input(f"Karne — {m.get('home_name')}",0,30,int(edit.get("home_penalties") or 0),1,key=f"scan_hp_{tid}_{no}_{scan_id}")
+            with pc2:ap=st.number_input(f"Karne — {m.get('away_name')}",0,30,int(edit.get("away_penalties") or 0),1,key=f"scan_ap_{tid}_{no}_{scan_id}")
+
+    with st.expander("✏️ Korekta wydarzeń",expanded=False):
+        st.caption("Dla samobója wybierz gracza FIFA Night, którego piłkarz strzelił samobója — gol zostanie automatycznie przypisany przeciwnikowi.")
+        rendered=[]
+        for idx,row in enumerate(edit.get("events") or []):
+            uid=str(row.get("_ui_id") or f"e{idx}")
+            st.markdown(f"**Wydarzenie {idx+1}**")
+            c0,c1,c2,c3,c4=st.columns([.65,1.0,1.75,2.1,1.75])
+            with c0:
+                include=st.checkbox("✓",value=bool(row.get("include",True)),key=f"scan_inc_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed")
+            with c1:
+                minute_value=str(row.get("minute_label") or (f"{row.get('minute')}'" if row.get("minute") is not None else ""))
+                minute_label=st.text_input("Minuta",value=minute_value,key=f"scan_min_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed",placeholder="90+2'")
+            with c2:
+                current_type=str(row.get("event_type") or "unknown")
+                if current_type not in MATCH_SCAN_EVENT_TYPES:current_type="unknown"
+                event_type=st.selectbox("Typ",MATCH_SCAN_EVENT_TYPES,index=MATCH_SCAN_EVENT_TYPES.index(current_type),format_func=lambda x:MATCH_SCAN_EVENT_LABELS.get(x,x),key=f"scan_type_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed")
+            with c3:
+                footballer=st.text_input("Piłkarz",value=str(row.get("footballer_name") or ""),key=f"scan_footballer_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed",placeholder="Piłkarz")
+            with c4:
+                actor_pid=str(row.get("actor_player_id") or "")
+                options=[""]+participant_ids
+                actor_sel=st.selectbox("Gracz FIFA Night",options,index=options.index(actor_pid) if actor_pid in options else 0,format_func=lambda pid:"— wybierz —" if not pid else f"{participants[pid].get('player_name')} ({participants[pid].get('team')})",key=f"scan_actor_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed")
+            rendered.append({**row,"include":include,"minute_label":minute_label,"event_type":event_type,"footballer_name":footballer,"actor_player_id":actor_sel})
+            st.divider()
+        edit["events"]=rendered
+        if st.button("➕ Dodaj wydarzenie ręcznie",use_container_width=True,key=f"scan_add_event_{tid}_{no}_{scan_id}"):
+            n=int(edit.get("next_id") or 1);edit["next_id"]=n+1
+            first=participant_ids[0] if participant_ids else ""
+            edit.setdefault("events",[]).append({"_ui_id":f"manual_{n}","include":True,"event_type":"normal_goal","minute":None,"stoppage":None,"minute_label":"","footballer_name":"","related_footballer_name":"","actor_player_id":first,"confidence":"manual","source_images":[]})
+            st.session_state[edit_key]=edit;rf()
+
+    final_events=_prepare_scan_events_for_save(data,edit.get("events") or [])
+    check=_scan_goal_validation_for_save(data,int(hs),int(ass),final_events)
+    home_name=m.get("home_name") or "HOME";away_name=m.get("away_name") or "AWAY"
+    if check["complete"]:
+        st.success(f"✅ Bramki po korekcie zgadzają się z wynikiem: {home_name} {check['home_goals']}:{check['away_goals']} {away_name}.")
+    elif check["over"]:
+        st.error(f"⚠️ Za dużo bramek w wydarzeniach: rozpoznano {check['home_goals']}:{check['away_goals']}, a wynik to {int(hs)}:{int(ass)}.")
+    else:
+        extra=[]
+        if check["missing_home"]:extra.append(f"{home_name}: brakuje {check['missing_home']}")
+        if check["missing_away"]:extra.append(f"{away_name}: brakuje {check['missing_away']}")
+        if check["unknown_credit"]:extra.append("są gole bez przypisanego gracza")
+        if check["missing_goal_names"]:extra.append("są gole bez nazwiska strzelca")
+        st.warning("⚠️ Odczyt wymaga korekty: "+("; ".join(extra) or "sprawdź wydarzenia"))
+
+    save_col,discard_col=st.columns([3,1])
+    with save_col:
+        confirm=st.button("✅ ZATWIERDŹ ODCZYT I ZAPISZ MECZ",type="primary",use_container_width=True,key=f"scan_confirm_{tid}_{no}_{scan_id}")
+    with discard_col:
+        discard=st.button("↩️ Odrzuć odczyt",use_container_width=True,key=f"scan_discard_{tid}_{no}_{scan_id}")
+    if discard:
+        st.session_state.pop(f"match_scan_preview_{tid}_{no}",None);st.session_state.pop(edit_key,None);rf()
+    if confirm:
+        if not check["complete"]:
+            st.error("Nie zapisano. Najpierw popraw wydarzenia tak, aby wszystkie bramki zgadzały się z wynikiem.")
+            return
+        if knockout and int(hs)==int(ass):
+            if not use_pens or hp is None or ap is None or int(hp)==int(ap):
+                st.error("Nie zapisano. Remis w fazie pucharowej wymaga wyniku serii karnych.")
+                return
+        try:
+            db.save_result(tid,no,int(hs),int(ass),int(hp) if use_pens and hp is not None else None,int(ap) if use_pens and ap is not None else None,events=final_events)
+        except ValueError as exc:
+            st.error(str(exc));return
+        st.session_state.pop(f"match_scan_preview_{tid}_{no}",None);st.session_state.pop(edit_key,None)
+        st.toast("✅ Mecz zapisany ze zdjęć EA FC.")
+        rf()
 
 
 def _render_match_scan_result(data:dict, tid:str, m:dict):
@@ -1029,7 +1268,7 @@ def _render_match_scan_result(data:dict, tid:str, m:dict):
         f"tokeny {usage.get('input_tokens',0)} + {usage.get('output_tokens',0)} • "
         f"koszt ~${float(data.get('estimated_cost_usd') or 0):.6f}"
     )
-    st.info("Na tym etapie to tylko podgląd kontekstowy — nic nie zostało jeszcze zapisane do meczu. W następnym kroku podepniemy Zatwierdź / Popraw.")
+    _render_match_scan_editor(data,tid,m)
 
 
 def render_match_vision_scan(tid:str,m:dict,fmt:str):
@@ -1038,11 +1277,7 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
     expanded=bool(st.session_state.get(state_key))
     with st.expander("📷 Odczytaj wynik i wydarzenia ze zdjęć EA FC",expanded=expanded):
         st.caption("Dodaj tyle screenów zakładki Wydarzenia, ile potrzeba. OpenAI dopasuje drużyny ze screena do wylosowanych drużyn graczy — nie zakładamy, że lewa/prawa strona to home/away.")
-        api_url=(fifa_night_api_url() or str(st.session_state.get("vision_test_api_url") or "")).strip().rstrip("/")
-        if not api_url:
-            api_url=st.text_input("Adres FastAPI na Renderze",placeholder="https://fifa-night-api.onrender.com",key=f"match_scan_url_{tid}_{no}").strip().rstrip("/")
-        else:
-            st.caption(f"API: {api_url}")
+        api_url=fifa_night_api_url()
         uploaded=st.file_uploader(
             "Zdjęcia Wydarzeń — bez sztywnego limitu",
             type=["jpg","jpeg","png","webp"],accept_multiple_files=True,
@@ -1056,7 +1291,9 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
         with c2:
             clear=st.button("Wyczyść",use_container_width=True,key=f"match_scan_clear_{tid}_{no}")
         if clear:
-            st.session_state.pop(state_key,None);rr()
+            st.session_state.pop(state_key,None)
+            st.session_state.pop(f"match_scan_edit_{tid}_{no}",None)
+            rr()
         if go:
             if not api_url:
                 st.error("Brak adresu FastAPI.")
@@ -1081,7 +1318,10 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
                     if not r.ok:
                         st.error(f"Błąd API ({r.status_code}): {data.get('detail') if isinstance(data,dict) else data}")
                     else:
-                        st.session_state[state_key]=data;rr()
+                        data["_ui_scan_id"]=str(time.time_ns())
+                        st.session_state[state_key]=data
+                        st.session_state.pop(f"match_scan_edit_{tid}_{no}",None)
+                        rr()
         data=st.session_state.get(state_key)
         if isinstance(data,dict):
             _render_match_scan_result(data,tid,m)

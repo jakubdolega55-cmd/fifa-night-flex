@@ -25,8 +25,10 @@ FIXED_TEAMS = [
     "Liverpool",
 ]
 
-# Draft 3–5: fixed clubs plus a reusable Wild Card choice. The Wild Card option may
-# be used by more than one player as long as the concrete clubs are different.
+# 3–4 players: manual draft from fixed clubs plus a reusable Wild Card choice.
+# 5 players: the same 5-slot pool is used by the team wheel (4 fixed + 1 Wild Card).
+# In manual drafts the Wild Card option may be used by more than one player as long
+# as the concrete clubs are different.
 BASE_TEAMS = FIXED_TEAMS + ["Dowolna drużyna (Real Madryt banned)"]
 
 # 6+ wheel: four fixed clubs and enough Wild Card slots to fill the field.

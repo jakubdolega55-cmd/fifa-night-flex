@@ -715,7 +715,7 @@ class Database:
         clean = [" ".join(str(x or "").strip().split()) for x in player_names]
         if any(not x for x in clean): raise ValueError("Wpisz nick każdego gracza.")
         if len({x.casefold() for x in clean}) != player_count: raise ValueError("Nicki w jednym turnieju muszą być unikalne.")
-        draft_mode = player_count in (3,4,5)
+        draft_mode = player_count in (3,4)
         if draft_mode:
             if len(teams) < player_count or len(set(teams)) != len(teams): raise ValueError("Pula draftu drużyn jest nieprawidłowa.")
         elif len(teams) != player_count or len(set(teams)) != player_count:
