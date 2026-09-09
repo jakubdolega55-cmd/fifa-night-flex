@@ -1972,6 +1972,28 @@ def render_stats(t=None,readonly:bool=False):
             if r.get("balanced_rivalry"):p=r['balanced_rivalry'];add("Najbardziej wyrównana rywalizacja",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             if r.get("h2h_dominance"):p=r['h2h_dominance'];add("Największa dominacja H2H",f"{p['name_a']} {p['aw']}–{p['bw']} {p['name_b']} ({p['n']} M)")
             st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+
+            dr=r.get("detailed_records") or {}
+            detailed_rows=[]
+            fg=dr.get("fastest_goal")
+            if fg:
+                detailed_rows.append({"Rekord":"⚡ Najszybszy gol","Wynik":f"{fg.get('minute_label')}′ — {fg.get('footballer')} ({fg.get('player_name')}) • {fg.get('match')}"})
+            lg=dr.get("latest_goal")
+            if lg:
+                detailed_rows.append({"Rekord":"⏱️ Najpóźniejszy gol","Wynik":f"{lg.get('minute_label')}′ — {lg.get('footballer')} ({lg.get('player_name')}) • {lg.get('match')}"})
+            ht=dr.get("fastest_hat_trick")
+            if ht:
+                detailed_rows.append({"Rekord":"🎩 Najszybszy hat-trick","Wynik":f"{ht.get('footballer')} ({ht.get('player_name')}) — {ht.get('duration')} min ({ht.get('from_label')}′ → {ht.get('to_label')}′) • {ht.get('match')}"})
+            cb=dr.get("biggest_comeback")
+            if cb:
+                detailed_rows.append({"Rekord":"🔄 Największy comeback","Wynik":f"{cb.get('player_name')} — odrobione {cb.get('deficit')} gole straty • {cb.get('match')}"})
+            bl=dr.get("biggest_blown_lead")
+            if bl:
+                detailed_rows.append({"Rekord":"💔 Największe wypuszczone prowadzenie","Wynik":f"{bl.get('player_name')} — prowadzenie {bl.get('lead')} golami • {bl.get('match')}"})
+            if detailed_rows:
+                st.markdown("### ⚽ Rekordy z przebiegu meczów")
+                st.caption("Liczone tylko z nowych meczów, dla których zapisaliśmy szczegółową oś wydarzeń z minutami. Stare mecze nadal liczą się do rekordów ogólnych powyżej.")
+                st.dataframe(pd.DataFrame(detailed_rows),hide_index=True,use_container_width=True)
     with tab_teams:
         st.markdown("### 👥 Drużyny")
         st.caption("Statystyki drużynowe i rating niezależne od profili graczy.")

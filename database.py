@@ -1997,6 +1997,139 @@ class Database:
         best_avg=best_player(lambda pid,v:(v["gf"]/(v["w"]+v["d"]+v["l"]),v["gf"]),lambda pid,v:(v["w"]+v["d"]+v["l"])>=5)
         best_def=best_player(lambda pid,v:-(v["ga"]/(v["w"]+v["d"]+v["l"])),lambda pid,v:(v["w"]+v["d"]+v["l"])>=5)
         lost_final=best_player(lambda pid,v:(v["finals"]-v["titles"],v["finals"]))
+
+        # New-era records based on the exact EA FC event timeline. Older matches
+        # stay valid in all legacy records above, but cannot take part in records
+        # which require minutes or the exact order of goals.
+        detailed_records={
+            "fastest_goal":None,"latest_goal":None,"fastest_hat_trick":None,
+            "biggest_comeback":None,"biggest_blown_lead":None,
+        }
+        match_lookup={(str(m.get("tournament_id")),int(m.get("match_no") or 0)):m for m in matches}
+        if tids:
+            event_rows=self._fetchall(conn,f"""SELECT me.tournament_id,me.match_no,me.event_order,me.event_type,
+                    me.minute,me.stoppage,me.minute_label,me.footballer_name,me.synthetic_de,
+                    me.actor_player_id,me.credited_player_id
+                FROM match_events me
+                WHERE me.tournament_id IN ({qmarks})
+                ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""",tuple(tids))
+        else:
+            event_rows=[]
+        by_match=defaultdict(list)
+        for e in event_rows:
+            by_match[(str(e.get("tournament_id")),int(e.get("match_no") or 0))].append(e)
+
+        def event_minute_value(e):
+            try: minute=int(e.get("minute"))
+            except Exception: return None
+            try: stoppage=int(e.get("stoppage") or 0)
+            except Exception: stoppage=0
+            # 90+4 is treated as minute 94 and 120+1 as 121 for ordering and
+            # hat-trick duration. event_order remains the source of chronology.
+            return minute+max(stoppage,0)
+
+        def event_label(e):
+            label=str(e.get("minute_label") or "").strip().replace("′","").replace("'","")
+            if label:return label
+            try: minute=int(e.get("minute"))
+            except Exception:return "?"
+            try: stoppage=int(e.get("stoppage") or 0)
+            except Exception:stoppage=0
+            return f"{minute}+{stoppage}" if stoppage else str(minute)
+
+        def match_desc(m):
+            return f"{m.get('home_name') or '?'} {int(m.get('home_score') or 0)}:{int(m.get('away_score') or 0)} {m.get('away_name') or '?'}"
+
+        # Fastest/latest goal and fastest hat-trick: only real goals credited to a
+        # footballer. Own goals and the technical DE advantage are not individual
+        # scoring records.
+        individual_goal_types={"normal_goal","penalty_goal"}
+        goal_candidates=[]
+        hat_groups=defaultdict(list)
+        for mk,evs in by_match.items():
+            m=match_lookup.get(mk)
+            if not m:continue
+            for e in evs:
+                if str(e.get("event_type") or "") not in individual_goal_types:continue
+                if int(e.get("synthetic_de") or 0):continue
+                if not str(e.get("credited_player_id") or ""):continue
+                mv=event_minute_value(e)
+                if mv is None:continue
+                item={
+                    "minute_value":mv,"minute_label":event_label(e),
+                    "footballer":str(e.get("footballer_name") or "?").strip() or "?",
+                    "player_id":str(e.get("credited_player_id") or ""),
+                    "player_name":players.get(e.get("credited_player_id"),"?"),
+                    "match":match_desc(m),"event_order":int(e.get("event_order") or 10**9),
+                    "tournament_id":mk[0],"match_no":mk[1],
+                }
+                goal_candidates.append(item)
+                norm=" ".join(item["footballer"].lower().split())
+                hat_groups[(mk[0],mk[1],item["player_id"],norm)].append(item)
+        if goal_candidates:
+            fastest=min(goal_candidates,key=lambda x:(x["minute_value"],x["event_order"]))
+            latest=max(goal_candidates,key=lambda x:(x["minute_value"],-x["event_order"]))
+            detailed_records["fastest_goal"]={k:v for k,v in fastest.items() if k not in ("event_order","tournament_id","match_no")}
+            detailed_records["latest_goal"]={k:v for k,v in latest.items() if k not in ("event_order","tournament_id","match_no")}
+        best_hat=None
+        for _key,goals in hat_groups.items():
+            goals=sorted(goals,key=lambda x:(x["event_order"],x["minute_value"]))
+            if len(goals)<3:continue
+            for i in range(len(goals)-2):
+                first,third=goals[i],goals[i+2]
+                duration=max(0,int(third["minute_value"])-int(first["minute_value"]))
+                candidate={
+                    "duration":duration,"footballer":first["footballer"],"player_name":first["player_name"],
+                    "from_label":first["minute_label"],"to_label":third["minute_label"],"match":first["match"],
+                }
+                if best_hat is None or (duration,int(third["minute_value"])) < (int(best_hat["duration"]),int(best_hat.get("to_value") or 10**9)):
+                    candidate["to_value"]=int(third["minute_value"]);best_hat=candidate
+        if best_hat:
+            best_hat.pop("to_value",None);detailed_records["fastest_hat_trick"]=best_hat
+
+        # Comeback / blown lead records need a complete goal timeline. All goals
+        # affecting the scoreboard count here (including own goals and the technical
+        # DE starting advantage), but only when their count matches the final score.
+        score_goal_types={"normal_goal","penalty_goal","own_goal"}
+        best_comeback=None;best_blown=None
+        for mk,evs in by_match.items():
+            m=match_lookup.get(mk)
+            if not m:continue
+            h=str(m.get("home_player_id") or "");a=str(m.get("away_player_id") or "")
+            if not h or not a:continue
+            hs=int(m.get("home_score") or 0);ass=int(m.get("away_score") or 0)
+            winner=str(m.get("winner_player_id") or "")
+            if not winner:
+                if hs>ass:winner=h
+                elif ass>hs:winner=a
+            if winner not in (h,a):continue
+            loser=a if winner==h else h
+            goals=[e for e in evs if str(e.get("event_type") or "") in score_goal_types and str(e.get("credited_player_id") or "") in (h,a)]
+            if len(goals)!=(hs+ass):continue
+            goals=sorted(goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
+            score={h:0,a:0};max_winner_deficit=0;max_loser_lead=0
+            for e in goals:
+                pid=str(e.get("credited_player_id") or "")
+                score[pid]+=1
+                deficit=score[loser]-score[winner]
+                if deficit>max_winner_deficit:max_winner_deficit=deficit
+                lead=score[loser]-score[winner]
+                if lead>max_loser_lead:max_loser_lead=lead
+            if max_winner_deficit>0:
+                rec={
+                    "deficit":max_winner_deficit,"player_id":winner,"player_name":players.get(winner,"?"),
+                    "opponent_name":players.get(loser,"?"),"match":match_desc(m),
+                }
+                if best_comeback is None or max_winner_deficit>int(best_comeback.get("deficit") or 0):best_comeback=rec
+            if max_loser_lead>0:
+                rec={
+                    "lead":max_loser_lead,"player_id":loser,"player_name":players.get(loser,"?"),
+                    "opponent_name":players.get(winner,"?"),"match":match_desc(m),
+                }
+                if best_blown is None or max_loser_lead>int(best_blown.get("lead") or 0):best_blown=rec
+        detailed_records["biggest_comeback"]=best_comeback
+        detailed_records["biggest_blown_lead"]=best_blown
+
         return {
             "most_titles":most_titles,"most_finals":most_finals,"most_wins":most_wins,"most_goals":most_goals,
             "best_win_pct":best_pct,"best_goal_avg":best_avg,"best_defense":best_def,"most_lost_finals":lost_final,
@@ -2008,6 +2141,7 @@ class Database:
             "goals_one_tournament":{"name":players.get(one_t[1],"?"),"value":one_t[0]},
             "consecutive_titles":{"name":players.get(title_best[1],"?"),"value":title_best[0]},
             "most_frequent_h2h":pair_desc(frequent),"balanced_rivalry":pair_desc(balanced),"h2h_dominance":pair_desc(dominance),
+            "detailed_records":detailed_records,
         }
 
     def all_time_records(self) -> dict:
@@ -3663,8 +3797,8 @@ class Database:
 
         # Comeback King. For every fully reconstructed detailed match we replay the
         # goal timeline and measure the largest deficit overcome by the eventual
-        # winner. A deeper comeback is deliberately worth much more: 1 goal = 1 pt,
-        # 2 goals = 4 pts, 3 goals = 9 pts, etc.
+        # winner. Scoring uses a gentler progressive scale agreed for FIFA Night:
+        # 1 goal = 1 pt, 2 = 2 pts, 3 = 4 pts, 4 = 7 pts, 5 = 11 pts, etc.
         comeback_stats=defaultdict(lambda:{"wins":0,"points":0,"max_deficit":0,"from_deficits":defaultdict(int)})
         goal_types={"normal_goal","penalty_goal","own_goal"}
         for mk,evs in detailed_events_by_match.items():
@@ -3688,7 +3822,9 @@ class Database:
                 max_deficit=max(max_deficit,score.get(other,0)-score.get(winner,0))
             if max_deficit>0:
                 cs=comeback_stats[winner]
-                cs["wins"]+=1;cs["points"]+=max_deficit*max_deficit
+                # Sequence 1,2,4,7,11... (increments grow by 1 each level).
+                comeback_points=1+(max_deficit*(max_deficit-1))//2
+                cs["wins"]+=1;cs["points"]+=comeback_points
                 cs["max_deficit"]=max(cs["max_deficit"],max_deficit)
                 cs["from_deficits"][max_deficit]+=1
 
@@ -3783,7 +3919,7 @@ class Database:
                 "_sort":(int(v["points"]),int(v["max_deficit"]),int(v["wins"])),
                 "reason":f"{v['wins']} comeback win • {v['points']} pkt comebacku • największa odrobiona strata {v['max_deficit']} gola(e)"+(f" • {breakdown}" if breakdown else "")
             })
-        add("comeback_king","🔄 Comeback King","Wygrane po wcześniejszym przegrywaniu. Głębszy powrót jest wart więcej: odrobienie 1 gola = 1 pkt, 2 = 4 pkt, 3 = 9 pkt itd. Liczymy tylko mecze z kompletnym szczegółowym przebiegiem.",items)
+        add("comeback_king","🔄 Comeback King","Wygrane po wcześniejszym przegrywaniu. Punktacja za największą odrobioną stratę w meczu: 1 gol = 1 pkt, 2 = 2 pkt, 3 = 4 pkt, 4 = 7 pkt, 5 = 11 pkt itd. Jeden mecz daje punkty tylko raz. Liczymy tylko mecze z kompletnym szczegółowym przebiegiem.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
