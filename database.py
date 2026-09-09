@@ -3368,6 +3368,10 @@ class Database:
                 FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id IN ({q})""",tuple(tids))
             scorer_rows=self._fetchall(conn,f"""SELECT ms.tournament_id,ms.match_no,ms.side,ms.scorer_name,ms.goals
                 FROM match_scorers ms WHERE ms.tournament_id IN ({q})""",tuple(tids))
+            detailed_event_rows=self._fetchall(conn,f"""SELECT me.tournament_id,me.match_no,me.event_order,me.event_type,
+                me.actor_player_id,me.credited_player_id,me.synthetic_de,me.minute,me.stoppage,me.minute_label
+                FROM match_events me WHERE me.tournament_id IN ({q})
+                ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""",tuple(tids))
             first_dates=self._fetchall(conn,"""SELECT tp.player_id,MIN(COALESCE(t.completed_at,t.created_at)) AS first_date
                 FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
                 JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
@@ -3578,6 +3582,38 @@ class Database:
                     if goals>=3:
                         scorer_pair_hattricks[pair_key]+=1
 
+        # New-era event rankings. These use only detailed match_events from official
+        # tournament matches; old matches without a visual event timeline are not
+        # treated as zeroes. 1v1 is intentionally excluded from annual FIFA Night
+        # Awards/Rankings, consistently with the tournament-based player categories.
+        event_rank=defaultdict(lambda:{"penalties_awarded":0,"penalty_goals":0,"penalty_misses":0,"own_goals":0,"first_goals":0})
+        first_goal_by_match={}
+        for e in detailed_event_rows:
+            tid=str(e.get("tournament_id") or "")
+            if tid not in tournament_ids:
+                continue
+            et=str(e.get("event_type") or "")
+            actor=str(e.get("actor_player_id") or "")
+            credited=str(e.get("credited_player_id") or "")
+            synthetic=int(e.get("synthetic_de") or 0)
+            if actor and et in ("penalty_goal","penalty_miss"):
+                event_rank[actor]["penalties_awarded"]+=1
+            if credited and et=="penalty_goal" and not synthetic:
+                event_rank[credited]["penalty_goals"]+=1
+            if actor and et=="penalty_miss":
+                event_rank[actor]["penalty_misses"]+=1
+            if actor and et=="own_goal" and not synthetic:
+                event_rank[actor]["own_goals"]+=1
+            if et in ("normal_goal","penalty_goal","own_goal") and credited and not synthetic:
+                mk=(tid,int(e.get("match_no") or 0))
+                order=int(e.get("event_order") or 10**9)
+                prev=first_goal_by_match.get(mk)
+                if prev is None or order<prev[0]:
+                    first_goal_by_match[mk]=(order,credited)
+        for _mk,(_order,pid) in first_goal_by_match.items():
+            if pid:
+                event_rank[pid]["first_goals"]+=1
+
         def pc(pid,v):return round(v["w"]/v["m"]*100,1) if v["m"] else 0.0
         def cand(pid,score,reason):return {"id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(float(score),2),"reason":reason}
         def top(items,n=5):
@@ -3608,8 +3644,6 @@ class Database:
         add("defense","🧱 Beton Roku","Dla graczy, którzy tracą najmniej goli i najczęściej zachowują czyste konto.",items)
         items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=2]
         add("clutch","🎯 Clutch Player Roku","Liczą się mecze, po których porażka kończy udział w turnieju albo walkę o tytuł. Winners Bracket nie jest liczony, bo po porażce nadal można grać.",items)
-        items=[cand(pid,v["pen_w"]/v["pen"]*100+v["pen_w"]*3,f"{v['pen_w']}/{v['pen']} wygranych serii") for pid,v in ps.items() if v["pen"]>=3]
-        add("penalties","🥅 Król Karnych","Liczy się skuteczność w seriach rzutów karnych. Minimum 3 serie w roku.",items)
         items=[cand(
             pid,
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
@@ -3623,7 +3657,7 @@ class Database:
             mid=len(seq)//2;early=seq[:mid];late=seq[mid:]
             epts=sum(x[0] for x in early)/len(early);lpts=sum(x[0] for x in late)/len(late);egd=sum(x[1] for x in early)/len(early);lgd=sum(x[1] for x in late)/len(late)
             items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • bilans bramek/mecz {egd:+.2f} → {lgd:+.2f}"))
-        add("progress","📈 Największy Progres","Porównujemy pierwszą i drugą część roku i sprawdzamy, kto najbardziej poprawił wyniki oraz bilans bramek.",items)
+        add("progress","📈 Największy Progres","Porównujemy pierwszą i drugą część roku i sprawdzamy, kto najbardziej poprawił wyniki oraz bilans bramek.",items,award=False)
         items=[]
         for pid,v in ps.items():
             vals=v["spectacle_scores"]
@@ -3641,7 +3675,26 @@ class Database:
             if len(vals)<3:continue
             avg=sum(vals)/len(vals);sd=statistics.pstdev(vals) if len(vals)>1 else 0
             items.append(cand(pid,avg*25-sd*14+len(vals),f"{len(vals)} turniejów • średnio {avg:.2f} pkt/mecz • odchylenie {sd:.2f}"))
-        add("regular","🎯 Najbardziej Regularny","Liczy się utrzymywanie podobnego, dobrego poziomu w kolejnych turniejach.",items)
+        add("regular","🎯 Najbardziej Regularny","Liczy się utrzymywanie podobnego, dobrego poziomu w kolejnych turniejach.",items,award=False)
+
+        # Additional live rankings based on detailed EA FC event timelines.
+        # They are informational and do not create an official Award winner.
+        items=[cand(pid,v["penalties_awarded"],f"{v['penalties_awarded']} przyznanych karnych (trafione + niewykorzystane)")
+               for pid,v in event_rank.items() if v["penalties_awarded"]>0]
+        add("simulator","🎭 Największy symulant","Ranking liczby karnych przyznanych graczowi FIFA Night — liczymy zarówno trafione, jak i niewykorzystane. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        items=[cand(pid,v["penalty_goals"],f"{v['penalty_goals']} goli z karnych")
+               for pid,v in event_rank.items() if v["penalty_goals"]>0]
+        add("penaldo","🐐 Penaldo","Ranking goli zdobytych z rzutów karnych w trakcie meczu. Seria karnych po meczu nie jest liczona. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        items=[cand(pid,v["first_goals"],f"{v['first_goals']} razy strzelił pierwszy gol meczu")
+               for pid,v in event_rank.items() if v["first_goals"]>0]
+        add("first_goals","🥇 Najwięcej pierwszych goli","Ile razy gracz FIFA Night zdobył pierwszą bramkę meczu. Techniczny samobój z finału DE jest pomijany. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        items=[cand(pid,v["own_goals"],f"{v['own_goals']} samobój(e) jego drużyny")
+               for pid,v in event_rank.items() if v["own_goals"]>0]
+        add("own_goals","↩️ Samobóje","Liczba samobójów popełnionych przez drużynę gracza. Techniczny samobój z finału DE nie jest liczony. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        items=[cand(pid,v["penalty_misses"],f"{v['penalty_misses']} niewykorzystany(e) karny(e)")
+               for pid,v in event_rank.items() if v["penalty_misses"]>0]
+        add("penalty_misses","❌🎯 Niewykorzystane karne","Ranking niewykorzystanych rzutów karnych w trakcie meczu. Seria karnych po meczu nie jest liczona. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+
         first_by={str(x["player_id"]):str(x.get("first_date") or "") for x in first_dates}
         # Debiut Roku ma własną tożsamość: oceniamy wyłącznie początek kariery FIFA Night,
         # zamiast całorocznych wyników. Pokazujemy dwa niezależne rankingi (pierwsze 5 i 10
@@ -3771,9 +3824,9 @@ class Database:
             raw=(v["w"]*3+v["d"])/(v["m"]*3);shrink=v["m"]/(v["m"]+6);gdpm=(v["gf"]-v["ga"])/v["m"]
             rating=50+(raw*100-50)*shrink*.8+max(-10,min(10,gdpm*3))*shrink+v["titles"]*3
             teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}"})
-        add("team_best","🏟️ Drużyna Roku","Klub, który dawał najlepsze wyniki w całym roku. Liczą się wyniki, bilans bramek, liczba meczów i zdobyte tytuły.",teamitems)
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
-        add("team_worst","📉 Najgorsza Drużyna Roku","Klub z najsłabszymi wynikami w całym roku, liczony na tych samych zasadach co Drużyna Roku.",worst)
+        worst_team=top(worst,1)[0] if worst else None
+        add("team_best","🏟️ Drużyny Roku","Najlepsza i najsłabsza drużyna roku liczone tym samym ratingiem: wyniki, bilans bramek, liczba meczów i tytuły. Oficjalny wybór dotyczy Drużyny Roku; na dole pokazujemy też najgorszą drużynę.",teamitems,secondary=worst_team)
         scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
         add("superscorer","⚡ Supersnajper Roku","Piłkarz z EA FC, który łącznie strzelił najwięcej wpisanych goli u wszystkich graczy.",scorer_items)
         add("match_year","🎬 Mecz Roku","Liczą się przede wszystkim emocje: wyrównany wynik, liczba goli, karne oraz stawka i faza meczu.",match_candidates)
@@ -3786,8 +3839,8 @@ class Database:
         # Count a category at most once per player. Team/match/rivalry/EA-player
         # categories are intentionally excluded because the nominee is not one FIFA Night participant.
         direct_player_awards={
-            "player_year","offensive","defense","clutch","penalties","wildcards",
-            "progress","spectacle","regular","debut","outsider","universal","finance","duel"
+            "player_year","offensive","defense","clutch","wildcards",
+            "spectacle","debut","outsider","universal","finance","duel"
         }
         nomination_sets=defaultdict(lambda:{"top2":set(),"top3":set(),"top5":set(),"first":set()})
         nomination_titles_top2=defaultdict(set)

@@ -2328,11 +2328,14 @@ def render_global_milestones(readonly:bool=False):
 
 def render_awards(readonly:bool=False):
     st.subheader("🏆 FIFA Night Awards")
-    section=st.segmented_control("Sekcja",["🏆 Awards","🏛️ Kamienie milowe"],default="🏆 Awards",key=f"awards_section_{int(readonly)}",label_visibility="collapsed") or "🏆 Awards"
+    section=st.segmented_control("Sekcja",["🏆 Awards","📊 Rankingi","🏛️ Kamienie milowe"],default="🏆 Awards",key=f"awards_section_{int(readonly)}",label_visibility="collapsed") or "🏆 Awards"
     if section=="🏛️ Kamienie milowe":
         render_global_milestones(readonly=readonly)
         return
-    st.info("📊 TOP 5 liczy algorytm. 🏆 Nagrody rozdaje organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano. 😎 Rankingi aktualizują się wraz z wynikami.")
+    if section=="🏆 Awards":
+        st.info("📊 TOP 5 liczy algorytm. 🏆 Nagrody rozdaje organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano. 😎 Rankingi aktualizują się wraz z wynikami.")
+    else:
+        st.info("📊 Rankingi są statystycznymi ciekawostkami sezonu — nie mają laureata i nie są oficjalną nagrodą FIFA Night. Rankingi oparte na kartkach/karnych/eventach liczą tylko mecze ze szczegółowym przebiegiem.")
     current_year=datetime.now().year
     year=int(st.number_input("Rok",min_value=2024,max_value=current_year+1,value=current_year,step=1,key="awards_year"))
     data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {};nomination_summary=data.get("nomination_summary") or []
@@ -2345,13 +2348,39 @@ def render_awards(readonly:bool=False):
     award_cats=[c for c in cats if c.get("award")]
     view_cats=[c for c in cats if not c.get("award")]
 
+    if section=="📊 Rankingi":
+        ranking_priority_keys=[
+            "simulator","penaldo","first_goals","own_goals","penalty_misses",
+            "regular","progress","minimalist","unlucky",
+        ]
+        ranking_priority_index={key:i for i,key in enumerate(ranking_priority_keys)}
+        view_cats=sorted(
+            view_cats,
+            key=lambda c:(ranking_priority_index.get(str(c.get("key")),len(ranking_priority_keys)), str(c.get("title") or "")),
+        )
+        st.markdown("### 📊 Rankingi sezonu — TOP 5")
+        if not view_cats:
+            st.info("Brak wystarczających danych do rankingów w tym roku.")
+            return
+        cols=st.columns(2)
+        for idx,cat in enumerate(view_cats):
+            with cols[idx % 2]:
+                st.markdown(f"#### {cat['title']}")
+                st.caption(cat.get("description") or "")
+                candidates=cat.get("candidates") or []
+                if candidates:
+                    st.dataframe(pd.DataFrame([{"#":i,"Gracz":x.get("name"),"Wynik":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]),hide_index=True,use_container_width=True)
+                else:
+                    st.caption("Brak wystarczającej próby.")
+        return
+
     # W zwykłym widoku AWARDS pokazujemy dokładnie tę samą kolejność kategorii,
     # w której organizator później wybiera laureatów. Tutaj lista pozostaje płaska:
     # bez etapów, nagłówków grup i dodatkowych opisów kolejności.
     award_priority_keys=[
         "player_year","offensive","defense","player_scorers","clutch",
-        "regular","progress","spectacle","penalties","duel","universal","wildcards","debut","outsider",
-        "finance","rivalry","team_best","team_worst","superscorer","match_year",
+        "spectacle","duel","universal","wildcards","debut","outsider",
+        "finance","rivalry","team_best","superscorer","match_year",
     ]
     award_priority_index={key:i for i,key in enumerate(award_priority_keys)}
     award_cats=sorted(
@@ -2411,18 +2440,8 @@ def render_awards(readonly:bool=False):
                 secondary=cat.get("secondary")
                 if secondary and cat.get("key")=="finance":
                     st.caption(f"📉 Sponsor FIFA Night: **{secondary.get('name')}** — {secondary.get('reason','')}")
-
-    if view_cats:
-        st.markdown("### 👀 Dodatkowe rankingi — bez oficjalnej nagrody")
-        cols=st.columns(min(2,len(view_cats)))
-        for idx,cat in enumerate(view_cats):
-            with cols[idx % len(cols)]:
-                st.markdown(f"#### {cat['title']}")
-                st.caption(cat.get("description") or "")
-                candidates=cat.get("candidates") or []
-                if candidates:
-                    st.dataframe(pd.DataFrame([{"#":i,"Gracz":x.get("name"),"Argument":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]),hide_index=True,use_container_width=True)
-                else: st.caption("Brak wystarczającej próby.")
+                elif secondary and cat.get("key")=="team_best":
+                    st.caption(f"📉 Najgorsza drużyna roku: **{secondary.get('name')}** — {secondary.get('reason','')}")
 
     if nomination_summary:
         st.divider();st.markdown("### 🌟 Najczęściej nominowani")
@@ -2432,8 +2451,8 @@ def render_awards(readonly:bool=False):
         # rankingów. Dzięki temu kolumna nie zależy od pomocniczego pola zwracanego
         # przez backend i nie może zostać pusta przy poprawnie policzonym TOP 2.
         direct_player_nomination_keys={
-            "player_year","offensive","defense","clutch","penalties","wildcards",
-            "progress","spectacle","regular","debut","outsider","universal","finance","duel"
+            "player_year","offensive","defense","clutch","wildcards",
+            "spectacle","debut","outsider","universal","finance","duel"
         }
         top2_titles_by_player={}
         for cat in award_cats:
@@ -2482,8 +2501,8 @@ def render_awards(readonly:bool=False):
         # specjalistycznych i zabawowych. Nie blokujemy organizatora: ranking jest
         # podpowiedzią, a licznik nagród pomaga świadomie rozłożyć wyróżnienia.
         direct_player_awards={
-            "player_year","offensive","defense","clutch","penalties","wildcards",
-            "progress","spectacle","regular","debut","outsider","universal","finance","duel"
+            "player_year","offensive","defense","clutch","wildcards",
+            "spectacle","debut","outsider","universal","finance","duel"
         }
 
         def award_owner_name(cat_key,candidate_id,candidate_name):
@@ -2518,10 +2537,10 @@ def render_awards(readonly:bool=False):
              ["player_year","offensive","defense","player_scorers","clutch"]),
             ("🥈 ETAP 2/3 — Nagrody specjalistyczne",
              "Tu nadal liczy się ranking, ale warto już zerkać na rozkład nagród i TOP 3 kandydatów.",
-             ["regular","progress","spectacle","penalties","duel","universal","wildcards","debut","outsider"]),
+             ["spectacle","duel","universal","wildcards","debut","outsider"]),
             ("🥉 ETAP 3/3 — Nagrody specjalne i finał gali",
              "Najbardziej elastyczny etap. Dobry moment, żeby przy zbliżonych wynikach docenić kogoś, kto jeszcze nic nie dostał.",
-             ["finance","rivalry","team_best","team_worst","superscorer","match_year"]),
+             ["finance","rivalry","team_best","superscorer","match_year"]),
         ]
         cat_by_key={str(c.get("key")):c for c in award_cats}
         pick_no=0
