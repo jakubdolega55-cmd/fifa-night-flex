@@ -2789,6 +2789,7 @@ class Database:
         titles={
             "player_year":"Gracz Roku","offensive":"Ofensywny Gracz Roku","defense":"Beton Roku",
             "player_scorers":"Król Strzelców FIFA Night","clutch":"Clutch Player Roku",
+            "sharpest":"Najostrzejszy Gracz","late_king":"Król Końcówek","comeback_king":"Comeback King","fair_play":"Fair Play",
             "regular":"Najbardziej Regularny","progress":"Największy Progres","spectacle":"Najbardziej Widowiskowy Gracz",
             "penalties":"Król Karnych","duel":"Król 1 vs 1","universal":"Najbardziej Uniwersalny Gracz",
             "wildcards":"Król Wild Cardów","debut":"Debiut Roku","outsider":"Najlepszy spoza dominatorów",
@@ -3614,6 +3615,83 @@ class Database:
             if pid:
                 event_rank[pid]["first_goals"]+=1
 
+        # New Awards based on detailed EA FC timelines. Only matches with a saved
+        # event timeline are used, so older matches are never silently treated as
+        # zero cards / zero late goals.
+        discipline=defaultdict(lambda:{"yellow":0,"red":0,"points":0})
+        late_stats=defaultdict(lambda:{"late_goals":0,"goals_90plus":0,"latest_value":0,"latest_label":""})
+        detailed_match_keys=set()
+        detailed_events_by_match=defaultdict(list)
+        for e in detailed_event_rows:
+            tid=str(e.get("tournament_id") or "")
+            if tid not in tournament_ids:
+                continue
+            mk=(tid,int(e.get("match_no") or 0))
+            detailed_match_keys.add(mk)
+            detailed_events_by_match[mk].append(e)
+            et=str(e.get("event_type") or "")
+            actor=str(e.get("actor_player_id") or "")
+            credited=str(e.get("credited_player_id") or "")
+            synthetic=int(e.get("synthetic_de") or 0)
+            if actor and et=="yellow_card":
+                discipline[actor]["yellow"]+=1;discipline[actor]["points"]+=1
+            elif actor and et=="red_card":
+                discipline[actor]["red"]+=1;discipline[actor]["points"]+=3
+            # Król Końcówek: only goals actually credited to a footballer. Own goals
+            # and the technical DE goal do not create a late-goal achievement.
+            if credited and et in ("normal_goal","penalty_goal") and not synthetic:
+                minute=int(e.get("minute") or 0)
+                stoppage=int(e.get("stoppage") or 0)
+                if minute>=85:
+                    ls=late_stats[credited]
+                    ls["late_goals"]+=1
+                    if minute>=90: ls["goals_90plus"]+=1
+                    value=minute*100+stoppage
+                    if value>ls["latest_value"]:
+                        ls["latest_value"]=value
+                        ls["latest_label"]=str(e.get("minute_label") or (f"{minute}+{stoppage}'" if stoppage else f"{minute}'"))
+
+        # Number of detailed matches per participant, needed for a fair Fair Play
+        # denominator. A detailed match counts for both players even when one of
+        # them received no card at all.
+        detailed_matches_by_player=defaultdict(int)
+        for mk in detailed_match_keys:
+            m=match_map.get(mk)
+            if not m: continue
+            for pid in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")):
+                if pid: detailed_matches_by_player[pid]+=1
+
+        # Comeback King. For every fully reconstructed detailed match we replay the
+        # goal timeline and measure the largest deficit overcome by the eventual
+        # winner. A deeper comeback is deliberately worth much more: 1 goal = 1 pt,
+        # 2 goals = 4 pts, 3 goals = 9 pts, etc.
+        comeback_stats=defaultdict(lambda:{"wins":0,"points":0,"max_deficit":0,"from_deficits":defaultdict(int)})
+        goal_types={"normal_goal","penalty_goal","own_goal"}
+        for mk,evs in detailed_events_by_match.items():
+            m=match_map.get(mk)
+            if not m: continue
+            winner=str(m.get("winner_player_id") or "")
+            if not winner: continue
+            h=str(m.get("home_player_id") or ""); a=str(m.get("away_player_id") or "")
+            if winner not in (h,a): continue
+            hs=int(m.get("home_score") or 0); ass=int(m.get("away_score") or 0)
+            goals=[e for e in evs if str(e.get("event_type") or "") in goal_types and str(e.get("credited_player_id") or "")]
+            # Do not infer missing goals. Comeback is calculated only when the
+            # detailed timeline accounts for the actual scoreboard.
+            if len(goals)!=(hs+ass): continue
+            goals=sorted(goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
+            score={h:0,a:0}; max_deficit=0
+            for e in goals:
+                pid=str(e.get("credited_player_id") or "")
+                if pid in score: score[pid]+=1
+                other=a if winner==h else h
+                max_deficit=max(max_deficit,score.get(other,0)-score.get(winner,0))
+            if max_deficit>0:
+                cs=comeback_stats[winner]
+                cs["wins"]+=1;cs["points"]+=max_deficit*max_deficit
+                cs["max_deficit"]=max(cs["max_deficit"],max_deficit)
+                cs["from_deficits"][max_deficit]+=1
+
         def pc(pid,v):return round(v["w"]/v["m"]*100,1) if v["m"] else 0.0
         def cand(pid,score,reason):return {"id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(float(score),2),"reason":reason}
         def top(items,n=5):
@@ -3649,7 +3727,7 @@ class Database:
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
             f"WC: {v['wc_w']}/{v['wc_m']} W • bilans {v['wc_gf']}:{v['wc_ga']} • {v['wc_finals']} finał(y) WC • {v['wc_titles']} tytuł(y) WC"
         ) for pid,v in ps.items() if v["wc_m"]>=3]
-        add("wildcards","🎲 Król Wild Cardów","Liczą się wyniki osiągnięte Wild Cardem: zwycięstwa, bilans bramek, finały i tytuły.",items)
+        add("wildcards","🎲 Król Wild Cardów","Liczą się wyniki osiągnięte Wild Cardem: zwycięstwa, bilans bramek, finały i tytuły.",items,award=False)
         items=[]
         for pid,v in ps.items():
             seq=v["result_points"]
@@ -3676,6 +3754,47 @@ class Database:
             avg=sum(vals)/len(vals);sd=statistics.pstdev(vals) if len(vals)>1 else 0
             items.append(cand(pid,avg*25-sd*14+len(vals),f"{len(vals)} turniejów • średnio {avg:.2f} pkt/mecz • odchylenie {sd:.2f}"))
         add("regular","🎯 Najbardziej Regularny","Liczy się utrzymywanie podobnego, dobrego poziomu w kolejnych turniejach.",items,award=False)
+
+        # Detailed-event Awards. These are official Award categories, unlike the
+        # informational rankings below.
+        items=[]
+        for pid,v in discipline.items():
+            if v["points"]<=0: continue
+            items.append(cand(pid,v["points"],f"{v['points']} pkt dyscypliny • 🟨 {v['yellow']} • 🟥 {v['red']} (żółta = 1, czerwona = 3)"))
+        add("sharpest","🪓 Najostrzejszy Gracz","Najwięcej punktów dyscyplinarnych w meczach ze szczegółowym przebiegiem. Żółta kartka = 1 pkt, czerwona = 3 pkt.",items)
+
+        items=[]
+        for pid,v in late_stats.items():
+            if v["late_goals"]<=0: continue
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),
+                "score":float(v["late_goals"]),
+                "_sort":(int(v["late_goals"]),int(v["goals_90plus"]),int(v["latest_value"])),
+                "reason":f"{v['late_goals']} goli od 85. minuty • {v['goals_90plus']} od 90. minuty • najpóźniejszy {v['latest_label'] or '—'}"
+            })
+        add("late_king","⏰ Król Końcówek","Gole zdobyte od 85. minuty wzwyż. Przy remisie wyżej jest gracz z większą liczbą goli 90+ i późniejszym golem.",items)
+
+        items=[]
+        for pid,v in comeback_stats.items():
+            if v["wins"]<=0: continue
+            breakdown=", ".join(f"-{d}: {n}×" for d,n in sorted(v["from_deficits"].items(),reverse=True))
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":float(v["points"]),
+                "_sort":(int(v["points"]),int(v["max_deficit"]),int(v["wins"])),
+                "reason":f"{v['wins']} comeback win • {v['points']} pkt comebacku • największa odrobiona strata {v['max_deficit']} gola(e)"+(f" • {breakdown}" if breakdown else "")
+            })
+        add("comeback_king","🔄 Comeback King","Wygrane po wcześniejszym przegrywaniu. Głębszy powrót jest wart więcej: odrobienie 1 gola = 1 pkt, 2 = 4 pkt, 3 = 9 pkt itd. Liczymy tylko mecze z kompletnym szczegółowym przebiegiem.",items)
+
+        items=[]
+        for pid,matches_n in detailed_matches_by_player.items():
+            if matches_n<3: continue
+            d=discipline[pid]; ppm=d["points"]/matches_n
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),
+                "score":round(100-ppm*20,4),"_sort":(-ppm,int(matches_n),-int(d["points"])),
+                "reason":f"{d['points']} pkt dyscypliny w {matches_n} meczach • {ppm:.2f} pkt/mecz • 🟨 {d['yellow']} • 🟥 {d['red']}"
+            })
+        add("fair_play","😇 Fair Play","Najmniej punktów dyscyplinarnych na mecz. Minimum 3 mecze ze szczegółowym przebiegiem; żółta = 1 pkt, czerwona = 3 pkt.",items)
 
         # Additional live rankings based on detailed EA FC event timelines.
         # They are informational and do not create an official Award winner.
@@ -3810,7 +3929,7 @@ class Database:
             for pid,gf,ga in ((str(m["home_player_id"]),int(m["home_score"]),int(m["away_score"])),(str(m["away_player_id"]),int(m["away_score"]),int(m["home_score"]))):
                 dv[pid]["m"]+=1;dv[pid]["gf"]+=gf;dv[pid]["ga"]+=ga;dv[pid]["w"]+=int(m.get("winner_player_id")==pid)
         items=[cand(pid,v["w"]/v["m"]*100+v["w"]*3+(v["gf"]-v["ga"])/v["m"]*2,f"{v['w']}/{v['m']} W • bilans {v['gf']}:{v['ga']}") for pid,v in dv.items() if v["m"]>=5]
-        add("duel","⚔️ Król 1 vs 1","Liczą się wyniki wyłącznie w oficjalnych meczach 1v1. Minimum 5 spotkań.",items)
+        add("duel","⚔️ Król 1 vs 1","Liczą się wyniki wyłącznie w oficjalnych meczach 1v1. Minimum 5 spotkań.",items,award=False)
         # non-individual categories
         rivalry=[]
         for (a,b),v in pair.items():
@@ -3839,8 +3958,8 @@ class Database:
         # Count a category at most once per player. Team/match/rivalry/EA-player
         # categories are intentionally excluded because the nominee is not one FIFA Night participant.
         direct_player_awards={
-            "player_year","offensive","defense","clutch","wildcards",
-            "spectacle","debut","outsider","universal","finance","duel"
+            "player_year","offensive","defense","clutch","sharpest","late_king","comeback_king","fair_play",
+            "spectacle","debut","outsider","universal","finance"
         }
         nomination_sets=defaultdict(lambda:{"top2":set(),"top3":set(),"top5":set(),"first":set()})
         nomination_titles_top2=defaultdict(set)
