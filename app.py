@@ -363,87 +363,76 @@ def render_access_settings():
             else:
                 st.error("Nieprawidłowe hasło.")
         st.caption("Dostęp jest zapamiętany w bieżącej sesji przeglądarki. Po zamknięciu sesji, ponownym otwarciu aplikacji lub jej wybudzeniu może być potrzebne ponowne wpisanie hasła.")
+    st.divider()
+    render_player_rename_settings()
+    st.divider()
+    render_history_lock_settings()
+    st.divider()
     render_vision_ocr_test()
 
 
-def render_history_admin():
-    st.markdown("### 🔐 Historia i baza")
-    locked=db.history_locked(); secret_ready=bool(admin_password())
-    if locked: st.success("🔒 Historia jest zablokowana przed usuwaniem.")
-    else: st.warning("🔓 Historia jest odblokowana.")
-    if not secret_ready:
-        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Operacje administracyjne są wyłączone.")
+
+def render_player_rename_settings():
+    st.markdown("### ✏️ Zmiana nazwy gracza")
+    st.caption("Zmiana dotyczy całego profilu gracza, więc nowy nick pojawi się również przy historycznych turniejach, meczach, H2H, statystykach i AWARDS. To nie łączy dwóch różnych profili graczy.")
+    if not admin_password():
+        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Zmiana nazwy jest wyłączona.")
         return
-
-    st.markdown("#### ✏️ Zmiana nazwy gracza")
-    st.caption("Zmiana dotyczy całego profilu gracza, więc nowy nick pojawi się również przy wszystkich historycznych turniejach, meczach, H2H, statystykach i AWARDS. To nie łączy dwóch różnych profili graczy.")
     admin_players=db.admin_players()
-    if admin_players:
-        player_options={str(x["id"]):str(x["name"]) for x in admin_players}
-        with st.form("rename_player_admin"):
-            rename_pid=st.selectbox("Gracz",list(player_options),format_func=lambda x:player_options.get(str(x),str(x)),key="rename_player_id")
-            rename_new=st.text_input("Nowa nazwa",value=player_options.get(str(rename_pid),""),key="rename_player_new")
-            rename_pwd=st.text_input("Hasło administratora",type="password",key="rename_player_pwd")
-            rename_confirm=st.checkbox("Potwierdzam zmianę nazwy także w historii",key="rename_player_confirm")
-            rename_go=st.form_submit_button("✏️ ZMIEŃ NAZWĘ GRACZA",use_container_width=True)
-        if rename_go:
-            if not admin_ok(rename_pwd): st.error("Nieprawidłowe hasło.")
-            elif not rename_confirm: st.error("Zaznacz potwierdzenie zmiany historycznej.")
-            else:
-                try:
-                    result=db.rename_player(rename_pid,rename_new)
-                    official_player_names_cached.clear(); tournament_summary_png_cached.clear()
-                    old_name=str(result.get("old_name") or ""); new_name=str(result.get("new_name") or "")
-                    for k in list(st.session_state.keys()):
-                        if str(k).startswith("_lineup_init_"): st.session_state.pop(k,None)
-                        elif str(k).startswith("p_") and isinstance(st.session_state.get(k),str) and st.session_state.get(k).strip().casefold()==old_name.strip().casefold():
-                            st.session_state[k]=new_name
-                    if result.get("changed"): st.success(f"Zmieniono nazwę: {old_name} → {new_name}. Historia została zachowana pod nową nazwą.")
-                    else: st.info("Nazwa gracza nie wymagała zmiany.")
-                    rr()
-                except ValueError as e: st.error(str(e))
-    else:
+    if not admin_players:
         st.caption("Brak graczy w bazie.")
+        return
+    player_options={str(x["id"]):str(x["name"]) for x in admin_players}
+    with st.form("rename_player_settings"):
+        rename_pid=st.selectbox("Gracz",list(player_options),format_func=lambda x:player_options.get(str(x),str(x)),key="settings_rename_player_id")
+        rename_new=st.text_input("Nowa nazwa",value=player_options.get(str(rename_pid),""),key="settings_rename_player_new")
+        rename_pwd=st.text_input("Hasło administratora",type="password",key="settings_rename_player_pwd")
+        rename_confirm=st.checkbox("Potwierdzam zmianę nazwy także w historii",key="settings_rename_player_confirm")
+        rename_go=st.form_submit_button("✏️ ZMIEŃ NAZWĘ GRACZA",use_container_width=True)
+    if rename_go:
+        if not admin_ok(rename_pwd): st.error("Nieprawidłowe hasło.")
+        elif not rename_confirm: st.error("Zaznacz potwierdzenie zmiany historycznej.")
+        else:
+            try:
+                result=db.rename_player(rename_pid,rename_new)
+                official_player_names_cached.clear(); tournament_summary_png_cached.clear()
+                old_name=str(result.get("old_name") or ""); new_name=str(result.get("new_name") or "")
+                for k in list(st.session_state.keys()):
+                    if str(k).startswith("_lineup_init_"): st.session_state.pop(k,None)
+                    elif str(k).startswith("p_") and isinstance(st.session_state.get(k),str) and st.session_state.get(k).strip().casefold()==old_name.strip().casefold():
+                        st.session_state[k]=new_name
+                if result.get("changed"): st.success(f"Zmieniono nazwę: {old_name} → {new_name}. Historia została zachowana pod nową nazwą.")
+                else: st.info("Nazwa gracza nie wymagała zmiany.")
+                rr()
+            except ValueError as e: st.error(str(e))
 
-    st.divider()
+
+def render_history_lock_settings():
+    st.markdown("### 🔐 Blokada historii")
+    locked=db.history_locked()
     if locked:
-        with st.form("unlock_history"):
-            pwd=st.text_input("Hasło administratora",type="password",key="unlock_pwd")
+        st.success("🔒 Historia jest zablokowana przed usuwaniem.")
+        st.caption("W zakładce Historia nie będzie można usunąć meczu 1 VS 1 ani całego turnieju, dopóki nie odblokujesz historii tutaj.")
+    else:
+        st.warning("🔓 Historia jest odblokowana. Usuwanie nadal wymaga hasła administratora bezpośrednio w Historii.")
+    if not admin_password():
+        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Zmiana blokady historii jest wyłączona.")
+        return
+    if locked:
+        with st.form("settings_unlock_history"):
+            pwd=st.text_input("Hasło administratora",type="password",key="settings_unlock_history_pwd")
             go=st.form_submit_button("🔓 ODBLOKUJ HISTORIĘ",use_container_width=True)
         if go:
             if admin_ok(pwd): db.set_history_locked(False);st.success("Historia odblokowana.");rr()
             else: st.error("Nieprawidłowe hasło.")
-        return
-    with st.form("lock_history"):
-        pwd=st.text_input("Hasło administratora",type="password",key="lock_pwd")
-        go=st.form_submit_button("🔒 ZABLOKUJ HISTORIĘ",use_container_width=True)
-    if go:
-        if admin_ok(pwd): db.set_history_locked(True);st.success("Historia zablokowana.");rr()
-        else: st.error("Nieprawidłowe hasło.")
-    last=db.last_completed_tournament()
-    if last:
-        fmt=FORMAT_LABELS.get(last.get("format_key"),"Klasyczny turniej 6-osobowy")
-        unfinished=str(last.get("status") or "")=="abandoned"
-        ending="niedokończony" if unfinished else f"mistrz: {last.get('champion_name') or '?'}"
-        st.caption(f"Ostatni turniej: {last.get('player_count','?')} graczy • {fmt} • {ending}")
-        with st.form("delete_last_history"):
-            pwd=st.text_input("Hasło administratora",type="password",key="del_last_pwd")
-            yes=st.checkbox("Tak, usuń ostatni zamknięty turniej nietestowy")
-            go=st.form_submit_button("🗑️ USUŃ OSTATNI TURNIEJ",use_container_width=True)
+    else:
+        with st.form("settings_lock_history"):
+            pwd=st.text_input("Hasło administratora",type="password",key="settings_lock_history_pwd")
+            go=st.form_submit_button("🔒 ZABLOKUJ HISTORIĘ",use_container_width=True)
         if go:
-            if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
-            elif not yes: st.error("Zaznacz potwierdzenie.")
-            else:
-                deleted=db.delete_last_completed_tournament();st.success("Ostatni turniej został usunięty." if deleted else "Brak turnieju do usunięcia.");rr()
-    else: st.caption("Brak zamkniętych turniejów nietestowych do usunięcia.")
-    with st.form("clear_all_history"):
-        pwd=st.text_input("Hasło administratora",type="password",key="clear_all_pwd")
-        confirm=st.text_input("Wpisz USUŃ HISTORIĘ")
-        go=st.form_submit_button("💣 WYCZYŚĆ CAŁĄ HISTORIĘ",use_container_width=True)
-    if go:
-        if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
-        elif confirm!="USUŃ HISTORIĘ": st.error("Wpisz dokładnie: USUŃ HISTORIĘ")
-        else: db.clear_all_history();st.success("Historia wszystkich turniejów została wyczyszczona. Zapamiętane nicki zostały zachowane.");rr()
+            if admin_ok(pwd): db.set_history_locked(True);st.success("Historia zablokowana.");rr()
+            else: st.error("Nieprawidłowe hasło.")
+
 
 def format_for(count:int)->str:
     if count==3:return "league3_final"
@@ -609,9 +598,6 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
             db.create_tournament(names,count,fmt,teams,test,stake,cash_flags)
             st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
-    if not force_test:
-        with st.expander("⚙️ Historia i baza"):
-            render_history_admin()
 
 
 def render_start(public_mode:bool=False):
@@ -1813,12 +1799,70 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     st.caption("Drzewko pokazuje logiczną drogę przez DE. Faktyczną kolejność grania nadal najlepiej śledzić w widoku Lista.")
 
 def _render_match_scorer_details(tid:str,m:dict,no:int):
-    """Expandable match details used in both the live schedule and tournament archive."""
+    """Expandable match details used in both the live schedule and tournament archive.
+
+    New matches saved from EA FC screenshots have a detailed event timeline. Older
+    matches keep the legacy scorer-only view, so history remains backward compatible.
+    """
     scorers=db.match_scorers(tid,no)
+    events=db.match_events(tid,no)
     home=[x for x in scorers if x.get("side")=="home"]
     away=[x for x in scorers if x.get("side")=="away"]
     label=f"⚽ Szczegóły meczu {no} • {m.get('home_name') or '?'} – {m.get('away_name') or '?'}"
     with st.expander(label,expanded=False):
+        if events:
+            st.markdown("#### 🕒 Przebieg meczu")
+            pid_name={
+                str(m.get("home_player_id") or ""):str(m.get("home_name") or "—"),
+                str(m.get("away_player_id") or ""):str(m.get("away_name") or "—"),
+            }
+            pid_team={
+                str(m.get("home_player_id") or ""):str(m.get("home_team") or "—"),
+                str(m.get("away_player_id") or ""):str(m.get("away_team") or "—"),
+            }
+            def who(pid,team_hint=""):
+                pid=str(pid or "")
+                name=pid_name.get(pid) or "—"
+                team=(team_hint or pid_team.get(pid) or "—").strip()
+                return f"{name} ({team})" if team and team!="—" else name
+            for e in events:
+                minute=str(e.get("minute_label") or "").strip()
+                if not minute:
+                    base=e.get("minute")
+                    stop=e.get("stoppage")
+                    minute=(f"{int(base)}+{int(stop)}'" if base is not None and stop else (f"{int(base)}'" if base is not None else "—"))
+                elif not minute.endswith("'"):
+                    minute=f"{minute}'"
+                et=str(e.get("event_type") or "")
+                footballer=str(e.get("footballer_name") or "—")
+                related=str(e.get("related_footballer_name") or "").strip()
+                actor=who(e.get("actor_player_id"),str(e.get("actor_team_name") or ""))
+                credited=who(e.get("credited_player_id"),str(e.get("credited_team_name") or ""))
+                if et=="normal_goal":
+                    line=f"{minute} ⚽ {footballer} → {credited}"
+                elif et=="penalty_goal":
+                    line=f"{minute} 🎯 {footballer} — gol z karnego → {credited}"
+                elif et=="own_goal":
+                    if e.get("synthetic_de"):
+                        line=f"{minute} 🟣 Samobój techniczny DE: {footballer} ({actor}) → startowy gol dla {credited}"
+                    else:
+                        line=f"{minute} ↩️ Samobój: {footballer} ({actor}) → gol dla {credited}"
+                elif et=="penalty_miss":
+                    line=f"{minute} ❌ Niewykorzystany karny: {footballer} → {actor}"
+                elif et=="yellow_card":
+                    line=f"{minute} 🟨 {footballer} → {actor}"
+                elif et=="red_card":
+                    line=f"{minute} 🟥 {footballer} → {actor}"
+                elif et=="substitution":
+                    pair=f"{footballer} / {related}" if related else footballer
+                    line=f"{minute} 🔁 Zmiana: {pair} → {actor}"
+                else:
+                    line=f"{minute} • {footballer} → {actor}"
+                st.write(line)
+            st.caption("Dokładne minuty i typy zdarzeń są dostępne dla meczów zapisanych nowym odczytem ze zdjęć. Starsze mecze pozostają w uproszczonym formacie.")
+            st.divider()
+
+        st.markdown("#### ⚽ Strzelcy")
         c1,c2=st.columns(2)
         with c1:
             st.markdown(f"**{esc(m.get('home_name') or '—')}** · {esc(m.get('home_team') or '—')}")
@@ -1832,6 +1876,7 @@ def _render_match_scorer_details(tid:str,m:dict,no:int):
             else:st.caption("Brak zapisanych strzelców.")
         if m.get("home_pen") is not None or m.get("away_pen") is not None:
             st.caption(f"Karne: {int(m.get('home_pen') or 0)}:{int(m.get('away_pen') or 0)}")
+
 
 def render_schedule(t):
     b=db.bundle(t["id"]);fmt=b["meta"]["format_key"];extra=b["meta"].get("extra") or {};st.subheader("📅 Terminarz")
@@ -2564,6 +2609,35 @@ def render_tournament_archive(readonly:bool=True):
         st.markdown("#### ⚽ Strzelcy turnieju")
         st.caption(" • ".join(f"{x.get('name')} — {x.get('goals')}" for x in scorers))
     st.divider();render_schedule(t)
+
+    if not readonly:
+        st.divider()
+        locked=db.history_locked()
+        if locked:
+            st.info("🔒 Usuwanie jest wyłączone, bo Historia jest zablokowana. Blokadę możesz zmienić w ⚙️ Ustawieniach.")
+        else:
+            is_duel=(fmt=="duel1v1")
+            title="🗑️ Usuń ten mecz 1 VS 1" if is_duel else "🗑️ Usuń cały turniej z Historii"
+            confirm_text="USUŃ MECZ" if is_duel else "USUŃ TURNIEJ"
+            with st.expander(title,expanded=False):
+                if is_duel:
+                    st.warning("Usunięcie skasuje wynik, strzelców, minuty, kartki i pozostałe zdarzenia tego 1 VS 1 ze statystyk oraz Historii.")
+                else:
+                    st.warning("Usunięcie skasuje cały wybrany turniej wraz ze wszystkimi jego meczami, strzelcami i zdarzeniami. Pojedynczego meczu ze środka zamkniętego turnieju nie usuwamy, żeby nie uszkodzić drabinki i końcowego wyniku turnieju.")
+                with st.form(f"archive_delete_{selected}"):
+                    pwd=st.text_input("Hasło administratora",type="password",key=f"archive_delete_pwd_{selected}")
+                    confirm=st.text_input(f"Wpisz {confirm_text}",key=f"archive_delete_confirm_{selected}")
+                    go=st.form_submit_button(title.upper(),use_container_width=True)
+                if go:
+                    if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
+                    elif confirm.strip()!=confirm_text: st.error(f"Wpisz dokładnie: {confirm_text}")
+                    else:
+                        try:
+                            db.delete_archived_tournament(selected)
+                            tournament_summary_png_cached.clear();official_player_names_cached.clear()
+                            st.success("Mecz został usunięty z Historii." if is_duel else "Turniej został usunięty z Historii.")
+                            rr()
+                        except ValueError as e: st.error(str(e))
 
 
 def render_public_start():

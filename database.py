@@ -2575,6 +2575,28 @@ class Database:
             cnt=self._fetchone(conn,"SELECT COUNT(*) AS c FROM tournament_players WHERE tournament_id=?",(t["id"],)); t["player_count"]=int(cnt["c"]) if cnt else 0
             self._delete_tournament_conn(conn,t["id"]); return t
 
+    def delete_archived_tournament(self, tid: str) -> dict:
+        """Delete one selected archived tournament (or a completed 1 VS 1 match).
+
+        History lock is respected. We intentionally do not support deleting one match
+        from the middle of a completed multi-match tournament because it would break
+        bracket/standings/champion consistency; such corrections should be made before
+        the tournament is closed or by deleting the whole archived tournament.
+        """
+        tid=str(tid or "").strip()
+        if not tid: raise ValueError("Brak turnieju do usunięcia.")
+        with self.connect() as conn:
+            if self._setting_get_conn(conn,"fifa_history_locked")=="1":
+                raise ValueError("Historia jest zablokowana. Odblokuj ją najpierw w Ustawieniach.")
+            t=self._fetchone(conn,"SELECT id,status,is_test,created_at,completed_at FROM tournaments WHERE id=?",(tid,))
+            if not t: raise ValueError("Nie znaleziono turnieju w historii.")
+            if str(t.get("status") or "") not in ("completed","abandoned"):
+                raise ValueError("Można usuwać tylko zamknięte pozycje z Historii.")
+            meta=self._fetchone(conn,"SELECT format_key,player_count FROM flex_tournament_meta WHERE tournament_id=?",(tid,)) or {}
+            out=dict(t);out.update(meta)
+            self._delete_tournament_conn(conn,tid)
+            return out
+
     def clear_all_history(self) -> None:
         with self.connect() as conn:
             if self._setting_get_conn(conn,"fifa_history_locked")=="1": raise ValueError("Historia jest zablokowana.")
