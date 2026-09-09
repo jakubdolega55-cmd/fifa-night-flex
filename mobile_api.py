@@ -353,6 +353,187 @@ A final score never authorizes you to invent a missing goal.
 """
 
 
+
+# Context-aware schema used by the real match scanner.  It adds a mapping from the
+# physical left/right EA FC layout to FIFA Night's internal bracket slots.  The
+# internal slots are NOT assumed from the screen position; the model must identify
+# them from the assigned club/team names supplied by the server.
+MATCH_EVENT_SCAN_SCHEMA: dict[str, Any] = json.loads(json.dumps(AI_EVENT_SCAN_SCHEMA))
+MATCH_EVENT_SCAN_SCHEMA["properties"].update({
+    "left_participant_slot": {"type": "string", "enum": ["home", "away", "unknown"]},
+    "right_participant_slot": {"type": "string", "enum": ["home", "away", "unknown"]},
+    "mapping_confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    "shootout_left": {"type": ["integer", "null"], "minimum": 0, "maximum": 30},
+    "shootout_right": {"type": ["integer", "null"], "minimum": 0, "maximum": 30},
+})
+MATCH_EVENT_SCAN_SCHEMA["required"] += [
+    "left_participant_slot", "right_participant_slot", "mapping_confidence",
+    "shootout_left", "shootout_right",
+]
+
+
+def _match_event_scan_prompt(context: dict[str, Any]) -> str:
+    participants = context.get("participants") or []
+    home = next((p for p in participants if p.get("slot") == "home"), {})
+    away = next((p for p in participants if p.get("slot") == "away"), {})
+    de_note = ""
+    if context.get("de_wb_bonus"):
+        de_note = (
+            "\nDOUBLE ELIMINATION GRAND FINAL CONTEXT:\n"
+            f"- The Winners Bracket advantage belongs to FIFA Night player {context.get('de_wb_advantage_player_id')} "
+            f"with assigned club/team {context.get('de_wb_advantage_team')}.\n"
+            "- FIFA Night deliberately creates ONE own goal near the beginning of this match to implement the +1 Winners Bracket advantage.\n"
+            "- Extract that event normally as own_goal. Do NOT invent it if it is not visible. The server, not you, will mark the first matching own goal as synthetic.\n"
+        )
+    return AI_EVENT_SCAN_PROMPT + f"""
+
+AUTHORITATIVE FIFA NIGHT MATCH CONTEXT:
+- Internal HOME bracket slot: FIFA Night player "{home.get('player_name','')}"; assigned club/team "{home.get('team','')}".
+- Internal AWAY bracket slot: FIFA Night player "{away.get('player_name','')}"; assigned club/team "{away.get('team','')}".
+- Tournament stage: {context.get('stage','')}; format: {context.get('format_key','')}.
+
+IMPORTANT TEAM MAPPING RULE:
+The physical EA FC screen may place either assigned club on the LEFT or RIGHT.
+Identify which FIFA Night participant is on each screen side by the club/team name visible in the EA FC screen and event rows.
+Never assume LEFT=HOME or RIGHT=AWAY.
+Set left_participant_slot and right_participant_slot to "home" or "away" only when you can match them to the two assigned teams above.
+If a team mapping is genuinely unclear, return "unknown" and lower mapping_confidence instead of guessing.
+
+PENALTY SHOOT-OUT:
+If a post-match shoot-out result is explicitly visible, return only the final shoot-out tally in shootout_left/shootout_right.
+Do NOT add individual shoot-out kicks to events or goals.
+If no shoot-out tally is visible, return null for both.
+{de_note}
+"""
+
+
+def _participant_by_slot(context: dict[str, Any], slot: str) -> dict[str, Any] | None:
+    return next((p for p in (context.get("participants") or []) if p.get("slot") == slot), None)
+
+
+def _map_scan_to_fifa_context(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Map visual left/right events to the FIFA Night players owning the assigned teams."""
+    result = _normalize_and_validate_event_scan_result(result)
+    left_slot = str(result.get("left_participant_slot") or "unknown")
+    right_slot = str(result.get("right_participant_slot") or "unknown")
+
+    # If exactly one side was recognized, the other side is deterministic because a
+    # FIFA Night match has exactly two participants.
+    if left_slot in {"home", "away"} and right_slot == "unknown":
+        right_slot = "away" if left_slot == "home" else "home"
+    elif right_slot in {"home", "away"} and left_slot == "unknown":
+        left_slot = "away" if right_slot == "home" else "home"
+
+    mapping_ok = left_slot in {"home", "away"} and right_slot in {"home", "away"} and left_slot != right_slot
+    if not mapping_ok:
+        left_slot = right_slot = "unknown"
+
+    result["left_participant_slot"] = left_slot
+    result["right_participant_slot"] = right_slot
+    slot_for_visual = {"left": left_slot, "right": right_slot}
+
+    # Translate scoreboard and shoot-out score from visual sides to the bracket slots
+    # expected by the existing result engine.
+    score_left, score_right = result.get("score_left"), result.get("score_right")
+    shoot_left, shoot_right = result.get("shootout_left"), result.get("shootout_right")
+    home_score = away_score = None
+    home_pens = away_pens = None
+    if mapping_ok:
+        if left_slot == "home":
+            home_score, away_score = score_left, score_right
+            home_pens, away_pens = shoot_left, shoot_right
+        else:
+            home_score, away_score = score_right, score_left
+            home_pens, away_pens = shoot_right, shoot_left
+
+    mapped_events: list[dict[str, Any]] = []
+    for idx, event in enumerate(result.get("events") or [], start=1):
+        if not isinstance(event, dict):
+            continue
+        actor_visual = str(event.get("side") or "unknown")
+        credited_visual = str(event.get("credited_side") or "unknown")
+        actor_slot = slot_for_visual.get(actor_visual, "unknown")
+        credited_slot = slot_for_visual.get(credited_visual, "unknown")
+        actor = _participant_by_slot(context, actor_slot) if actor_slot in {"home", "away"} else None
+        credited = _participant_by_slot(context, credited_slot) if credited_slot in {"home", "away"} else None
+        event_type = str(event.get("event_type") or "unknown")
+        footballer = event.get("own_goal_by") if event_type == "own_goal" else event.get("player")
+        mapped_events.append({
+            "event_order": idx,
+            "event_type": event_type,
+            "minute": event.get("minute"),
+            "stoppage": event.get("stoppage"),
+            "minute_label": event.get("minute_label"),
+            "footballer_name": footballer,
+            "related_footballer_name": event.get("related_player"),
+            "actor_player_id": actor.get("player_id") if actor else None,
+            "actor_player_name": actor.get("player_name") if actor else None,
+            "actor_team_name": actor.get("team") if actor else None,
+            "credited_player_id": credited.get("player_id") if credited else None,
+            "credited_player_name": credited.get("player_name") if credited else None,
+            "credited_team_name": credited.get("team") if credited else None,
+            "synthetic_de": False,
+            "confidence": event.get("confidence"),
+            "source_images": list(event.get("image_indices") or []),
+            "visual_side": actor_visual,
+            "visual_credited_side": credited_visual,
+        })
+
+    # In a DE Grand Final the first own goal that credits the Winners Bracket player
+    # is the deliberate technical +1. Minute does not matter (1', 2', 5' etc.).
+    wb_pid = str(context.get("de_wb_advantage_player_id") or "")
+    if context.get("de_wb_bonus") and wb_pid:
+        for event in mapped_events:
+            if event.get("event_type") == "own_goal" and str(event.get("credited_player_id") or "") == wb_pid:
+                event["synthetic_de"] = True
+                break
+
+    # Hard validation in the internal HOME/AWAY slots. Own goals, including the DE
+    # technical one, are real scoreboard events and therefore count here.
+    goal_types = {"normal_goal", "penalty_goal", "own_goal"}
+    home_goals = sum(1 for e in mapped_events if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "") == str((_participant_by_slot(context,"home") or {}).get("player_id") or ""))
+    away_goals = sum(1 for e in mapped_events if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "") == str((_participant_by_slot(context,"away") or {}).get("player_id") or ""))
+    unknown_goals = sum(1 for e in mapped_events if e.get("event_type") in goal_types and not e.get("credited_player_id"))
+    validation = {
+        "status": "mapping_unknown" if not mapping_ok else "score_unknown",
+        "complete": False,
+        "recognized_home": home_goals,
+        "recognized_away": away_goals,
+        "recognized_goal_events": home_goals + away_goals + unknown_goals,
+        "recognized_unknown": unknown_goals,
+        "expected_home": home_score,
+        "expected_away": away_score,
+        "missing_home": None,
+        "missing_away": None,
+    }
+    if mapping_ok and isinstance(home_score, int) and isinstance(away_score, int):
+        validation["missing_home"] = max(home_score - home_goals, 0)
+        validation["missing_away"] = max(away_score - away_goals, 0)
+        if unknown_goals:
+            validation["status"] = "needs_review"
+        elif home_goals == home_score and away_goals == away_score:
+            validation["status"] = "complete"; validation["complete"] = True
+        elif home_goals > home_score or away_goals > away_score:
+            validation["status"] = "overcount"
+        else:
+            validation["status"] = "missing_goals"
+
+    result["fifa_night"] = {
+        "mapping_ok": mapping_ok,
+        "home_score": home_score,
+        "away_score": away_score,
+        "home_penalties": home_pens,
+        "away_penalties": away_pens,
+        "left_slot": left_slot,
+        "right_slot": right_slot,
+        "participants": context.get("participants") or [],
+        "events": mapped_events,
+        "goal_validation": validation,
+        "de_wb_bonus": int(context.get("de_wb_bonus") or 0),
+        "de_wb_advantage_player_id": context.get("de_wb_advantage_player_id"),
+    }
+    return result
+
 GOAL_EVENT_TYPES = {"normal_goal", "penalty_goal", "own_goal"}
 
 def _opposite_side(side: str) -> str:
@@ -753,6 +934,106 @@ async def vision_test_scan(
         "saved_to_database": False,
     }
 
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/matches/{match_no}/scan-preview")
+async def match_scan_preview(
+    tournament_id: str,
+    match_no: int,
+    images: list[UploadFile] = File(...),
+    x_admin_password: str | None = Header(default=None, alias="X-Admin-Password"),
+) -> dict[str, Any]:
+    """Context-aware OpenAI scan for one real FIFA Night match. Never writes to Neon."""
+    _require_vision_test_admin(x_admin_password)
+    if not images:
+        raise HTTPException(422, "Dodaj co najmniej jedno zdjęcie.")
+    try:
+        context = db.match_ai_context(tournament_id, int(match_no))
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    prepared: list[dict[str, Any]] = []
+    for index, image in enumerate(images, start=1):
+        content_type = str(image.content_type or "").lower()
+        if content_type not in VISION_ALLOWED_TYPES:
+            raise HTTPException(415, f"Zdjęcie {index}: obsługiwane są JPG, PNG i WEBP.")
+        raw = await image.read()
+        if not raw:
+            raise HTTPException(422, f"Zdjęcie {index} jest puste.")
+        if len(raw) > VISION_MAX_IMAGE_BYTES:
+            raise HTTPException(413, f"Zdjęcie {index} ma więcej niż 12 MB.")
+        normalized, normalized_type, width, height = _normalize_image_for_google(raw, index)
+        prepared.append({
+            "image_index": index,
+            "filename": image.filename or f"image_{index}",
+            "content_type": content_type,
+            "bytes": len(raw),
+            "normalized": normalized,
+            "normalized_content_type": normalized_type,
+            "normalized_bytes": len(normalized),
+            "width": width,
+            "height": height,
+        })
+
+    api_key = _openai_api_key()
+    if not api_key:
+        raise HTTPException(503, "OPENAI_API_KEY nie jest ustawiony na serwerze API.")
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": _match_event_scan_prompt(context)}]
+    for item in prepared:
+        encoded = base64.b64encode(item["normalized"]).decode("ascii")
+        content.append({"type": "input_text", "text": f"IMAGE {item['image_index']}"})
+        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}", "detail": "high"})
+    body = {
+        "model": "gpt-5.6-luna",
+        "store": False,
+        "reasoning": {"effort": "low"},
+        "input": [{"role": "user", "content": content}],
+        "text": {
+            "verbosity": "low",
+            "format": {"type": "json_schema", "name": "ea_fc_match_scan", "strict": True, "schema": MATCH_EVENT_SCAN_SCHEMA},
+        },
+    }
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(75.0)) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
+            )
+    except httpx.TimeoutException as exc:
+        raise HTTPException(504, "OpenAI nie odpowiedział w ciągu 75 sekund.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Nie udało się połączyć z OpenAI: {exc}") from exc
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    if response.status_code >= 400:
+        message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:800]
+        raise HTTPException(502, f"OpenAI API zwrócił błąd: {message}")
+    raw_text = _extract_openai_output_text(payload)
+    try:
+        result = json.loads(raw_text)
+    except Exception as exc:
+        raise HTTPException(502, f"OpenAI nie zwrócił poprawnego JSON: {raw_text[:800]}") from exc
+    result = _map_scan_to_fifa_context(result, context)
+    usage = payload.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    estimated_cost = input_tokens * 0.20 / 1_000_000 + output_tokens * 1.20 / 1_000_000
+    return {
+        "provider": "openai_luna",
+        "model": "gpt-5.6-luna",
+        "processing_time_ms": elapsed_ms,
+        "image_count": len(prepared),
+        "context": context,
+        "result": result,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens)},
+        "estimated_cost_usd": round(estimated_cost, 8),
+        "saved_to_database": False,
+    }
 
 @app.post("/api/v1/auth/controller")
 def controller_login(payload: ControllerLogin) -> dict[str, Any]:

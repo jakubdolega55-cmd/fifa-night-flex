@@ -934,6 +934,159 @@ def render_match_context(m):
     if last:st.caption(f"Ostatnio: {last.get('home_name')} {last.get('home_score')}:{last.get('away_score')} {last.get('away_name')}")
 
 
+
+def _render_match_scan_result(data:dict, tid:str, m:dict):
+    result=data.get("result") or {}
+    fn=result.get("fifa_night") or {}
+    context=data.get("context") or {}
+    participants={str(p.get("slot")):p for p in (context.get("participants") or [])}
+    home=participants.get("home") or {}
+    away=participants.get("away") or {}
+
+    if not fn.get("mapping_ok"):
+        st.error("Nie udało się pewnie dopasować drużyn ze screena do graczy FIFA Night. Nie zapisuj tego odczytu — sprawdź, czy nazwy obu drużyn są widoczne na zdjęciach.")
+    else:
+        left_slot=fn.get("left_slot"); right_slot=fn.get("right_slot")
+        left_p=participants.get(str(left_slot)) or {}; right_p=participants.get(str(right_slot)) or {}
+        st.success(
+            f"Dopasowanie drużyn: LEWA → {left_p.get('player_name','?')} ({left_p.get('team','?')}) • "
+            f"PRAWA → {right_p.get('player_name','?')} ({right_p.get('team','?')})"
+        )
+
+    hs=fn.get("home_score"); ass=fn.get("away_score")
+    if hs is not None and ass is not None:
+        st.markdown(f"### {home.get('player_name') or m.get('home_name')} **{hs} : {ass}** {away.get('player_name') or m.get('away_name')}")
+        st.caption(f"Drużyny: {home.get('team','—')} — {away.get('team','—')}")
+    else:
+        st.warning("Nie udało się jednoznacznie przypisać wyniku do graczy FIFA Night.")
+
+    events=fn.get("events") or []
+    goal_types={"normal_goal","penalty_goal","own_goal"}
+    goals=[e for e in events if e.get("event_type") in goal_types]
+    cards=[e for e in events if e.get("event_type") in {"yellow_card","red_card"}]
+    penalties_missed=[e for e in events if e.get("event_type")=="penalty_miss"]
+    other=[e for e in events if e.get("event_type") not in goal_types|{"yellow_card","red_card","penalty_miss"}]
+
+    st.markdown("#### ⚽ Bramki")
+    if not goals:
+        st.info("Nie rozpoznano bramek.")
+    for e in goals:
+        minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
+        typ=e.get("event_type")
+        if typ=="own_goal":
+            tech=" • bonus DE (techniczny)" if e.get("synthetic_de") else ""
+            st.write(
+                f"**{minute}** • SAMOBÓJ: {e.get('footballer_name') or '?'} "
+                f"({e.get('actor_player_name') or '?'} / {e.get('actor_team_name') or '?'}) → "
+                f"gol dla **{e.get('credited_player_name') or '?'}**{tech}"
+            )
+        else:
+            suffix=" (karny)" if typ=="penalty_goal" else ""
+            st.write(
+                f"**{minute}** • {e.get('footballer_name') or '?'}{suffix} → "
+                f"**{e.get('credited_player_name') or '?'}** ({e.get('credited_team_name') or '?'})"
+            )
+
+    validation=fn.get("goal_validation") or {}
+    if validation.get("status")=="complete":
+        st.success(
+            f"✅ Komplet bramek: {validation.get('recognized_home')}:{validation.get('recognized_away')} "
+            f"zgadza się z wynikiem meczu."
+        )
+    elif validation.get("status")=="missing_goals":
+        st.warning(
+            f"⚠️ Brakuje bramek: {home.get('player_name','HOME')} — {validation.get('missing_home')}, "
+            f"{away.get('player_name','AWAY')} — {validation.get('missing_away')}. Dodaj kolejne screeny."
+        )
+    elif validation.get("status")=="overcount":
+        st.error("⚠️ Rozpoznano więcej zdarzeń bramkowych niż wskazuje wynik — odczyt wymaga korekty.")
+    elif validation.get("status")=="mapping_unknown":
+        st.error("⚠️ Nie udało się dopasować stron ekranu do wylosowanych drużyn FIFA Night.")
+    else:
+        st.warning("⚠️ Odczyt wymaga sprawdzenia przed zapisaniem.")
+
+    if cards or penalties_missed or other:
+        with st.expander("🟨🟥 Pozostałe wydarzenia",expanded=False):
+            for e in cards:
+                minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
+                icon="🟥" if e.get("event_type")=="red_card" else "🟨"
+                st.write(f"{icon} {minute} • {e.get('footballer_name') or '?'} → **{e.get('actor_player_name') or '?'}**")
+            for e in penalties_missed:
+                minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
+                st.write(f"❌⚽ {minute} • niewykorzystany karny: {e.get('footballer_name') or '?'} → **{e.get('actor_player_name') or '?'}**")
+            for e in other:
+                minute=e.get("minute_label") or (f"{e.get('minute')}'" if e.get("minute") is not None else "?")
+                st.write(f"{minute} • {e.get('event_type')} • {e.get('footballer_name') or '?'}")
+
+    hp=fn.get("home_penalties"); ap=fn.get("away_penalties")
+    if hp is not None and ap is not None:
+        st.info(f"🎯 Seria karnych: {home.get('player_name','HOME')} {hp}:{ap} {away.get('player_name','AWAY')} — same strzały z serii nie są liczone jako gole/karne przyznane.")
+
+    usage=data.get("usage") or {}
+    st.caption(
+        f"Model {data.get('model','')} • zdjęcia: {data.get('image_count',0)} • "
+        f"OpenAI: {int(data.get('processing_time_ms') or 0)/1000:.2f} s • "
+        f"tokeny {usage.get('input_tokens',0)} + {usage.get('output_tokens',0)} • "
+        f"koszt ~${float(data.get('estimated_cost_usd') or 0):.6f}"
+    )
+    st.info("Na tym etapie to tylko podgląd kontekstowy — nic nie zostało jeszcze zapisane do meczu. W następnym kroku podepniemy Zatwierdź / Popraw.")
+
+
+def render_match_vision_scan(tid:str,m:dict,fmt:str):
+    no=int(m["match_no"])
+    state_key=f"match_scan_preview_{tid}_{no}"
+    expanded=bool(st.session_state.get(state_key))
+    with st.expander("📷 Odczytaj wynik i wydarzenia ze zdjęć EA FC",expanded=expanded):
+        st.caption("Dodaj tyle screenów zakładki Wydarzenia, ile potrzeba. OpenAI dopasuje drużyny ze screena do wylosowanych drużyn graczy — nie zakładamy, że lewa/prawa strona to home/away.")
+        api_url=(fifa_night_api_url() or str(st.session_state.get("vision_test_api_url") or "")).strip().rstrip("/")
+        if not api_url:
+            api_url=st.text_input("Adres FastAPI na Renderze",placeholder="https://fifa-night-api.onrender.com",key=f"match_scan_url_{tid}_{no}").strip().rstrip("/")
+        else:
+            st.caption(f"API: {api_url}")
+        uploaded=st.file_uploader(
+            "Zdjęcia Wydarzeń — bez sztywnego limitu",
+            type=["jpg","jpeg","png","webp"],accept_multiple_files=True,
+            key=f"match_scan_files_{tid}_{no}",
+        )
+        if uploaded:
+            st.caption(f"Dodano zdjęć: {len(uploaded)}")
+        c1,c2=st.columns([3,1])
+        with c1:
+            go=st.button("🔍 ODCZYTAJ TEN MECZ",type="primary",use_container_width=True,key=f"match_scan_go_{tid}_{no}")
+        with c2:
+            clear=st.button("Wyczyść",use_container_width=True,key=f"match_scan_clear_{tid}_{no}")
+        if clear:
+            st.session_state.pop(state_key,None);rr()
+        if go:
+            if not api_url:
+                st.error("Brak adresu FastAPI.")
+            elif not uploaded:
+                st.error("Dodaj co najmniej jedno zdjęcie.")
+            elif not admin_password():
+                st.error("Brak ADMIN_PASSWORD w Streamlit Secrets.")
+            else:
+                multipart=[("images",(f.name,f.getvalue(),f.type or "image/jpeg")) for f in uploaded]
+                with st.spinner("OpenAI odczytuje wynik, gole, karne, samobóje i kartki oraz dopasowuje drużyny do graczy FIFA Night..."):
+                    try:
+                        r=requests.post(
+                            f"{api_url}/api/v1/tournaments/{tid}/matches/{no}/scan-preview",
+                            files=multipart,headers={"X-Admin-Password":admin_password()},timeout=90,
+                        )
+                        data=r.json()
+                    except requests.RequestException as e:
+                        st.error(f"Nie udało się połączyć z FastAPI: {e}");data=None
+                    except Exception:
+                        st.error("FastAPI zwróciło odpowiedź, której nie udało się odczytać.");data=None
+                if data is not None:
+                    if not r.ok:
+                        st.error(f"Błąd API ({r.status_code}): {data.get('detail') if isinstance(data,dict) else data}")
+                    else:
+                        st.session_state[state_key]=data;rr()
+        data=st.session_state.get(state_key)
+        if isinstance(data,dict):
+            _render_match_scan_result(data,tid,m)
+
+
 def score_form(tid,m,fmt):
     no=int(m["match_no"]);pending=st.session_state.get("pending_ko")
     if pending and pending.get("tid")==tid and pending.get("no")==no:
@@ -954,6 +1107,8 @@ def score_form(tid,m,fmt):
     wb_bonus = fmt in ("double4","double5","double6","double7","double8") and m.get("stage")=="FINAL"
     start_home = 1 if wb_bonus else 0
     if wb_bonus and st.session_state.get(f"hs_{tid}_{no}",1) < 1:st.session_state[f"hs_{tid}_{no}"]=1
+    render_match_vision_scan(tid,m,fmt)
+    st.markdown("#### ✍️ Wpisanie ręczne / korekta")
     c1,mid,c2=st.columns([1,.18,1])
     with c1:hs=st.number_input(m["home_name"],min_value=start_home,max_value=99,value=start_home,step=1,key=f"hs_{tid}_{no}")
     with mid:st.markdown("<div class='score-separator'>:</div>",unsafe_allow_html=True)
