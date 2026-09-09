@@ -413,16 +413,17 @@ async def vision_test_scan(
         "openai": "openai_luna",
         "luna": "openai_luna",
         "gemini": "gemini_38_flash",
-        "gemini_flash": "gemini_25_flash",
-        "gemini_flash_lite": "gemini_25_flash_lite",
+        "gemini_flash": "gemini_36_flash",
+        "gemini_flash_lite": "gemini_35_flash_lite",
     }
     provider = aliases.get(provider, provider)
     if provider not in {
         "google_ocr",
         "openai_luna",
         "gemini_38_flash",
-        "gemini_25_flash",
-        "gemini_25_flash_lite",
+        "gemini_37_flash",
+        "gemini_36_flash",
+        "gemini_35_flash_lite",
     }:
         raise HTTPException(422, "Nieznany provider testu Vision.")
     if not 1 <= len(images) <= VISION_MAX_IMAGES:
@@ -578,8 +579,9 @@ async def vision_test_scan(
 
     gemini_models = {
         "gemini_38_flash": "gemini-3.8-flash",
-        "gemini_25_flash": "gemini-2.5-flash",
-        "gemini_25_flash_lite": "gemini-2.5-flash-lite",
+        "gemini_37_flash": "gemini-3.7-flash",
+        "gemini_36_flash": "gemini-3.6-flash",
+        "gemini_35_flash_lite": "gemini-3.5-flash-lite",
     }
     gemini_model = gemini_models[provider]
 
@@ -642,8 +644,9 @@ async def vision_test_scan(
     # isolated here so they are easy to refresh without touching the extraction logic.
     paid_rates = {
         "gemini_38_flash": (0.75, 3.75),
-        "gemini_25_flash": (0.30, 2.50),
-        "gemini_25_flash_lite": (0.10, 0.40),
+        "gemini_37_flash": (0.75, 3.75),
+        "gemini_36_flash": (0.75, 3.75),
+        "gemini_35_flash_lite": (0.30, 2.50),
     }
     input_rate, output_rate = paid_rates[provider]
     paid_estimate = input_tokens * input_rate / 1_000_000 + output_tokens * output_rate / 1_000_000

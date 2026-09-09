@@ -145,8 +145,9 @@ def render_vision_ocr_test():
             "Google OCR — darmowy baseline",
             "OpenAI GPT-5.6 Luna — vision",
             "Gemini 3.8 Flash — vision",
-            "Gemini 2.5 Flash — vision",
-            "Gemini 2.5 Flash-Lite — vision",
+            "Gemini 3.7 Flash — vision",
+            "Gemini 3.6 Flash — vision",
+            "Gemini 3.5 Flash-Lite — vision",
         ],
         key="vision_test_provider",
     )
@@ -154,8 +155,9 @@ def render_vision_ocr_test():
         "Google OCR — darmowy baseline": "google_ocr",
         "OpenAI GPT-5.6 Luna — vision": "openai_luna",
         "Gemini 3.8 Flash — vision": "gemini_38_flash",
-        "Gemini 2.5 Flash — vision": "gemini_25_flash",
-        "Gemini 2.5 Flash-Lite — vision": "gemini_25_flash_lite",
+        "Gemini 3.7 Flash — vision": "gemini_37_flash",
+        "Gemini 3.6 Flash — vision": "gemini_36_flash",
+        "Gemini 3.5 Flash-Lite — vision": "gemini_35_flash_lite",
     }
     provider = provider_map[provider_label]
 
@@ -194,8 +196,9 @@ def render_vision_ocr_test():
         "google_ocr": "Google Vision odczytuje tekst...",
         "openai_luna": "OpenAI analizuje wydarzenia i ikony...",
         "gemini_38_flash": "Gemini 3.8 Flash analizuje wydarzenia i ikony...",
-        "gemini_25_flash": "Gemini 2.5 Flash analizuje wydarzenia i ikony...",
-        "gemini_25_flash_lite": "Gemini 2.5 Flash-Lite analizuje wydarzenia i ikony...",
+        "gemini_37_flash": "Gemini 3.7 Flash analizuje wydarzenia i ikony...",
+        "gemini_36_flash": "Gemini 3.6 Flash analizuje wydarzenia i ikony...",
+        "gemini_35_flash_lite": "Gemini 3.5 Flash-Lite analizuje wydarzenia i ikony...",
     }[provider]
     started = time.perf_counter()
     with st.spinner(spinner):
