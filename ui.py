@@ -109,6 +109,7 @@ def _draw_layout(format_key,draw):
     s=draw["slots"]
     if format_key in ("groups6", "groups6_full"): return [("GRUPA A",[("A1",s["A1"]),("A2",s["A2"]),("A3",s["A3"])]),("GRUPA B",[("B1",s["B1"]),("B2",s["B2"]),("B3",s["B3"])])], ["A1","B1","A2","B2","A3","B3"]
     if format_key in ("groups7","groups7_sf"): return [("GRUPA A",[(f"A{i}",s[f"A{i}"]) for i in range(1,5)]),("GRUPA B",[(f"B{i}",s[f"B{i}"]) for i in range(1,4)])], ["A1","B1","A2","B2","A3","B3","A4"]
+    if format_key=="league3_final": return [("KOLEJNOŚĆ LIGI",[("A",s["A"]),("B",s["B"]),("C",s["C"])])], ["A","B","C"]
     if format_key=="league4_final": return [("MECZ OTWARCIA 1",[("1",s["A"]),("2",s["B"])]),("MECZ OTWARCIA 2",[("3",s["C"]),("4",s["D"])])], ["A","B","C","D"]
     if format_key=="double5": return [("MECZ 1",[("A",s["A"]),("B",s["B"])]),("MECZ 2",[("C",s["C"]),("D",s["D"])]),("WOLNY LOS",[("E",s["E"])])], ["A","B","C","D","E"]
     if format_key=="league5_final": return [("KOLEJNOŚĆ LIGI",[("A",s["A"]),("B",s["B"]),("C",s["C"]),("D",s["D"]),("E",s["E"])])], ["A","B","C","D","E"]
@@ -119,7 +120,11 @@ def _draw_layout(format_key,draw):
 
 
 def render_structure_draw(format_key,draw,redraws=0,name_map=None):
-    groups,seq=_draw_layout(format_key,draw); pos={slot:i for i,slot in enumerate(seq)}; delay=lambda slot:1.25+pos[slot]*1.4
+    groups,seq=_draw_layout(format_key,draw)
+    if not groups or not seq:
+        st.error(f"Nie udało się przygotować wizualizacji losowania dla formatu: {format_key}")
+        return
+    pos={slot:i for i,slot in enumerate(seq)}; delay=lambda slot:1.25+pos[slot]*1.4
     cards=[]
     for title,rows in groups:
         rr=[]
