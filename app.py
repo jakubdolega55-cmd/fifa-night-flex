@@ -985,6 +985,33 @@ MATCH_SCAN_EVENT_LABELS = {
 }
 
 
+def render_live_milestone_alerts(tid:str, *, compact:bool=False) -> None:
+    """Show only milestones close enough to matter during live play."""
+    try:
+        alerts=db.live_global_milestone_alerts(tid)
+    except Exception:
+        return
+    if not alerts:return
+    if compact:
+        for a in alerts:
+            icon=str(a.get("icon") or "💎");msg=str(a.get("message") or a.get("title") or "")
+            st.info(f"{icon} **{msg}**")
+        return
+    for a in alerts:
+        kind=str(a.get("kind") or "")
+        icon=str(a.get("icon") or "💎");title=str(a.get("title") or "");msg=str(a.get("message") or title)
+        if (kind=="match" and int(a.get("left") or 0)==1) or kind=="tournament":
+            st.markdown(
+                f"<div class='winner' style='padding:14px;margin:8px 0 12px'>"
+                f"<div class='match-no'>{esc(icon)} JUBILEUSZ FIFA NIGHT</div>"
+                f"<div class='player-big' style='font-size:1.6rem'>{esc(title)}</div>"
+                f"<div class='team-small'>{esc(msg)}</div></div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.info(f"{icon} **{msg}**")
+
+
 def _scan_participants(data:dict) -> list[dict]:
     return [p for p in ((data.get("context") or {}).get("participants") or []) if p.get("player_id")]
 
@@ -1573,9 +1600,7 @@ def live(tid:str):
     absence_targets=_absence_targets_for_schedule(tid,live_schedule)
     total=max_matches(fmt)
     if not int(t.get("is_test") or 0):
-        global_jubilee=db.upcoming_global_match_milestone()
-        if global_jubilee:
-            st.markdown(f"<div class='winner' style='padding:18px;margin:8px 0 16px'><div class='match-no'>💎 MECZ JUBILEUSZOWY</div><div class='player-big' style='font-size:2rem'>{esc(global_jubilee['title'])}</div><div class='team-small'>Ten mecz zostanie zapisany w kamieniach milowych FIFA Night.</div></div>",unsafe_allow_html=True)
+        render_live_milestone_alerts(tid,compact=False)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     if fmt in ("double4","double5","double6","double7","double8") and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
@@ -2880,6 +2905,8 @@ def render_tv_screen(tid:str):
         st.caption("Para pojawi się automatycznie po rozstrzygnięciu poprzedniego etapu.")
         return
     st.markdown(f"<div style='text-align:center;font-weight:900;color:#22c55e;letter-spacing:.08em;margin-bottom:.35rem'>▶️ TERAZ</div>",unsafe_allow_html=True)
+    if not int(t.get("is_test") or 0):
+        render_live_milestone_alerts(tid,compact=True)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_absences(cur,absence_targets,compact=True)

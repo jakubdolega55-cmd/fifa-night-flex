@@ -3375,6 +3375,12 @@ class Database:
             scorer_rows=self._fetchall(conn,"""SELECT ms.tournament_id,ms.match_no,ms.side,ms.scorer_name,ms.goals
                 FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
                 WHERE t.status IN ('completed','abandoned') AND t.is_test=0 ORDER BY ms.tournament_id,ms.match_no,ms.side,ms.scorer_name""")
+            detailed_goal_rows=self._fetchall(conn,"""SELECT me.*
+                FROM match_events me JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
+                  AND me.event_type IN ('normal_goal','penalty_goal','own_goal')
+                  AND COALESCE(me.synthetic_de,0)=0
+                ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""")
             resolutions=self._goal_milestone_resolutions_conn(conn)
         names={str(r["player_id"]):str(r["name"]) for r in tps};team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
         fixed={self._norm_team_name(x) for x in FIXED_TEAMS}
@@ -3389,6 +3395,8 @@ class Database:
         match_by={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
         scorer_by=defaultdict(list)
         for r in scorer_rows:scorer_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
+        detailed_goals_by=defaultdict(list)
+        for r in detailed_goal_rows:detailed_goals_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
         timeline=[];pending=[]
         def add(key,icon,title,when="",tid=None,match_no=None,detail="",kind="other",order=0,extra=None):
             timeline.append({"key":key,"icon":icon,"title":title,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
@@ -3437,27 +3445,61 @@ class Database:
         for idx,m in enumerate(matches,1):
             if idx==50 or (idx>=100 and idx%100==0):add(f"match_{idx}","💎",f"{idx}. mecz FIFA Night",self._event_when_match(m),m["tournament_id"],m["match_no"],mdetail(m),"match",idx)
 
-        # Global goals and manual scorer identity.
+        # Global goals. New scanned matches can resolve the exact jubilee goal
+        # automatically from chronological match_events; older matches keep the
+        # existing manual-resolution fallback.
         cumulative=0
         max_goal_total=sum(actual_goals_in_match(m) for m in matches)
         goal_thresholds=(1,50,*tuple(range(100,((max_goal_total//100)+1)*100+1,100)))
         for m in matches:
-            before=cumulative;cumulative+=actual_goals_in_match(m)
+            match_goal_count=actual_goals_in_match(m)
+            before=cumulative;cumulative+=match_goal_count
             crossed=[x for x in goal_thresholds if before<x<=cumulative]
+            if not crossed:continue
+            detailed=detailed_goals_by.get((str(m["tournament_id"]),int(m["match_no"])),[])
+            detailed_complete=(len(detailed)==match_goal_count)
             for th in crossed:
                 key="first_goal" if th==1 else f"goal_{th}";title="Pierwszy gol FIFA Night" if th==1 else f"{th}. gol FIFA Night"
-                resolution=resolutions.get(key) or {};scorer=str(resolution.get("scorer_name") or "");owner=str(resolution.get("player_name") or "")
-                scorer_txt=(f"{scorer} dla {owner}" if scorer and owner else scorer)
-                detail=mdetail(m)+(f" • strzelec: {scorer_txt}" if scorer else " • strzelec do wskazania")
+                auto_event=None
+                if detailed_complete:
+                    pos=int(th-before)-1
+                    if 0<=pos<len(detailed):auto_event=detailed[pos]
+                resolution=resolutions.get(key) or {}
+                scorer=str(resolution.get("scorer_name") or "");owner=str(resolution.get("player_name") or "")
+                auto_resolution={}
+                if auto_event:
+                    et=str(auto_event.get("event_type") or "")
+                    credited_pid=str(auto_event.get("credited_player_id") or "")
+                    credited_name=names.get(credited_pid,"")
+                    footballer=str(auto_event.get("footballer_name") or "").strip()
+                    minute_label=str(auto_event.get("minute_label") or "").strip()
+                    minute_suffix=f" ({minute_label}')" if minute_label else ""
+                    if et=="own_goal":
+                        scorer=""
+                        own_by=footballer or "?"
+                        event_detail=f"samobój: {own_by}{f' • gol dla {credited_name}' if credited_name else ''}{minute_suffix}"
+                        auto_resolution={"auto":True,"event_type":"own_goal","own_goal_by":own_by,"player_id":credited_pid,"player_name":credited_name}
+                    else:
+                        scorer=footballer
+                        owner=credited_name
+                        pen=" (karny)" if et=="penalty_goal" else ""
+                        event_detail=f"strzelec: {scorer}{pen}{f' dla {owner}' if owner else ''}{minute_suffix}"
+                        auto_resolution={"auto":True,"event_type":et,"scorer_name":scorer,"player_id":credited_pid,"player_name":owner}
+                    detail=mdetail(m)+f" • {event_detail}"
+                else:
+                    scorer_txt=(f"{scorer} dla {owner}" if scorer and owner else scorer)
+                    detail=mdetail(m)+(f" • strzelec: {scorer_txt}" if scorer else " • strzelec do wskazania")
                 candidates=[]
                 for sr in scorer_by.get((str(m["tournament_id"]),int(m["match_no"])),[]):
                     side=str(sr.get("side") or "");pid=str(m.get("home_player_id") if side=="home" else m.get("away_player_id") or "")
                     pname=str(m.get("home_name") if side=="home" else m.get("away_name") or "?")
                     team=str(m.get("home_team") if side=="home" else m.get("away_team") or "")
                     candidates.append({"scorer_name":str(sr.get("scorer_name") or ""),"goals":int(sr.get("goals") or 0),"player_id":pid,"player_name":pname,"team":team})
-                extra={"threshold":th,"scorer_resolution":resolution,"scorer_candidates":candidates}
+                effective_resolution=auto_resolution or resolution
+                extra={"threshold":th,"scorer_resolution":effective_resolution,"scorer_candidates":candidates,"auto_resolved":bool(auto_event)}
                 add(key,"⚽",title,self._event_when_match(m),m["tournament_id"],m["match_no"],detail,"goal",th,extra)
-                if not scorer:pending.append({"key":key,"title":title,"threshold":th,"match":m,"detail":mdetail(m),"candidates":candidates})
+                if not auto_event and not scorer:
+                    pending.append({"key":key,"title":title,"threshold":th,"match":m,"detail":mdetail(m),"candidates":candidates})
 
         # Tournament number milestones.
         for idx,e in enumerate(tournaments,1):
@@ -3545,6 +3587,72 @@ class Database:
         no=int((row or {}).get("n") or 0)+1
         if no==50 or (no>=100 and no%100==0):return {"number":no,"title":f"{no}. OFICJALNY MECZ FIFA NIGHT"}
         return None
+
+    def live_global_milestone_alerts(self, tid: str | None = None) -> list[dict]:
+        """Near-term global milestone alerts for the live controller/TV.
+
+        Includes official matches already played in the currently active tournament.
+        Test tournaments are ignored and the technical +1 in a Double Elimination
+        final is excluded from the global goal counter.
+        """
+        with self.connect() as conn:
+            matches=self._fetchall(conn,"""
+                SELECT m.home_score,m.away_score,m.stage,fm.format_key,t.completed_at,t.created_at,m.played_at
+                FROM matches m
+                JOIN tournaments t ON t.id=m.tournament_id
+                JOIN flex_tournament_meta fm ON fm.tournament_id=m.tournament_id
+                WHERE t.is_test=0 AND m.home_score IS NOT NULL
+                ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no
+            """)
+            tournament_rows=self._fetchall(conn,"""
+                SELECT t.id,t.status,t.created_at,fm.format_key
+                FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.is_test=0 AND fm.format_key<>'duel1v1'
+                ORDER BY t.created_at,t.id
+            """)
+        def actual_goals(m):
+            hs=int(m.get("home_score") or 0);ass=int(m.get("away_score") or 0)
+            if str(m.get("format_key") or "").startswith("double") and str(m.get("stage") or "")=="FINAL":
+                hs=max(0,hs-1)
+            return hs+ass
+        total_matches=len(matches)
+        total_goals=sum(actual_goals(m) for m in matches)
+
+        def next_50_then_100(cur:int) -> int:
+            if cur<50:return 50
+            if cur<100:return 100
+            return ((cur//100)+1)*100
+
+        alerts=[]
+        mt=next_50_then_100(total_matches);mleft=mt-total_matches
+        if 1<=mleft<=2:
+            alerts.append({
+                "kind":"match","target":mt,"left":mleft,
+                "title":f"{mt}. oficjalny mecz FIFA Night",
+                "message":f"Ten mecz będzie {mt}. oficjalnym meczem FIFA Night." if mleft==1 else f"Następny mecz po obecnym będzie {mt}. oficjalnym meczem FIFA Night.",
+                "icon":"💎",
+            })
+        gt=next_50_then_100(total_goals);gleft=gt-total_goals
+        if 1<=gleft<=5:
+            alerts.append({
+                "kind":"goal","target":gt,"left":gleft,
+                "title":f"{gt}. gol FIFA Night",
+                "message":f"Następny gol będzie {gt}. golem w historii FIFA Night." if gleft==1 else f"Do {gt}. gola w historii FIFA Night zostało {gleft}.",
+                "icon":"⚽",
+            })
+
+        if tid:
+            tids=[str(r.get("id") or "") for r in tournament_rows]
+            if str(tid) in tids:
+                no=tids.index(str(tid))+1
+                if no in (10,25,50,100):
+                    alerts.insert(0,{
+                        "kind":"tournament","target":no,"left":0,
+                        "title":f"{no}. FIFA Night",
+                        "message":f"To jest jubileuszowy {no}. turniej FIFA Night.",
+                        "icon":"🏆",
+                    })
+        return alerts
 
     def award_selections(self, year: int) -> dict:
         with self.connect() as conn:
