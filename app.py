@@ -852,22 +852,86 @@ def stage_name(m):
 def max_matches(fmt):return {"duel1v1":1,"league3_final":4,"league4_final":7,"double4":6,"double5":8,"league5_final":11,"groups6":9,"groups6_full":11,"double6":10,"double7":12,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":14,"groups8_barrage":17}[fmt]
 
 def _match_stake_text(fmt:str,m:dict) -> str:
-    """Short, TV-friendly explanation of what the current result changes."""
+    """Legacy plain-text stake description used outside the TV hero when needed."""
     stage=str(m.get("stage") or "")
     if fmt in DE_FORMATS:
-        if stage=="WB":return "🌿 Zwycięzca zostaje w Winners Bracket • 🔁 przegrany spada do Losers Bracket."
-        if stage=="WB_FINAL":return "🏆 Zwycięzca awansuje do Wielkiego Finału • 🔁 przegrany spada do finału Losers."
-        if stage=="LB":return "🩸 Zwycięzca gra dalej w Losers Bracket • ☠️ przegrany odpada z turnieju."
-        if stage=="LB_FINAL":return "🏆 Zwycięzca awansuje do Wielkiego Finału • ☠️ przegrany odpada z turnieju."
-        if stage in {"FINAL","RESET_FINAL"}:return "🏆 Wielki Finał — zwycięzca zostaje Mistrzem FIFA Night. ⭐ Winners Bracket zaczyna od 1:0."
-    if stage=="QF":return "🏆 Zwycięzca awansuje do półfinału • ☠️ przegrany odpada z turnieju."
-    if stage=="BARRAGE":return "🏆 Zwycięzca awansuje do półfinału • ☠️ przegrany odpada z turnieju."
-    if stage=="SF":return "🏆 Zwycięzca awansuje do finału • ☠️ przegrany odpada z turnieju."
-    if stage in {"FINAL","RESET_FINAL"}:return "🏆 Zwycięzca zostaje Mistrzem FIFA Night."
-    if stage=="GROUP":return f"📊 Punkty do tabeli grupy {m.get('group_name') or ''}.".replace("  "," ").strip()
-    if stage=="LEAGUE":return "📊 Punkty do tabeli ligowej."
-    if stage=="DUEL":return "⚔️ Zwycięzca wygrywa oficjalny pojedynek 1 VS 1."
+        if stage=="WB":return "Zwycięzca zostaje w Winners Bracket • przegrany spada do Losers Bracket."
+        if stage=="WB_FINAL":return "Zwycięzca awansuje do Wielkiego Finału • przegrany spada do finału Losers."
+        if stage=="LB":return "Zwycięzca gra dalej w Losers Bracket • przegrany odpada z turnieju."
+        if stage=="LB_FINAL":return "Zwycięzca awansuje do Wielkiego Finału • przegrany odpada z turnieju."
+        if stage in {"FINAL","RESET_FINAL"}:return "Zwycięzca zostaje Mistrzem FIFA Night. Winners Bracket zaczyna od 1:0."
+    if stage in {"QF","BARRAGE"}:return "Zwycięzca awansuje do półfinału • przegrany odpada z turnieju."
+    if stage=="SF":return "Zwycięzca awansuje do finału • przegrany odpada z turnieju."
+    if stage in {"FINAL","RESET_FINAL"}:return "Zwycięzca zostaje Mistrzem FIFA Night."
+    if stage=="GROUP":return f"Punkty do tabeli grupy {m.get('group_name') or ''}.".replace("  "," ").strip()
+    if stage=="LEAGUE":return "Punkty do tabeli ligowej."
+    if stage=="DUEL":return "Zwycięzca wygrywa oficjalny pojedynek 1 VS 1."
     return ""
+
+
+def _match_stake_card(fmt:str,m:dict) -> str:
+    """Broadcast-style stake hero for the TV screen. No extra status strip."""
+    stage=str(m.get("stage") or "")
+    kicker="STAWKA MECZU"
+    icon="⚔️"
+    title="KAŻDY PUNKT SIĘ LICZY"
+    subtitle=_match_stake_text(fmt,m)
+    bg="linear-gradient(135deg,#0f2747 0%,#101827 58%,#0b1220 100%)"
+    border="#2f6ea8"
+    glow="rgba(47,110,168,.28)"
+    accent="#8ec5ff"
+
+    if fmt in DE_FORMATS and stage in {"FINAL","RESET_FINAL"}:
+        kicker="WIELKI FINAŁ"; icon="🏆"; title="WALKA O TYTUŁ"
+        subtitle="Zwycięzca zostaje Mistrzem FIFA Night • Winners Bracket zaczyna od 1:0."
+        bg="linear-gradient(135deg,#33260a 0%,#18150d 48%,#101827 100%)"; border="#d7a92f"; glow="rgba(215,169,47,.36)"; accent="#f5d66d"
+    elif stage in {"FINAL","RESET_FINAL"}:
+        kicker="FINAŁ"; icon="🏆"; title="MISTRZOSTWO NA STAWCE"
+        subtitle="Zwycięzca tego meczu zostaje Mistrzem FIFA Night."
+        bg="linear-gradient(135deg,#33260a 0%,#18150d 48%,#101827 100%)"; border="#d7a92f"; glow="rgba(215,169,47,.36)"; accent="#f5d66d"
+    elif fmt in DE_FORMATS and stage=="LB_FINAL":
+        kicker="FINAŁ LOSERS"; icon="☠️"; title="OSTATNIA DROGA DO FINAŁU"
+        subtitle="Zwycięzca awansuje do Wielkiego Finału • przegrany odpada z turnieju."
+        bg="linear-gradient(135deg,#45151a 0%,#211014 52%,#101827 100%)"; border="#e0525d"; glow="rgba(224,82,93,.30)"; accent="#ff8b94"
+    elif fmt in DE_FORMATS and stage=="LB":
+        kicker="LOSERS BRACKET"; icon="☠️"; title="MECZ O WSZYSTKO"
+        subtitle="Zwycięzca gra dalej • przegrany odpada z FIFA Night."
+        bg="linear-gradient(135deg,#45151a 0%,#211014 52%,#101827 100%)"; border="#e0525d"; glow="rgba(224,82,93,.30)"; accent="#ff8b94"
+    elif fmt in DE_FORMATS and stage=="WB_FINAL":
+        kicker="FINAŁ WINNERS"; icon="🎯"; title="GRA O WIELKI FINAŁ"
+        subtitle="Zwycięzca melduje się w Wielkim Finale • przegrany dostaje ostatnią szansę w Losers."
+        bg="linear-gradient(135deg,#231447 0%,#171326 52%,#101827 100%)"; border="#8c6ee8"; glow="rgba(140,110,232,.30)"; accent="#c7b7ff"
+    elif fmt in DE_FORMATS and stage=="WB":
+        kicker="WINNERS BRACKET"; icon="🔁"; title="UTRZYMAJ SIĘ NA GÓRZE"
+        subtitle="Zwycięzca zostaje w Winners • przegrany spada do Losers Bracket."
+        bg="linear-gradient(135deg,#11382c 0%,#10231e 52%,#101827 100%)"; border="#36a879"; glow="rgba(54,168,121,.28)"; accent="#78ddb0"
+    elif stage=="SF":
+        kicker="PÓŁFINAŁ"; icon="🎯"; title="GRA O FINAŁ"
+        subtitle="Zwycięzca awansuje do finału • przegrany odpada z turnieju."
+        bg="linear-gradient(135deg,#231447 0%,#171326 52%,#101827 100%)"; border="#8c6ee8"; glow="rgba(140,110,232,.30)"; accent="#c7b7ff"
+    elif stage in {"QF","BARRAGE"}:
+        kicker="ĆWIERĆFINAŁ" if stage=="QF" else "BARAŻ"; icon="🔥"; title="WYGRYWAJ ALBO ODPADASZ"
+        subtitle="Zwycięzca awansuje do półfinału • przegrany kończy turniej."
+        bg="linear-gradient(135deg,#4a2410 0%,#25160e 52%,#101827 100%)"; border="#df7b36"; glow="rgba(223,123,54,.30)"; accent="#ffb06f"
+    elif stage=="GROUP":
+        kicker=f"GRUPA {m.get('group_name') or ''}".strip(); icon="📊"; title="WALKA O PUNKTY"
+        subtitle="Każdy wynik buduje układ tabeli i drogę do fazy pucharowej."
+    elif stage=="LEAGUE":
+        kicker="FAZA LIGOWA"; icon="📊"; title="WALKA O PUNKTY"
+        subtitle="Każdy wynik zmienia tabelę i pozycję przed decydującą fazą turnieju."
+    elif stage=="DUEL":
+        kicker="OFICJALNY 1 VS 1"; icon="⚔️"; title="TYLKO JEDEN ZWYCIĘZCA"
+        subtitle="Zwycięzca zapisuje oficjalny pojedynek na swoje konto."
+
+    if not subtitle:
+        return ""
+    return f"""
+    <div style="margin:.55rem 0 .9rem;padding:17px 22px 18px;border-radius:18px;background:{bg};border:1px solid {border};box-shadow:0 0 0 1px {glow},0 12px 38px {glow};text-align:center;overflow:hidden;position:relative">
+      <div style="font-size:.79rem;font-weight:900;letter-spacing:.16em;color:{accent};text-transform:uppercase;margin-bottom:.28rem">{esc(icon)} {esc(kicker)}</div>
+      <div style="font-size:1.72rem;line-height:1.08;font-weight:950;letter-spacing:.025em;color:#f8fafc;margin-bottom:.42rem">{esc(title)}</div>
+      <div style="font-size:1rem;line-height:1.35;font-weight:650;color:#d7deea">{esc(subtitle)}</div>
+    </div>
+    """
 
 
 def source_placeholder(fmt,no):
@@ -2954,8 +3018,8 @@ def render_tv_screen(tid:str):
     if not int(t.get("is_test") or 0):
         render_live_milestone_alerts(tid,compact=True)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
-    stake=_match_stake_text(fmt,cur)
-    if stake:st.info(f"⚔️ **Stawka meczu:** {stake}")
+    stake_card=_match_stake_card(fmt,cur)
+    if stake_card:st.markdown(stake_card,unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_absences(cur,absence_targets,compact=True)
     # Kolejne gotowe spotkania w faktycznej kolejności LIVE.
