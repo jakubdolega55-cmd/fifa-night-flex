@@ -3381,6 +3381,11 @@ class Database:
                   AND me.event_type IN ('normal_goal','penalty_goal','own_goal')
                   AND COALESCE(me.synthetic_de,0)=0
                 ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""")
+            detailed_event_rows=self._fetchall(conn,"""SELECT me.*
+                FROM match_events me JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
+                  AND me.event_type IN ('penalty_goal','penalty_miss','own_goal','yellow_card','red_card','normal_goal')
+                ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""")
             resolutions=self._goal_milestone_resolutions_conn(conn)
         names={str(r["player_id"]):str(r["name"]) for r in tps};team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
         fixed={self._norm_team_name(x) for x in FIXED_TEAMS}
@@ -3397,6 +3402,8 @@ class Database:
         for r in scorer_rows:scorer_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
         detailed_goals_by=defaultdict(list)
         for r in detailed_goal_rows:detailed_goals_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
+        detailed_events_by=defaultdict(list)
+        for r in detailed_event_rows:detailed_events_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
         timeline=[];pending=[]
         def add(key,icon,title,when="",tid=None,match_no=None,detail="",kind="other",order=0,extra=None):
             timeline.append({"key":key,"icon":icon,"title":title,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
@@ -3503,7 +3510,7 @@ class Database:
 
         # Tournament number milestones.
         for idx,e in enumerate(tournaments,1):
-            if idx in (10,25,50):
+            if idx in (10,25,50,100):
                 champ=str(e.get("champion_player_id") or "")
                 detail=(f"Mistrz: {names.get(champ,'?')}" if champ else "Turniej zakończony jako niedokończony")
                 add(f"tournament_{idx}","🏆",f"{idx}. FIFA Night",e.get("completed_at") or e.get("created_at"),e["id"],None,detail,"tournament",idx)
@@ -3549,6 +3556,68 @@ class Database:
             if idx%25==0:
                 when,tid,no,scorer,pname,m=item;add(f"hattrick_{idx}","🎩",f"{idx}. hat-trick w historii",when,tid,no,f"{scorer} dla {pname} • {mdetail(m)}","hattrick",idx)
 
+        # New-era global event milestones. These counters begin when detailed EA FC
+        # event tracking was introduced, so titles explicitly say "zarejestrowany".
+        # Penalty shoot-outs are not stored in match_events and therefore never count here.
+        event_specs={
+            "penalties_awarded":{
+                "thresholds":(25,50,100,200),"icon":"🎯","kind":"match_penalty",
+                "title":lambda n:f"{n}. zarejestrowany rzut karny w meczu",
+                "match":lambda e: str(e.get("event_type") or "") in {"penalty_goal","penalty_miss"},
+            },
+            "own_goals":{
+                "thresholds":(10,25,50,100),"icon":"↩️","kind":"own_goal",
+                "title":lambda n:f"{n}. zarejestrowany samobój",
+                "match":lambda e: str(e.get("event_type") or "")=="own_goal" and not int(e.get("synthetic_de") or 0),
+            },
+            "yellow_cards":{
+                "thresholds":(25,50,100,250),"icon":"🟨","kind":"yellow_card",
+                "title":lambda n:f"{n}. zarejestrowana żółta kartka",
+                "match":lambda e: str(e.get("event_type") or "")=="yellow_card",
+            },
+            "red_cards":{
+                "thresholds":(5,10,25,50),"icon":"🟥","kind":"red_card",
+                "title":lambda n:f"{n}. zarejestrowana czerwona kartka",
+                "match":lambda e: str(e.get("event_type") or "")=="red_card",
+            },
+            "extra_time_goals":{
+                "thresholds":(25,50,100,200),"icon":"➕","kind":"extra_time_goal",
+                "title":lambda n:f"{n}. zarejestrowany gol w dogrywce",
+                "match":lambda e: str(e.get("event_type") or "") in {"normal_goal","penalty_goal","own_goal"}
+                                  and not int(e.get("synthetic_de") or 0) and int(e.get("minute") or 0)>90,
+            },
+        }
+        event_counts={k:0 for k in event_specs}
+        for m in matches:
+            key=(str(m["tournament_id"]),int(m["match_no"]))
+            for e in detailed_events_by.get(key,[]):
+                et=str(e.get("event_type") or "")
+                footballer=str(e.get("footballer_name") or "").strip()
+                minute_label=str(e.get("minute_label") or "").strip()
+                minute_suffix=f" ({minute_label}')" if minute_label else ""
+                actor_pid=str(e.get("actor_player_id") or "")
+                credited_pid=str(e.get("credited_player_id") or "")
+                actor_name=names.get(actor_pid,"")
+                credited_name=names.get(credited_pid,"")
+                for stat_key,spec in event_specs.items():
+                    if not spec["match"](e):continue
+                    event_counts[stat_key]+=1
+                    n=event_counts[stat_key]
+                    if n not in spec["thresholds"]:continue
+                    if et=="own_goal":
+                        who=footballer or "?"
+                        ev_detail=f"samobój: {who}{f' • gol dla {credited_name}' if credited_name else ''}{minute_suffix}"
+                    elif et=="penalty_miss":
+                        ev_detail=f"niewykorzystany karny: {footballer or '?'}{f' • {actor_name}' if actor_name else ''}{minute_suffix}"
+                    elif et=="penalty_goal":
+                        ev_detail=f"karny: {footballer or '?'}{f' • {credited_name or actor_name}' if (credited_name or actor_name) else ''}{minute_suffix}"
+                    elif et in {"yellow_card","red_card"}:
+                        ev_detail=f"{footballer or '?'}{f' • {actor_name}' if actor_name else ''}{minute_suffix}"
+                    else:
+                        ev_detail=f"{footballer or '?'}{f' • {credited_name}' if credited_name else ''}{minute_suffix}"
+                    add(f"{stat_key}_{n}",spec["icon"],spec["title"](n),self._event_when_match(m),m["tournament_id"],m["match_no"],
+                        f"{mdetail(m)} • {ev_detail}",spec["kind"],n)
+
         timeline.sort(key=lambda x:(x.get("earned_at") or "",x.get("order") or 0,x.get("title") or ""))
 
         def next_target(current, thresholds):
@@ -3569,12 +3638,21 @@ class Database:
             ("Gole",total_goals,next_50_then_100(total_goals)),
             ("FIFA Night",len(tournaments),next_target(len(tournaments),(10,25,50,100))),
             ("Zwycięstwa",total_wins,next_50_then_100(total_wins)),
-            ("Karne",total_pens,next_target(total_pens,(10,25,50,100))),
+            ("Serie karnych",total_pens,next_target(total_pens,(10,25,50,100))),
             ("Czyste konta",total_cs,next_25(total_cs)),
             ("Hat-tricki",total_hats,next_25(total_hats)),
+            ("Karne w meczu",event_counts["penalties_awarded"],next_target(event_counts["penalties_awarded"],(25,50,100,200))),
+            ("Samobóje",event_counts["own_goals"],next_target(event_counts["own_goals"],(10,25,50,100))),
+            ("Żółte kartki",event_counts["yellow_cards"],next_target(event_counts["yellow_cards"],(25,50,100,250))),
+            ("Czerwone kartki",event_counts["red_cards"],next_target(event_counts["red_cards"],(5,10,25,50))),
+            ("Gole w dogrywce",event_counts["extra_time_goals"],next_target(event_counts["extra_time_goals"],(25,50,100,200))),
         ]
         next_rows=[{"name":n,"current":cur,"target":target,"left":max(0,target-cur) if target else 0} for n,cur,target in counters if target]
-        return {"timeline":timeline,"pending_goal_scorers":pending,"next":next_rows,"totals":{"matches":len(matches),"goals":total_goals,"tournaments":len(tournaments),"wins":total_wins,"penalties":total_pens,"clean_sheets":total_cs,"hattricks":total_hats}}
+        return {"timeline":timeline,"pending_goal_scorers":pending,"next":next_rows,"totals":{
+            "matches":len(matches),"goals":total_goals,"tournaments":len(tournaments),"wins":total_wins,
+            "penalties":total_pens,"clean_sheets":total_cs,"hattricks":total_hats,
+            **event_counts,
+        }}
 
     def milestones_in_tournament(self, tid: str) -> list[dict]:
         return [x for x in self.global_milestones().get("timeline",[]) if str(x.get("tournament_id") or "")==str(tid)]
