@@ -855,6 +855,74 @@ class Database:
                 GROUP BY scorer_name ORDER BY SUM(goals) DESC,scorer_name""",(tid,))
         return [{"name":str(r.get("scorer_name") or "?"),"goals":int(r.get("goals") or 0)} for r in rows[:max(1,int(limit or 3))]]
 
+    def tournament_live_dashboard(self, tid: str) -> dict:
+        """Compact live counters for the TV AUTO dashboard of one tournament.
+
+        Score-based counters work for every played match. Event counters use only
+        detailed EA FC match_events, so older/manual-only matches are never guessed.
+        The technical +1 Winners Bracket advantage in a DE Grand Final is excluded
+        from the real-goal total and from the highest-scoring-match calculation.
+        """
+        with self.connect() as conn:
+            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)) or {}
+            fmt=str(meta.get("format_key") or "")
+            matches=self._fetchall(conn,"""SELECT m.match_no,m.stage,m.home_score,m.away_score,m.match_status,
+                       hp.name AS home_name,ap.name AS away_name
+                FROM matches m
+                LEFT JOIN players hp ON hp.id=m.home_player_id
+                LEFT JOIN players ap ON ap.id=m.away_player_id
+                WHERE m.tournament_id=? AND m.home_score IS NOT NULL
+                ORDER BY m.match_no""",(tid,))
+            events=self._fetchall(conn,"""SELECT me.match_no,me.event_type,me.synthetic_de,me.minute
+                FROM match_events me
+                JOIN matches m ON m.tournament_id=me.tournament_id AND m.match_no=me.match_no
+                WHERE me.tournament_id=? AND m.home_score IS NOT NULL
+                ORDER BY me.match_no,me.event_order,me.id""",(tid,))
+
+        def real_score(m: dict) -> tuple[int,int]:
+            hs=int(m.get("home_score") or 0); ass=int(m.get("away_score") or 0)
+            if fmt.startswith("double") and str(m.get("stage") or "")=="FINAL":
+                hs=max(0,hs-1)
+            return hs,ass
+
+        played=len(matches)
+        total_goals=0
+        highest=None
+        for m in matches:
+            hs,ass=real_score(m); total=hs+ass; total_goals+=total
+            candidate={
+                "match_no":int(m.get("match_no") or 0),
+                "home_name":str(m.get("home_name") or "?"),
+                "away_name":str(m.get("away_name") or "?"),
+                "home_score":hs,"away_score":ass,"goals":total,
+            }
+            if highest is None or (total,int(m.get("match_no") or 0))>(highest["goals"],highest["match_no"]):
+                highest=candidate
+
+        counters={"penalties_awarded":0,"yellow_cards":0,"red_cards":0,"own_goals":0,"extra_time_goals":0}
+        detailed_match_nos=set()
+        for e in events:
+            detailed_match_nos.add(int(e.get("match_no") or 0))
+            et=str(e.get("event_type") or "")
+            synthetic=bool(int(e.get("synthetic_de") or 0))
+            if et in {"penalty_goal","penalty_miss"}: counters["penalties_awarded"]+=1
+            if et=="yellow_card": counters["yellow_cards"]+=1
+            if et=="red_card": counters["red_cards"]+=1
+            if et=="own_goal" and not synthetic: counters["own_goals"]+=1
+            try: minute=int(e.get("minute") or 0)
+            except Exception: minute=0
+            if et in {"normal_goal","penalty_goal","own_goal"} and not synthetic and minute>90:
+                counters["extra_time_goals"]+=1
+
+        return {
+            "matches_played":played,
+            "goals":total_goals,
+            "goals_per_match":round(total_goals/played,2) if played else 0.0,
+            "detailed_matches":len(detailed_match_nos),
+            "highest_scoring_match":highest,
+            **counters,
+        }
+
     def match_scorers(self, tid: str, match_no: int) -> list[dict]:
         """Entered scorers for one match, grouped by side for schedule/history details."""
         with self.connect() as conn:

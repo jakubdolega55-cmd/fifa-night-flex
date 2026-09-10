@@ -851,6 +851,25 @@ def stage_name(m):
 
 def max_matches(fmt):return {"duel1v1":1,"league3_final":4,"league4_final":7,"double4":6,"double5":8,"league5_final":11,"groups6":9,"groups6_full":11,"double6":10,"double7":12,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":14,"groups8_barrage":17}[fmt]
 
+def _match_stake_text(fmt:str,m:dict) -> str:
+    """Short, TV-friendly explanation of what the current result changes."""
+    stage=str(m.get("stage") or "")
+    if fmt in DE_FORMATS:
+        if stage=="WB":return "🌿 Zwycięzca zostaje w Winners Bracket • 🔁 przegrany spada do Losers Bracket."
+        if stage=="WB_FINAL":return "🏆 Zwycięzca awansuje do Wielkiego Finału • 🔁 przegrany spada do finału Losers."
+        if stage=="LB":return "🩸 Zwycięzca gra dalej w Losers Bracket • ☠️ przegrany odpada z turnieju."
+        if stage=="LB_FINAL":return "🏆 Zwycięzca awansuje do Wielkiego Finału • ☠️ przegrany odpada z turnieju."
+        if stage in {"FINAL","RESET_FINAL"}:return "🏆 Wielki Finał — zwycięzca zostaje Mistrzem FIFA Night. ⭐ Winners Bracket zaczyna od 1:0."
+    if stage=="QF":return "🏆 Zwycięzca awansuje do półfinału • ☠️ przegrany odpada z turnieju."
+    if stage=="BARRAGE":return "🏆 Zwycięzca awansuje do półfinału • ☠️ przegrany odpada z turnieju."
+    if stage=="SF":return "🏆 Zwycięzca awansuje do finału • ☠️ przegrany odpada z turnieju."
+    if stage in {"FINAL","RESET_FINAL"}:return "🏆 Zwycięzca zostaje Mistrzem FIFA Night."
+    if stage=="GROUP":return f"📊 Punkty do tabeli grupy {m.get('group_name') or ''}.".replace("  "," ").strip()
+    if stage=="LEAGUE":return "📊 Punkty do tabeli ligowej."
+    if stage=="DUEL":return "⚔️ Zwycięzca wygrywa oficjalny pojedynek 1 VS 1."
+    return ""
+
+
 def source_placeholder(fmt,no):
     maps={
       "duel1v1":{},
@@ -2826,8 +2845,8 @@ def render_tv_screen(tid:str):
     auto_slide=0
     if tv_mode=="🔄 AUTO":
         started=float(st.session_state.get(start_key) or time.time())
-        auto_slide=int(max(0,time.time()-started)//10)%3
-        labels=["🎮 TERAZ / NASTĘPNY","🗺️ SYTUACJA TURNIEJU","⚽ WYNIKI I STRZELCY"]
+        auto_slide=int(max(0,time.time()-started)//10)%4
+        labels=["🎮 TERAZ / NASTĘPNY","🗺️ SYTUACJA TURNIEJU","⚽ WYNIKI I STRZELCY","📊 FIFA NIGHT NA ŻYWO"]
         st.caption(f"🔄 TV AUTO • {labels[auto_slide]} • zmiana co około 10 s")
     if t.get("status")=="completed":
         summary=db.tournament_summary(tid);champ=summary.get("champion") or "—"
@@ -2900,6 +2919,33 @@ def render_tv_screen(tid:str):
             st.caption("Strzelcy pojawią się po zapisaniu pierwszych bramek.")
         return
 
+    if tv_mode=="🔄 AUTO" and auto_slide==3:
+        live=db.tournament_live_dashboard(tid)
+        st.markdown("### 📊 FIFA Night na żywo")
+        c1,c2,c3=st.columns(3)
+        c1.metric("🎮 Rozegrane mecze",int(live.get("matches_played") or 0))
+        c2.metric("⚽ Gole",int(live.get("goals") or 0))
+        c3.metric("📈 Gole / mecz",f"{float(live.get('goals_per_match') or 0):.2f}")
+        st.divider()
+        c1,c2,c3=st.columns(3)
+        c1.metric("🎯 Karne w meczu",int(live.get("penalties_awarded") or 0))
+        c2.metric("🟨 Żółte kartki",int(live.get("yellow_cards") or 0))
+        c3.metric("🟥 Czerwone kartki",int(live.get("red_cards") or 0))
+        c1,c2,c3=st.columns(3)
+        c1.metric("↩️ Samobóje",int(live.get("own_goals") or 0))
+        c2.metric("➕ Gole w dogrywce",int(live.get("extra_time_goals") or 0))
+        c3.metric("📸 Szczegółowo śledzone",f"{int(live.get('detailed_matches') or 0)}/{int(live.get('matches_played') or 0)}")
+        high=live.get("highest_scoring_match") or {}
+        if high:
+            st.markdown(
+                f'<div class="mini-card"><span class="match-no">🔥 NAJWIĘCEJ GOLI W MECZU • {int(high.get("goals") or 0)} GOLI</span><br>'
+                f'<b>{esc(high.get("home_name"))} — {esc(high.get("away_name"))}</b>'
+                f'<span style="float:right" class="scoreline">{int(high.get("home_score") or 0)}:{int(high.get("away_score") or 0)}</span></div>',
+                unsafe_allow_html=True
+            )
+        st.caption("Kartki, karne, samobóje i gole w dogrywce są liczone z zapisanych szczegółowych wydarzeń EA FC. Techniczny gol +1 z finału Double Elimination nie jest liczony jako prawdziwy gol.")
+        return
+
     if not cur:
         st.markdown("### ⏳ Czekamy na kolejny mecz")
         st.caption("Para pojawi się automatycznie po rozstrzygnięciu poprzedniego etapu.")
@@ -2908,6 +2954,8 @@ def render_tv_screen(tid:str):
     if not int(t.get("is_test") or 0):
         render_live_milestone_alerts(tid,compact=True)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
+    stake=_match_stake_text(fmt,cur)
+    if stake:st.info(f"⚔️ **Stawka meczu:** {stake}")
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_absences(cur,absence_targets,compact=True)
     # Kolejne gotowe spotkania w faktycznej kolejności LIVE.
