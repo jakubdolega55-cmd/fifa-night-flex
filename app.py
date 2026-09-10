@@ -1265,12 +1265,16 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
                 if current_type not in MATCH_SCAN_EVENT_TYPES:current_type="unknown"
                 event_type=st.selectbox("Typ",MATCH_SCAN_EVENT_TYPES,index=MATCH_SCAN_EVENT_TYPES.index(current_type),format_func=lambda x:MATCH_SCAN_EVENT_LABELS.get(x,x),key=f"scan_type_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed")
             with c3:
-                footballer=st.text_input("Piłkarz",value=str(row.get("footballer_name") or ""),key=f"scan_footballer_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed",placeholder="Piłkarz")
+                footballer=st.text_input("Piłkarz",value=str(row.get("footballer_name") or ""),key=f"scan_footballer_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed",placeholder=("Wchodzi" if event_type=="substitution" else "Piłkarz"))
             with c4:
                 actor_pid=str(row.get("actor_player_id") or "")
                 options=[""]+participant_ids
                 actor_sel=st.selectbox("Gracz FIFA Night",options,index=options.index(actor_pid) if actor_pid in options else 0,format_func=lambda pid:"— wybierz —" if not pid else f"{participants[pid].get('player_name')} ({participants[pid].get('team')})",key=f"scan_actor_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed")
-            rendered.append({**row,"include":include,"minute_label":minute_label,"event_type":event_type,"footballer_name":footballer,"actor_player_id":actor_sel})
+            related=str(row.get("related_footballer_name") or "")
+            if event_type=="substitution":
+                related=st.text_input("Schodzi z boiska",value=related,key=f"scan_related_{tid}_{no}_{scan_id}_{uid}",placeholder="Piłkarz schodzący")
+                st.caption("🔁 Dla zmiany: pole „Wchodzi” = zmiennik, a „Schodzi z boiska” = zawodnik zastępowany. Ta informacja służy m.in. do odznaki Joker.")
+            rendered.append({**row,"include":include,"minute_label":minute_label,"event_type":event_type,"footballer_name":footballer,"related_footballer_name":related,"actor_player_id":actor_sel})
             st.divider()
         edit["events"]=rendered
         if st.button("➕ Dodaj wydarzenie ręcznie",use_container_width=True,key=f"scan_add_event_{tid}_{no}_{scan_id}"):
@@ -2021,7 +2025,7 @@ def _render_match_scorer_details(tid:str,m:dict,no:int):
                 elif et=="injury":
                     line=f"{minute} 🚑 Kontuzja: {footballer} → {actor}"
                 elif et=="substitution":
-                    pair=f"{footballer} / {related}" if related else footballer
+                    pair=f"⬆️ {footballer} / ⬇️ {related}" if related else f"⬆️ {footballer}"
                     line=f"{minute} 🔁 Zmiana: {pair} → {actor}"
                 else:
                     line=f"{minute} • {footballer} → {actor}"

@@ -334,6 +334,7 @@ EA FC icon rules confirmed for FIFA Night from real EA FC event screens:
 - yellow rectangular card = yellow_card
 - red rectangular card = red_card
 - player names with green up / red down arrows = substitution, NOT a goal
+- for substitution events, set player = the footballer COMING ON (green/up arrow) and related_player = the footballer GOING OFF (red/down arrow). side = that team's visible side; credited_side = unknown. Never swap these roles.
 - injury/medical event = injury. FIFA Night treats all injury severities identically. EA FC may show more than one injury symbol, including a bandage/plaster-style medical icon with a plus/cross or an ambulance/medical icon with a plus/cross. If either medical injury icon is visibly present, classify it as injury. If the symbol is ambiguous, use unknown rather than guessing.
 - if an icon cannot be identified reliably, use unknown
 
@@ -349,6 +350,7 @@ Goal/event field rules:
 - penalty misses never count toward the match score or scorer totals
 
 For injury: player = the visibly injured footballer; side = that footballer's visible side; credited_side = unknown.
+For substitution: player = player COMING ON; related_player = player GOING OFF; side = that team's visible side; credited_side = unknown.
 A red card or injury is only an extracted event. FIFA Night's backend decides any next-match absence rule.
 
 Different events can occur in the same minute on opposite sides.

@@ -3149,7 +3149,14 @@ class Database:
             {"key":"ice_cold","icon":"🥶","name":"Ice Cold","desc":"Wygrana seria rzutów karnych."},
             {"key":"many_clubs","icon":"🔄","name":"Człowiek wielu klubów","desc":"Zwycięstwo oficjalnego meczu pięcioma różnymi drużynami."},
             {"key":"wild_one","icon":"🎲","name":"Wild One","desc":"Wygrany turniej drużyną z Wild Carda."},
-            {"key":"perfect_night","icon":"💯","name":"Perfect Night","desc":"Wygrany turniej bez ani jednej porażki."},
+            {"key":"perfect_night","icon":"💯","name":"Perfect Night","desc":"Wygraj FIFA Night, wygrywając każdy swój mecz w regulaminowych 90 minutach — bez remisu, dogrywki i serii karnych."},
+            {"key":"unkillable","icon":"🔥","name":"Nie do zabicia","desc":"Wygraj mecz po tym, jak przegrywałeś co najmniej 3 golami."},
+            {"key":"ten_men","icon":"🟥","name":"W dziesiątkę raźniej","desc":"Wygraj mecz mimo czerwonej kartki dla swojej drużyny."},
+            {"key":"penalty_executioner","icon":"🎯","name":"Egzekutor z wapna","desc":"Zdobądź 10 goli z rzutów karnych w trakcie meczu."},
+            {"key":"after_hours","icon":"➕","name":"Po godzinach","desc":"Zdobądź gola na wagę zwycięstwa w dogrywce."},
+            {"key":"hat_trick_express","icon":"🎩","name":"Hat-trick Express","desc":"Niech jeden piłkarz Twojej drużyny zdobędzie hat-tricka w ciągu maksymalnie 15 minut."},
+            {"key":"butcher","icon":"🪓","name":"Rzeźnik","desc":"Uzbieraj 25 punktów dyscyplinarnych w szczegółowo śledzonych meczach (żółta = 1, czerwona = 3)."},
+            {"key":"joker","icon":"🃏","name":"Joker","desc":"Zmiennik zdobywa gola na wagę zwycięstwa po wejściu z ławki."},
             {"key":"from_the_dead","icon":"🐦‍🔥","name":"Powrót zza grobu","desc":"Wygrany Double Elimination po wcześniejszym spadku do Losers Bracket."},
             {"key":"shark","icon":"🦈","name":"Rekin","desc":"Historyczny bilans finansowy osiąga co najmniej +250 zł."},
             {"key":"sponsor","icon":"🤡","name":"Sponsor imprezy","desc":"Historyczny bilans finansowy spada do -250 zł lub niżej."},
@@ -3183,6 +3190,16 @@ class Database:
                 FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
                 WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
             ledger,_finance_names,_jackpot=self._finance_ledger_conn(conn)
+            detailed_events=self._fetchall(conn,"""SELECT me.tournament_id,me.match_no,me.event_order,me.event_type,
+                    me.minute,me.stoppage,me.minute_label,me.actor_player_id,me.credited_player_id,
+                    me.footballer_name,me.normalized_footballer,me.related_footballer_name,me.synthetic_de,me.confidence
+                FROM match_events me
+                JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.is_test=0
+                ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""")
+        detailed_by_match=defaultdict(list)
+        for e in detailed_events:
+            detailed_by_match[(str(e.get("tournament_id") or ""),int(e.get("match_no") or 0))].append(e)
         team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
         group_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("group_name") or "") for r in tps}
         group_players=defaultdict(list);tie_by={}
@@ -3195,7 +3212,7 @@ class Database:
         event_by={str(e["id"]):e for e in events}
 
         unlocked=defaultdict(dict)
-        progress=defaultdict(lambda:{"wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,"pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,"title_streak":0,"max_title_streak":0,"max_elim_wins_tournament":0,"max_close_wins_tournament":0})
+        progress=defaultdict(lambda:{"wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,"pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,"title_streak":0,"max_title_streak":0,"max_elim_wins_tournament":0,"max_close_wins_tournament":0,"penalty_goals":0,"discipline_points":0,"max_comeback_deficit":0})
         win_streak=defaultdict(int);clean_streak=defaultdict(int)
 
         def award(pid,key,when="",tid=None,match_no=None,detail=""):
@@ -3240,6 +3257,107 @@ class Database:
                 if clean_streak[pid]>=3: award(pid,"wall",when,tid,no,"3 czyste konta z rzędu")
                 if result=="W" and m.get("home_penalties") is not None and m.get("away_penalties") is not None:
                     pr["pen_wins"]+=1;award(pid,"ice_cold",when,tid,no,f"Karne {m.get('home_penalties')}:{m.get('away_penalties')}")
+
+            # New-era badges based on the confirmed EA FC event timeline. These are
+            # never inferred for older/manual matches that have no detailed events.
+            evs=list(detailed_by_match.get((tid,no),[]))
+            if evs:
+                evs.sort(key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
+                home_pid=str(m.get("home_player_id") or "");away_pid=str(m.get("away_player_id") or "")
+                rh=self._result_for_player(m,home_pid) if home_pid else "D"
+                winner=home_pid if rh=="W" else (away_pid if rh=="L" else "")
+
+                # Cumulative event counters: penalty goals and discipline points.
+                for e in evs:
+                    et=str(e.get("event_type") or "")
+                    actor=str(e.get("actor_player_id") or "")
+                    credited=str(e.get("credited_player_id") or "")
+                    synthetic=bool(int(e.get("synthetic_de") or 0))
+                    if et=="penalty_goal" and credited and not synthetic:
+                        progress[credited]["penalty_goals"]+=1
+                        if progress[credited]["penalty_goals"]>=10:
+                            award(credited,"penalty_executioner",when,tid,no,"10. gol z rzutu karnego w trakcie meczu")
+                    if actor and et in {"yellow_card","red_card"}:
+                        progress[actor]["discipline_points"] += 1 if et=="yellow_card" else 3
+                        if progress[actor]["discipline_points"]>=25:
+                            award(actor,"butcher",when,tid,no,f"25 pkt dyscyplinarnych (aktualnie {progress[actor]['discipline_points']})")
+
+                # W dziesiątkę raźniej: a red card for the eventual match winner.
+                if winner and any(str(e.get("event_type") or "")=="red_card" and str(e.get("actor_player_id") or "")==winner for e in evs):
+                    award(winner,"ten_men",when,tid,no,"Zwycięstwo mimo czerwonej kartki")
+
+                # Goal-sequence badges require a complete REAL goal timeline. The
+                # synthetic +1 in a DE Grand Final is excluded from achievements.
+                goal_types={"normal_goal","penalty_goal","own_goal"}
+                real_goals=[e for e in evs if str(e.get("event_type") or "") in goal_types and not int(e.get("synthetic_de") or 0)]
+                known_goals=[e for e in real_goals if str(e.get("credited_player_id") or "") in {home_pid,away_pid}]
+                expected_h=actual_hs; expected_a=ass
+                goals_complete=(len(real_goals)==len(known_goals)==expected_h+expected_a and
+                                sum(1 for e in known_goals if str(e.get("credited_player_id") or "")==home_pid)==expected_h and
+                                sum(1 for e in known_goals if str(e.get("credited_player_id") or "")==away_pid)==expected_a)
+                if goals_complete:
+                    # Replay from 0:0 and remember the largest deficit later overcome
+                    # by the eventual real-score winner.
+                    actual_winner=home_pid if expected_h>expected_a else (away_pid if expected_a>expected_h else "")
+                    if actual_winner:
+                        score={home_pid:0,away_pid:0};max_deficit=0
+                        other=away_pid if actual_winner==home_pid else home_pid
+                        for e in known_goals:
+                            credited=str(e.get("credited_player_id") or "")
+                            score[credited]+=1
+                            max_deficit=max(max_deficit,score.get(other,0)-score.get(actual_winner,0))
+                        progress[actual_winner]["max_comeback_deficit"]=max(progress[actual_winner]["max_comeback_deficit"],max_deficit)
+                        if max_deficit>=3:
+                            award(actual_winner,"unkillable",when,tid,no,f"Zwycięstwo po przegrywaniu {max_deficit} golami")
+
+                        # The match-winning goal is the winner's (loser's final score + 1)th goal.
+                        loser_final=expected_a if actual_winner==home_pid else expected_h
+                        winner_goal_no=0;winning_goal=None
+                        for e in known_goals:
+                            if str(e.get("credited_player_id") or "")==actual_winner:
+                                winner_goal_no+=1
+                                if winner_goal_no==loser_final+1:
+                                    winning_goal=e;break
+                        if winning_goal:
+                            try: win_minute=int(winning_goal.get("minute"))
+                            except Exception: win_minute=0
+                            scorer=" ".join(str(winning_goal.get("footballer_name") or "").strip().split())
+                            if win_minute>90:
+                                award(actual_winner,"after_hours",when,tid,no,f"Zwycięski gol w dogrywce: {scorer or '—'} {winning_goal.get('minute_label') or str(win_minute)+"'"}")
+
+                            # Joker: the decisive scorer had previously entered as a substitute.
+                            # For substitution events footballer_name = player IN, related = player OUT.
+                            scorer_norm=self._norm_scorer_name(scorer)
+                            if scorer_norm:
+                                win_order=int(winning_goal.get("event_order") or 10**9)
+                                sub=next((x for x in evs if str(x.get("event_type") or "")=="substitution"
+                                          and str(x.get("actor_player_id") or "")==actual_winner
+                                          and self._norm_scorer_name(str(x.get("footballer_name") or ""))==scorer_norm
+                                          and int(x.get("event_order") or 10**9)<win_order),None)
+                                if sub:
+                                    award(actual_winner,"joker",when,tid,no,f"{scorer} wszedł z ławki i zdobył gola na wagę zwycięstwa")
+
+                    # Hat-trick Express can be earned by either participant, even if
+                    # they do not win the match. Own goals are never scorer goals.
+                    scorer_goals=defaultdict(list)
+                    for e in known_goals:
+                        if str(e.get("event_type") or "") not in {"normal_goal","penalty_goal"}:continue
+                        pid0=str(e.get("credited_player_id") or "")
+                        scorer=" ".join(str(e.get("footballer_name") or "").strip().split())
+                        norm=self._norm_scorer_name(scorer)
+                        try:minute=int(e.get("minute"))
+                        except Exception:continue
+                        try:stoppage=int(e.get("stoppage") or 0)
+                        except Exception:stoppage=0
+                        if pid0 and norm:
+                            scorer_goals[(pid0,norm,scorer)].append((minute+max(stoppage,0),e))
+                    for (pid0,_norm,scorer),seq in scorer_goals.items():
+                        seq.sort(key=lambda x:(x[0],int(x[1].get("event_order") or 10**9)))
+                        for i in range(2,len(seq)):
+                            span=seq[i][0]-seq[i-2][0]
+                            if span<=15:
+                                award(pid0,"hat_trick_express",when,tid,no,f"{scorer}: hat-trick w {span} min")
+                                break
 
         # Tournament-context achievements.  These need the history inside one FIFA Night,
         # so they are evaluated per completed tournament instead of as global streaks.
@@ -3316,8 +3434,24 @@ class Database:
             if team and self._norm_team_name(team) not in fixed:
                 award(champ,"wild_one",when,tid,None,f"Tytuł Wild Cardem: {team}")
             own=[m for m in matches if str(m.get("tournament_id"))==tid and champ in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or ""))]
-            if own and not any(self._result_for_player(m,champ)=="L" for m in own):
-                award(champ,"perfect_night",when,tid,None,"Tytuł bez porażki")
+            if own:
+                # Perfect Night means ONLY regulation-time wins. A shoot-out is a
+                # draw after 90', and any confirmed goal after minute 90 proves the
+                # match went to extra time. For legacy matches without a detailed
+                # timeline, we can still reject known shoot-outs but cannot invent
+                # an unrecorded extra time.
+                perfect=True
+                for pm in own:
+                    if self._result_for_player(pm,champ)!="W":
+                        perfect=False;break
+                    if pm.get("home_penalties") is not None or pm.get("away_penalties") is not None:
+                        perfect=False;break
+                    pevs=detailed_by_match.get((tid,int(pm.get("match_no") or 0)),[])
+                    if any(str(x.get("event_type") or "") in {"normal_goal","penalty_goal","own_goal"}
+                           and not int(x.get("synthetic_de") or 0) and int(x.get("minute") or 0)>90 for x in pevs):
+                        perfect=False;break
+                if perfect:
+                    award(champ,"perfect_night",when,tid,None,"Mistrzostwo po samych zwycięstwach w regulaminowych 90 minutach")
             if own:
                 goals_against=0
                 for m in own:
@@ -3385,7 +3519,14 @@ class Database:
                     elif k=="ice_cold":pg=f"wygrane karne: {pr['pen_wins']}"
                     elif k=="many_clubs":pg=f"{min(len(pr['win_teams']),5)}/5 drużyn"
                     elif k=="wild_one":pg="czeka na tytuł Wild Cardem"
-                    elif k=="perfect_night":pg="czeka na tytuł bez porażki"
+                    elif k=="perfect_night":pg="czeka na mistrzostwo po samych wygranych w 90 minutach"
+                    elif k=="unkillable":pg=f"największa odrobiona strata: {pr['max_comeback_deficit']}/3"
+                    elif k=="ten_men":pg="czeka na zwycięstwo mimo czerwonej kartki"
+                    elif k=="penalty_executioner":pg=f"{min(pr['penalty_goals'],10)}/10 goli z karnych"
+                    elif k=="after_hours":pg="czeka na zwycięskiego gola w dogrywce"
+                    elif k=="hat_trick_express":pg="czeka na hat-trick w maks. 15 minut"
+                    elif k=="butcher":pg=f"{min(pr['discipline_points'],25)}/25 pkt dyscyplinarnych"
+                    elif k=="joker":pg="czeka na zwycięskiego gola zmiennika"
                     elif k=="from_the_dead":pg="czeka na mistrzowski powrót z LB"
                     elif k=="shark":pg=f"bilans: {pr['balance_cents']/100:.2f} zł / +250 zł"
                     elif k=="sponsor":pg=f"bilans: {pr['balance_cents']/100:.2f} zł / -250 zł"
