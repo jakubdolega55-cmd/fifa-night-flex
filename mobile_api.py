@@ -325,24 +325,28 @@ All supplied images belong to the SAME match. There may be any number of screens
 Extract only facts that are actually visible. Do not invent missing goals or events from the final score.
 Read the score and the two labels at the top when visible. Use left/right exactly as shown on screen.
 
-CRITICAL: classify events from the VISUAL ICON, not from OCR text or assumptions.
-EA FC icon rules used by FIFA Night:
+CRITICAL: classify events from the VISUAL ICON, not from OCR text, player names, score arithmetic, or assumptions.
+EA FC icon rules confirmed for FIFA Night from real EA FC event screens:
 - plain WHITE football/ball icon = normal_goal
-- WHITE football/ball icon with a small CHECK/TICK badge = penalty_goal (a scored penalty during the match)
-- RED football/ball icon = own_goal. It is NOT a missed penalty.
+- GOAL/NET icon with a small CHECK/TICK badge at the bottom = penalty_goal (a scored penalty during normal/extra time)
+- GOAL/NET icon with an X badge at the bottom = penalty_miss (a missed penalty during normal/extra time; it is NOT a goal)
+- RED football/ball-style icon = own_goal. It is NOT a missed penalty.
 - yellow rectangular card = yellow_card
 - red rectangular card = red_card
-- injury/medical event (injury symbol, medical/cross icon or explicit injury indication) = injury
-- classify injury ONLY when the event is visibly an injury; until the exact EA FC icon is confirmed, use unknown when uncertain
 - player names with green up / red down arrows = substitution, NOT a goal
-- use penalty_miss only when the screen visibly shows a missed-penalty event distinct from the RED own-goal ball
+- injury/medical event = injury. FIFA Night treats all injury severities identically. EA FC may show more than one injury symbol, including a bandage/plaster-style medical icon with a plus/cross or an ambulance/medical icon with a plus/cross. If either medical injury icon is visibly present, classify it as injury. If the symbol is ambiguous, use unknown rather than guessing.
 - if an icon cannot be identified reliably, use unknown
 
-Goal field rules:
+VERY IMPORTANT OWN-GOAL LAYOUT RULE:
+EA FC displays an own-goal event on the SAME physical side/team as the footballer who committed the own goal. The match goal, however, belongs to the OPPOSING team. Do not infer own-goal credit from the side where the event row is drawn.
+
+Goal/event field rules:
 - normal_goal: player = scorer; side = scorer's visible side; credited_side = same side; own_goal_by = null
 - penalty_goal: player = scorer; side = scorer's visible side; credited_side = same side; own_goal_by = null
-- own_goal: player MUST be null; own_goal_by = the player whose name is shown with the red-ball icon; side = that player's visible side; credited_side = the OPPOSITE side
+- penalty_miss: player = the penalty taker shown next to the goal/net-with-X icon; side = that player's visible side; credited_side = unknown; own_goal_by = null
+- own_goal: player MUST be null; own_goal_by = the footballer whose name is shown with the RED own-goal icon; side = that footballer's visible side; credited_side = the OPPOSITE side
 - own goals count toward the match score but must never be credited as a scorer goal
+- penalty misses never count toward the match score or scorer totals
 
 For injury: player = the visibly injured footballer; side = that footballer's visible side; credited_side = unknown.
 A red card or injury is only an extracted event. FIFA Night's backend decides any next-match absence rule.
