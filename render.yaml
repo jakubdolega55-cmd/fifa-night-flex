@@ -13,5 +13,7 @@ services:
         sync: false
       - key: MOBILE_TOKEN_SECRET
         generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
       - key: GOOGLE_VISION_API_KEY
         sync: false

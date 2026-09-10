@@ -366,8 +366,6 @@ def render_access_settings():
     st.divider()
     render_player_rename_settings()
     st.divider()
-    render_history_lock_settings()
-    st.divider()
     render_vision_ocr_test()
 
 
@@ -405,33 +403,6 @@ def render_player_rename_settings():
                 else: st.info("Nazwa gracza nie wymagała zmiany.")
                 rr()
             except ValueError as e: st.error(str(e))
-
-
-def render_history_lock_settings():
-    st.markdown("### 🔐 Blokada historii")
-    locked=db.history_locked()
-    if locked:
-        st.success("🔒 Historia jest zablokowana przed usuwaniem.")
-        st.caption("W zakładce Historia nie będzie można usunąć meczu 1 VS 1 ani całego turnieju, dopóki nie odblokujesz historii tutaj.")
-    else:
-        st.warning("🔓 Historia jest odblokowana. Usuwanie nadal wymaga hasła administratora bezpośrednio w Historii.")
-    if not admin_password():
-        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Zmiana blokady historii jest wyłączona.")
-        return
-    if locked:
-        with st.form("settings_unlock_history"):
-            pwd=st.text_input("Hasło administratora",type="password",key="settings_unlock_history_pwd")
-            go=st.form_submit_button("🔓 ODBLOKUJ HISTORIĘ",use_container_width=True)
-        if go:
-            if admin_ok(pwd): db.set_history_locked(False);st.success("Historia odblokowana.");rr()
-            else: st.error("Nieprawidłowe hasło.")
-    else:
-        with st.form("settings_lock_history"):
-            pwd=st.text_input("Hasło administratora",type="password",key="settings_lock_history_pwd")
-            go=st.form_submit_button("🔒 ZABLOKUJ HISTORIĘ",use_container_width=True)
-        if go:
-            if admin_ok(pwd): db.set_history_locked(True);st.success("Historia zablokowana.");rr()
-            else: st.error("Nieprawidłowe hasło.")
 
 
 def format_for(count:int)->str:
@@ -605,7 +576,7 @@ def render_start(public_mode:bool=False):
     current=st.session_state.get(state_key,"fifa")
     subtitles={
         "fifa":"Wybierz wariant FIFA Night i rozpocznij rozgrywkę.",
-        "stats":"Rankingi, profile, drużyny, strzelcy, rozliczenia i historia.",
+        "stats":"Ranking, profile, drużyny, strzelcy, rozliczenia i historia.",
         "awards":"FIFA Night Awards i kamienie milowe.",
         "settings":"Sterowanie i ustawienia dostępu.",
     }
@@ -988,6 +959,34 @@ def _scorer_side_form(tid,m,side,team_name,player_name):
             key=n.casefold();merged[key]={"name":n,"goals":int(merged.get(key,{}).get("goals",0))+g}
     return {"team":team_name,"items":list(merged.values())}
 
+
+
+MATCH_BANTER = [
+    "Dwa pady, jedna prawda. Boisko zaraz zweryfikuje.",
+    "Forma formą — jeden mecz potrafi wywrócić cały wieczór.",
+    "Tu nie ma VAR-u. Jest za to pamięć bazy.",
+    "Kto przegrywa, ten pierwszy sprawdza, z kim gra dalej.",
+    "Statystyki patrzą. Presja zupełnie przypadkowa.",
+    "Spokojnie, to tylko mecz. Chyba że to finał.",
+    "Każdy ma plan, dopóki nie straci gola w trzeciej minucie.",
+    "Taktyka jest prosta: strzelić więcej niż rywal. Reszta to szczegóły.",
+    "Pady naładowane. Wymówki też?",
+    "Mecz jeszcze się nie zaczął, a narracja już gotowa.",
+    "Kto pierwszy powie „lag”, ten automatycznie trafia pod obserwację.",
+    "Jedna bramka i nagle każdy zna się na zarządzaniu wynikiem.",
+    "Oby forma była lepsza niż pamięć o ostatniej porażce.",
+    "Powtórki można skipować. Wyniku już nie.",
+]
+
+def match_banter(m:dict) -> str:
+    no=max(1,int((m or {}).get("match_no") or 1))
+    return MATCH_BANTER[(no-1)%len(MATCH_BANTER)]
+
+def render_match_banter(m:dict) -> None:
+    st.markdown(
+        f"<div style='text-align:center;color:#94a3b8;font-style:italic;font-size:.93rem;margin:-.15rem 0 .75rem'>💬 {esc(match_banter(m))}</div>",
+        unsafe_allow_html=True,
+    )
 
 def render_match_context(m):
     ctx=db.match_context(m["home_player_id"],m["away_player_id"])
@@ -1413,12 +1412,9 @@ def _render_match_scan_result(data:dict, tid:str, m:dict):
     if hp is not None and ap is not None:
         st.info(f"🎯 Seria karnych: {home.get('player_name','HOME')} {hp}:{ap} {away.get('player_name','AWAY')} — same strzały z serii nie są liczone jako gole/karne przyznane.")
 
-    usage=data.get("usage") or {}
     st.caption(
-        f"Model {data.get('model','')} • zdjęcia: {data.get('image_count',0)} • "
-        f"OpenAI: {int(data.get('processing_time_ms') or 0)/1000:.2f} s • "
-        f"tokeny {usage.get('input_tokens',0)} + {usage.get('output_tokens',0)} • "
-        f"koszt ~${float(data.get('estimated_cost_usd') or 0):.6f}"
+        f"Zdjęcia: {data.get('image_count',0)} • "
+        f"czas odczytu: {int(data.get('processing_time_ms') or 0)/1000:.2f} s"
     )
     _render_match_scan_editor(data,tid,m)
 
@@ -1428,7 +1424,7 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
     state_key=f"match_scan_preview_{tid}_{no}"
     expanded=bool(st.session_state.get(state_key))
     with st.expander("📷 Odczytaj wynik i wydarzenia ze zdjęć EA FC",expanded=expanded):
-        st.caption("Dodaj tyle screenów zakładki Wydarzenia, ile potrzeba. OpenAI dopasuje drużyny ze screena do wylosowanych drużyn graczy — nie zakładamy, że lewa/prawa strona to home/away.")
+        st.caption("Dodaj tyle screenów zakładki Wydarzenia, ile potrzeba. Odczyt dopasuje drużyny ze zdjęcia do wylosowanych drużyn graczy — lewa i prawa strona nie są z góry traktowane jako home/away.")
         api_url=fifa_night_api_url()
         uploaded=st.file_uploader(
             "Zdjęcia Wydarzeń — bez sztywnego limitu",
@@ -1455,7 +1451,7 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
                 st.error("Brak ADMIN_PASSWORD w Streamlit Secrets.")
             else:
                 multipart=[("images",(f.name,f.getvalue(),f.type or "image/jpeg")) for f in uploaded]
-                with st.spinner("OpenAI odczytuje wynik, gole, karne, samobóje, kartki i kontuzje oraz dopasowuje drużyny do graczy FIFA Night..."):
+                with st.spinner("Odczytuję wynik, gole, karne, samobóje, kartki i kontuzje oraz dopasowuję drużyny do graczy FIFA Night..."):
                     try:
                         r=requests.post(
                             f"{api_url}/api/v1/tournaments/{tid}/matches/{no}/scan-preview",
@@ -1692,6 +1688,7 @@ def live(tid:str):
     if fmt in ("double4","double5","double6","double7","double8") and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    render_match_banter(cur)
     render_match_absences(cur,absence_targets)
     render_match_context(cur)
     if fmt in ("league3_final","league4_final","league5_final") and cur.get("stage")=="LEAGUE":
@@ -2104,6 +2101,7 @@ def render_stats(t=None,readonly:bool=False):
     ms=db.global_milestones();timeline=ms.get("timeline") or []
     tab_teams=tab_misc;tab_scorers=tab_misc
     with tab1:
+        st.caption("Tabela nie zna sentymentów. Liczby pamiętają wszystko — niestety. 😄")
         leader=stats[0];c1,c2,c3,c4=st.columns(4);c1.metric("🐐 Lider",leader["name"]);c2.metric("🏆 Tytuły",leader["titles"]);tg=max(stats,key=lambda x:x["gf"]);c3.metric("⚽ Król bramek",tg["name"],f"{tg['gf']} goli");tw=max(stats,key=lambda x:x["w"]);c4.metric("🔥 Najwięcej wygranych",tw["name"],f"{tw['w']} W")
         df=pd.DataFrame([{"#":i+1,"Gracz":s["name"],"Turnieje":s["tournaments"],"1v1":s.get("duels",0),"🏆":s["titles"],"Finały":s["finals"],"M":s["matches"],"W":s["w"],"R":s["d"],"P":s["l"],"Bramki":f'{s["gf"]}:{s["ga"]}',"+/-":s["gd"],"W%":s["win_pct"],"Karne W":s["pen_wins"]} for i,s in enumerate(stats)]);st.dataframe(df,hide_index=True,use_container_width=True)
         st.markdown("#### 🔥 Aktualna forma — ostatnie 5 oficjalnych meczów")
@@ -2116,6 +2114,7 @@ def render_stats(t=None,readonly:bool=False):
         if not r:st.info("Za mało danych do rekordów.")
         else:
             st.markdown("### 🏛️ Hall of Fame")
+            st.caption("Tu nic nie ginie. Nawet rzeczy, o których ktoś bardzo chciałby zapomnieć. 😄")
             c1,c2,c3=st.columns(3)
             c1.metric("👑 Najwięcej tytułów",r["most_titles"]["name"],r["most_titles"]["titles"])
             c2.metric("🔥 Seria zwycięstw",r["win_streak"]["name"],r["win_streak"]["value"])
@@ -2167,7 +2166,7 @@ def render_stats(t=None,readonly:bool=False):
                 st.dataframe(pd.DataFrame(detailed_rows),hide_index=True,use_container_width=True)
     with tab_teams:
         st.markdown("### 👥 Drużyny")
-        st.caption("Statystyki drużynowe i rating niezależne od profili graczy.")
+        st.caption("Kluby też mają swoją historię. Niektóre chętniej by ją wymazały. 😄")
         team_stats=db.team_stats()
         if not team_stats:st.info("Brak danych o drużynach z oficjalnych turniejów.")
         else:
@@ -2315,6 +2314,7 @@ def render_stats(t=None,readonly:bool=False):
         st.caption("Każdy uczestnik oznaczony „Gra za kasę” wpłaca stawkę. W 1v1 mecz jest płatny tylko wtedy, gdy obaj grają za kasę. W turniejach niewypłacony jackpot przechodzi do następnego płatnego oficjalnego turnieju.")
 
         st.markdown("#### 📈 Ranking finansowy")
+        st.caption("Excel też potrafi boleć. 💸")
         finance=db.financial_ranking()
         if finance:
             best=finance[0]
@@ -2519,16 +2519,36 @@ def render_global_milestones(readonly:bool=False):
         st.caption("Jeśli w historycznym meczu nie da się ustalić kolejności bramek automatycznie, organizator może wskazać autora jubileuszowego gola.")
         render_pending_goal_milestones(compact=False)
 
+AWARD_QUIPS={
+    "player_year":"Tu wymówki kończą się na wejściu.",
+    "offensive":"Obrona rywala miała inne plany.",
+    "defense":"Parking autobusu, tylko skuteczny.",
+    "clutch":"Tu zaczyna się futbol bez drugiej szansy.",
+    "comeback_king":"Najpierw problem, potem kino.",
+    "late_king":"90. minuta to sugestia, nie koniec meczu.",
+    "sharpest":"Sędzia też prowadzi statystyki.",
+    "fair_play":"Da się grać bez kolekcjonowania kartek.",
+    "spectacle":"Spokojne 1:0? Nie tutaj.",
+    "finance":"Excel też potrafi boleć.",
+    "match_year":"Ten mecz jeszcze długo będzie wracał przy stole.",
+    "minimalist":"Po co strzelać pięć, skoro jeden wystarczy?",
+    "unlucky":"Prawie się nie liczy. Niestety.",
+    "simulator":"Kontakt był. Oczywiście że był.",
+    "penaldo":"Wapno znalezione, reszta to formalność.",
+    "own_goals":"Czasem trzeba pomóc przeciwnikowi.",
+    "penalty_misses":"Presja? Jaka presja?",
+}
+
 def render_awards(readonly:bool=False):
     st.subheader("🏆 FIFA Night Awards")
-    section=st.segmented_control("Sekcja",["🏆 Awards","📊 Rankingi","🏛️ Kamienie milowe"],default="🏆 Awards",key=f"awards_section_{int(readonly)}",label_visibility="collapsed") or "🏆 Awards"
+    section=st.segmented_control("Sekcja",["🏆 Awards","🎯 Klasyfikacje","🏛️ Kamienie milowe"],default="🏆 Awards",key=f"awards_section_{int(readonly)}",label_visibility="collapsed") or "🏆 Awards"
     if section=="🏛️ Kamienie milowe":
         render_global_milestones(readonly=readonly)
         return
     if section=="🏆 Awards":
-        st.info("📊 TOP 5 liczy algorytm. 🏆 Nagrody rozdaje organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano. 😎 Rankingi aktualizują się wraz z wynikami.")
+        st.info("🏅 TOP 5 układają wyniki. 🏆 Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎 Kandydaci zmieniają się razem z sezonem.")
     else:
-        st.info("📊 Rankingi są statystycznymi ciekawostkami sezonu — nie mają laureata i nie są oficjalną nagrodą FIFA Night. Rankingi oparte na kartkach/karnych/eventach liczą tylko mecze ze szczegółowym przebiegiem.")
+        st.info("🎯 Tu zbieramy dodatkowe klasyfikacje sezonu — bez statuetek i bez napinki. Te oparte na kartkach, karnych i przebiegu meczu korzystają tylko ze spotkań zapisanych ze szczegółami.")
     current_year=datetime.now().year
     year=int(st.number_input("Rok",min_value=2024,max_value=current_year+1,value=current_year,step=1,key="awards_year"))
     data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {};nomination_summary=data.get("nomination_summary") or []
@@ -2541,7 +2561,7 @@ def render_awards(readonly:bool=False):
     award_cats=[c for c in cats if c.get("award")]
     view_cats=[c for c in cats if not c.get("award")]
 
-    if section=="📊 Rankingi":
+    if section=="🎯 Klasyfikacje":
         ranking_priority_keys=[
             "simulator","penaldo","first_goals","own_goals","penalty_misses",
             "duel","wildcards","regular","progress","minimalist","unlucky",
@@ -2551,15 +2571,17 @@ def render_awards(readonly:bool=False):
             view_cats,
             key=lambda c:(ranking_priority_index.get(str(c.get("key")),len(ranking_priority_keys)), str(c.get("title") or "")),
         )
-        st.markdown("### 📊 Rankingi sezonu — TOP 5")
+        st.markdown("### 🎯 Klasyfikacje sezonu — TOP 5")
         if not view_cats:
-            st.info("Brak wystarczających danych do rankingów w tym roku.")
+            st.info("Na razie za mało materiału. Sezon jeszcze się rozkręca.")
             return
         cols=st.columns(2)
         for idx,cat in enumerate(view_cats):
             with cols[idx % 2]:
                 st.markdown(f"#### {cat['title']}")
                 st.caption(cat.get("description") or "")
+                if AWARD_QUIPS.get(str(cat.get("key") or "")):
+                    st.caption(f"💬 {AWARD_QUIPS[str(cat.get('key'))]}")
                 candidates=cat.get("candidates") or []
                 if candidates:
                     st.dataframe(pd.DataFrame([{"#":i,"Gracz":x.get("name"),"Wynik":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]),hide_index=True,use_container_width=True)
@@ -2581,7 +2603,7 @@ def render_awards(readonly:bool=False):
         key=lambda c:(award_priority_index.get(str(c.get("key")),len(award_priority_keys)), str(c.get("title") or "")),
     )
 
-    st.markdown("### 📊 Rankingi LIVE — TOP 5")
+    st.markdown("### 🏅 Kandydaci LIVE — TOP 5")
     for cat in award_cats:
         candidates=cat.get("candidates") or []
         selected=selections.get(cat["key"]) or {}
@@ -2589,6 +2611,8 @@ def render_awards(readonly:bool=False):
         qualified_label=(" • TOP 5" if len(candidates)>=5 else f" • {len(candidates)} zakwalifikowanych")
         with st.expander(f"{cat['title']}{qualified_label}",expanded=cat.get("key") in ("player_year","offensive","defense")):
             st.caption(cat.get("description") or "")
+            if AWARD_QUIPS.get(str(cat.get("key") or "")):
+                st.caption(f"💬 {AWARD_QUIPS[str(cat.get('key'))]}")
             if selected_note: st.markdown(selected_note)
             if not candidates:
                 st.info("Kategoria jest warunkowa albo nie ma jeszcze wystarczającej próby danych.")
@@ -2622,11 +2646,11 @@ def render_awards(readonly:bool=False):
                     st.dataframe(pd.DataFrame(debut_table_rows(first5)),hide_index=True,use_container_width=True)
                 else:
                     st.caption("Nikt z tegorocznych debiutantów nie ma jeszcze 5 oficjalnych meczów turniejowych.")
-                st.markdown("**🏁 Pierwsze 10 meczów — ranking główny Debiutu Roku**")
+                st.markdown("**🏁 Pierwsze 10 meczów — główna próba Debiutu Roku**")
                 if first10:
                     st.dataframe(pd.DataFrame(debut_table_rows(first10)),hide_index=True,use_container_width=True)
                 else:
-                    st.caption("Nikt z tegorocznych debiutantów nie ma jeszcze 10 oficjalnych meczów turniejowych — ranking LIVE korzysta tymczasowo z pierwszych 5.")
+                    st.caption("Nikt z tegorocznych debiutantów nie ma jeszcze 10 oficjalnych meczów turniejowych — na razie patrzymy więc na pierwsze 5.")
             else:
                 rows=[{"#":i,"Kandydat":x.get("name"),"Dlaczego jest wysoko":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]
                 st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
@@ -2638,7 +2662,7 @@ def render_awards(readonly:bool=False):
 
     if nomination_summary:
         st.divider();st.markdown("### 🌟 Najczęściej nominowani")
-        st.caption("Ile różnych indywidualnych kategorii ma danego gracza w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. Żeby tabela była czytelna, z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
+        st.caption("W ilu różnych indywidualnych kategoriach dany gracz mieści się w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. Żeby tabela była czytelna, z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
 
         # Budujemy nazwy kategorii TOP 2 bezpośrednio z aktualnie wyświetlanych
         # rankingów. Dzięki temu kolumna nie zależy od pomocniczego pola zwracanego
@@ -2672,16 +2696,16 @@ def render_awards(readonly:bool=False):
             if not live_titles:
                 live_titles=[str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or [])]
             cats_txt=", ".join(live_titles)
-            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w rankingu":x.get("first",0),"Kategorie TOP 2":cats_txt or "brak TOP 2"})
+            rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w kategorii":x.get("first",0),"Kategorie TOP 2":cats_txt or "brak TOP 2"})
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
     st.divider();st.markdown("### 🔐 Organizator — wybór laureatów")
     st.caption("W każdej kategorii możesz wybrać jedną osobę z TOP 2–3. Liczba już przyznanych nagród jest tylko informacją — nie ma twardego limitu.")
     secret_ready=bool(admin_password())
     if readonly:
-        st.info("📺 Tryb podglądu — rankingi i wybrani laureaci są widoczni, ale wyboru laureatów dokonuje się na urządzeniu ze sterowaniem.")
+        st.info("📺 Tryb podglądu — kandydaci i wybrani laureaci są widoczni, ale wyboru dokonuje się na urządzeniu ze sterowaniem.")
     elif not secret_ready:
-        st.warning("Brak ADMIN_PASSWORD w Streamlit Secrets — rankingi działają, ale wybór laureatów jest zablokowany.")
+        st.warning("Brak ADMIN_PASSWORD w Streamlit Secrets — kandydaci są widoczni, ale wybór laureatów jest zablokowany.")
     elif not st.session_state.get("awards_admin_ok"):
         with st.form("awards_unlock"):
             pwd=st.text_input("Hasło administratora",type="password",key="awards_pwd")
@@ -2726,10 +2750,10 @@ def render_awards(readonly:bool=False):
 
         award_priority_groups=[
             ("🥇 ETAP 1/3 — Główne nagrody",
-             "Najpierw najważniejsze sportowe wyróżnienia. Tu najlepiej trzymać się przede wszystkim rankingu.",
+             "Najpierw najważniejsze sportowe wyróżnienia. Wyniki są tu najmocniejszą podpowiedzią.",
              ["player_year","offensive","defense","player_scorers","clutch"]),
             ("🥈 ETAP 2/3 — Nagrody specjalistyczne",
-             "Tu nadal liczy się ranking, ale warto już zerkać na rozkład nagród i TOP 3 kandydatów.",
+             "Tu nadal mocno liczą się wyniki, ale warto też zerkać na rozkład nagród i TOP 3 kandydatów.",
              ["spectacle","duel","universal","wildcards","debut","outsider"]),
             ("🥉 ETAP 3/3 — Nagrody specjalne i finał gali",
              "Najbardziej elastyczny etap. Dobry moment, żeby przy zbliżonych wynikach docenić kogoś, kto jeszcze nic nie dostał.",
@@ -2788,10 +2812,10 @@ def render_awards(readonly:bool=False):
     st.divider();st.markdown("### 🖼️ Grafiki roczne")
     c1,c2=st.columns(2)
     highlights=[]
-    if overview.get("top_player"):highlights.append({"label":"Lider rankingu Gracza Roku","value":overview.get("top_player")})
+    if overview.get("top_player"):highlights.append({"label":"Lider kandydatów do Gracza Roku","value":overview.get("top_player")})
     if overview.get("top_team"):highlights.append({"label":"Najwyżej sklasyfikowana drużyna","value":overview.get("top_team")})
     match_cat=next((c for c in cats if c.get("key")=="match_year"),None)
-    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Roku — ranking live","value":match_cat["candidates"][0].get("name")})
+    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Roku — lider kandydatów","value":match_cat["candidates"][0].get("name")})
     with c1:
         year_png=generate_year_summary_png(year,overview,highlights)
         st.download_button("⬇️ FIFA Night — Rok w liczbach (PNG)",data=year_png,file_name=f"fifa-night-{year}-rok-w-liczbach.png",mime="image/png",use_container_width=True,key=f"year_png_{year}")
@@ -2854,32 +2878,28 @@ def render_tournament_archive(readonly:bool=True):
 
     if not readonly:
         st.divider()
-        locked=db.history_locked()
-        if locked:
-            st.info("🔒 Usuwanie jest wyłączone, bo Historia jest zablokowana. Blokadę możesz zmienić w ⚙️ Ustawieniach.")
-        else:
-            is_duel=(fmt=="duel1v1")
-            title="🗑️ Usuń ten mecz 1 VS 1" if is_duel else "🗑️ Usuń cały turniej z Historii"
-            confirm_text="USUŃ MECZ" if is_duel else "USUŃ TURNIEJ"
-            with st.expander(title,expanded=False):
-                if is_duel:
-                    st.warning("Usunięcie skasuje wynik, strzelców, minuty, kartki i pozostałe zdarzenia tego 1 VS 1 ze statystyk oraz Historii.")
+        is_duel=(fmt=="duel1v1")
+        title="🗑️ Usuń ten mecz 1 VS 1" if is_duel else "🗑️ Usuń cały turniej z Historii"
+        confirm_text="USUŃ MECZ" if is_duel else "USUŃ TURNIEJ"
+        with st.expander(title,expanded=False):
+            if is_duel:
+                st.warning("Usunięcie skasuje wynik, strzelców, minuty, kartki i pozostałe zdarzenia tego 1 VS 1 ze statystyk oraz Historii.")
+            else:
+                st.warning("Usunięcie skasuje cały wybrany turniej wraz ze wszystkimi jego meczami, strzelcami i zdarzeniami. Pojedynczego meczu ze środka zamkniętego turnieju nie usuwamy, żeby nie uszkodzić drabinki i końcowego wyniku turnieju.")
+            with st.form(f"archive_delete_{selected}"):
+                pwd=st.text_input("Hasło administratora",type="password",key=f"archive_delete_pwd_{selected}")
+                confirm=st.text_input(f"Wpisz {confirm_text}",key=f"archive_delete_confirm_{selected}")
+                go=st.form_submit_button(title.upper(),use_container_width=True)
+            if go:
+                if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
+                elif confirm.strip()!=confirm_text: st.error(f"Wpisz dokładnie: {confirm_text}")
                 else:
-                    st.warning("Usunięcie skasuje cały wybrany turniej wraz ze wszystkimi jego meczami, strzelcami i zdarzeniami. Pojedynczego meczu ze środka zamkniętego turnieju nie usuwamy, żeby nie uszkodzić drabinki i końcowego wyniku turnieju.")
-                with st.form(f"archive_delete_{selected}"):
-                    pwd=st.text_input("Hasło administratora",type="password",key=f"archive_delete_pwd_{selected}")
-                    confirm=st.text_input(f"Wpisz {confirm_text}",key=f"archive_delete_confirm_{selected}")
-                    go=st.form_submit_button(title.upper(),use_container_width=True)
-                if go:
-                    if not admin_ok(pwd): st.error("Nieprawidłowe hasło.")
-                    elif confirm.strip()!=confirm_text: st.error(f"Wpisz dokładnie: {confirm_text}")
-                    else:
-                        try:
-                            db.delete_archived_tournament(selected)
-                            tournament_summary_png_cached.clear();official_player_names_cached.clear()
-                            st.success("Mecz został usunięty z Historii." if is_duel else "Turniej został usunięty z Historii.")
-                            rr()
-                        except ValueError as e: st.error(str(e))
+                    try:
+                        db.delete_archived_tournament(selected)
+                        tournament_summary_png_cached.clear();official_player_names_cached.clear()
+                        st.success("Mecz został usunięty z Historii." if is_duel else "Turniej został usunięty z Historii.")
+                        rr()
+                    except ValueError as e: st.error(str(e))
 
 
 def render_public_start():
@@ -3025,6 +3045,7 @@ def render_tv_screen(tid:str):
     stake_card=_match_stake_card(fmt,cur)
     if stake_card:st.markdown(stake_card,unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    render_match_banter(cur)
     render_match_absences(cur,absence_targets,compact=True)
     # Kolejne gotowe spotkania w faktycznej kolejności LIVE.
     later=[m for m in ready if int(m.get("match_no") or 0)!=int(cur.get("match_no") or 0)]

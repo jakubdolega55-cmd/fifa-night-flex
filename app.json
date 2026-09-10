@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "FIFA Night",
+    "slug": "fifa-night-mobile",
+    "owner": "kubsi",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "android": {
+      "package": "pl.fifanight.flex",
+      "versionCode": 2,
+      "adaptiveIcon": {
+        "backgroundColor": "#07111f"
+      }
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "FIFA Night używa wybranych zdjęć tylko do odczytu wyniku i zdarzeń z EA FC.",
+          "cameraPermission": "FIFA Night używa aparatu do zdjęcia ekranu EA FC.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-media-library"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "cbb45c49-4757-4587-8a05-e4814cb5f60a"
+      }
+    }
+  }
+}

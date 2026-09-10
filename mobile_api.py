@@ -6,21 +6,27 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, Query
 from PIL import Image, ImageOps
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from database import Database
-from logic import FORMAT_LABELS, FORMAT_MATCH_COUNTS
+from logic import (
+    FORMAT_LABELS, FORMAT_MATCH_COUNTS, FIXED_TEAMS, BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS,
+    WILDCARD_TEAM_SUGGESTIONS, allowed_teams,
+)
+from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "0.1.0"
+API_VERSION = "1.0.0"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {
@@ -43,7 +49,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -114,6 +120,50 @@ def require_controller(authorization: str | None = Header(default=None)) -> dict
     return verify_controller_token(authorization.split(" ", 1)[1].strip())
 
 
+def _controller_claims_or_none(authorization: str | None) -> dict[str, Any] | None:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    try:
+        return verify_controller_token(authorization.split(" ", 1)[1].strip())
+    except HTTPException:
+        return None
+
+
+def _require_controller_header(authorization: str | None) -> dict[str, Any]:
+    claims=_controller_claims_or_none(authorization)
+    if not claims:
+        raise HTTPException(401, "Ta operacja wymaga sterowania na urządzeniu.")
+    return claims
+
+
+def _current_tournament_or_409(tid: str | None = None) -> dict[str, Any]:
+    tournament=db.current_tournament()
+    if not tournament:
+        raise HTTPException(409, "Brak aktywnego FIFA Night.")
+    if tid is not None and str(tournament.get("id")) != str(tid):
+        raise HTTPException(409, "To nie jest aktualnie aktywny FIFA Night.")
+    return tournament
+
+
+def _require_game_control(tid: str, authorization: str | None = None) -> dict[str, Any]:
+    tournament=_current_tournament_or_409(tid)
+    fmt=str(tournament.get("format_key") or "")
+    # Testowe turnieje oraz każde 1 VS 1 można prowadzić bez przejęcia sterowania.
+    if bool(int(tournament.get("is_test") or 0)) or fmt=="duel1v1":
+        return {"public": True}
+    return _require_controller_header(authorization)
+
+
+def _ensure_can_start(is_test: bool, authorization: str | None) -> None:
+    current=db.current_tournament()
+    if current and str(current.get("status") or "") == "active":
+        raise HTTPException(409, "Najpierw zakończ albo zresetuj bieżący FIFA Night.")
+    if current and str(current.get("status") or "") in {"completed","abandoned"}:
+        db.start_new()
+    if not is_test:
+        _require_controller_header(authorization)
+
+
 class ControllerLogin(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
@@ -139,6 +189,52 @@ class ResultPayload(BaseModel):
     home_penalties: int | None = Field(default=None, ge=0, le=30)
     away_penalties: int | None = Field(default=None, ge=0, le=30)
     scorers: ScorersPayload | None = None
+    events: list[dict[str, Any]] | None = None
+
+
+class CreateTournamentPayload(BaseModel):
+    player_names: list[str]
+    player_count: int = Field(ge=3, le=8)
+    format_key: str
+    is_test: bool = True
+    stake_per_player: float = Field(default=0.0, ge=0, le=100000)
+    cash_flags: list[bool] = Field(default_factory=list)
+
+
+class CreateDuelPayload(BaseModel):
+    player_names: list[str]
+    team_names: list[str]
+    stake_per_player: float = Field(default=0.0, ge=0, le=100000)
+    cash_flags: list[bool] = Field(default_factory=lambda:[True,True])
+
+
+class TestModePayload(BaseModel):
+    is_test: bool
+
+
+class DraftPickPayload(BaseModel):
+    player_id: str
+    slot: str
+    wildcard_name: str = ""
+
+
+class WildcardPayload(BaseModel):
+    player_id: str
+    team_name: str
+
+
+class AddScorerPayload(BaseModel):
+    side: str
+    name: str = Field(min_length=1, max_length=120)
+
+
+class SettlementRequest(BaseModel):
+    tournament_ids: list[str]
+
+
+class SettledPayload(BaseModel):
+    tournament_ids: list[str]
+    settled: bool = True
 
 
 def stage_label(match: dict[str, Any]) -> str:
@@ -170,74 +266,6 @@ def clean_match(match: dict[str, Any]) -> dict[str, Any]:
         "ready": bool(match.get("home_player_id") and match.get("away_player_id") and match.get("home_score") is None and str(match.get("match_status") or "pending") != "skipped"),
     }
 
-
-def live_payload() -> dict[str, Any]:
-    tournament = db.current_tournament()
-    if not tournament:
-        return {"server_time": utc_now(), "api_version": API_VERSION, "tournament": None}
-
-    tid = str(tournament["id"])
-    bundle = db.bundle(tid)
-    meta = bundle.get("meta") or {}
-    extra = meta.get("extra") or {}
-    matches = bundle.get("matches") or []
-    schedule_raw = db.live_schedule_from(matches, extra)
-    current_raw = db.current_match_from(matches, extra)
-    current_context = None
-    if current_raw and current_raw.get("home_player_id") and current_raw.get("away_player_id"):
-        try:
-            current_context = db.match_context(current_raw["home_player_id"], current_raw["away_player_id"])
-        except Exception:
-            current_context = None
-    current_no = int(current_raw.get("match_no") or 0) if current_raw else 0
-    next_raw = db.next_ready_match_from(matches, current_no, extra) if current_raw else None
-    standings = db.standings(tid)
-    scorers = db.tournament_live_scorers(tid, 5)
-    fmt = str(meta.get("format_key") or tournament.get("format_key") or "")
-
-    summary = None
-    if str(tournament.get("status")) == "completed":
-        try:
-            s = db.tournament_summary(tid)
-            summary = {
-                "champion": s.get("champion"),
-                "runner_up": s.get("runner_up"),
-            }
-        except Exception:
-            summary = None
-
-    return {
-        "server_time": utc_now(),
-        "api_version": API_VERSION,
-        "tournament": {
-            "id": tid,
-            "status": tournament.get("status"),
-            "phase": tournament.get("phase"),
-            "is_test": bool(int(tournament.get("is_test") or 0)),
-            "player_count": int(meta.get("player_count") or tournament.get("player_count") or 0),
-            "format_key": fmt,
-            "format_label": FORMAT_LABELS.get(fmt, fmt),
-            "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
-            "created_at": tournament.get("created_at"),
-            "completed_at": tournament.get("completed_at"),
-            "players": [
-                {
-                    "player_id": p.get("player_id"),
-                    "name": p.get("name"),
-                    "team": p.get("team"),
-                    "group_name": p.get("group_name"),
-                }
-                for p in (bundle.get("players") or [])
-            ],
-            "current_match": clean_match(current_raw) if current_raw else None,
-            "current_context": current_context,
-            "next_match": clean_match(next_raw) if next_raw else None,
-            "schedule": [clean_match(m) for m in schedule_raw],
-            "standings": standings,
-            "live_scorers": scorers,
-            "summary": summary,
-        },
-    }
 
 
 @app.get("/api/v1/health")
@@ -552,10 +580,8 @@ def _opposite_side(side: str) -> str:
 
 def _normalize_and_validate_event_scan_result(result: dict[str, Any]) -> dict[str, Any]:
     """Normalize goal semantics and derive hard goal-vs-score validation on the server."""
-    events = result.get("events") or []
+    events = [event for event in (result.get("events") or []) if isinstance(event, dict)]
     for event in events:
-        if not isinstance(event, dict):
-            continue
         event_type = str(event.get("event_type") or "unknown")
         side = str(event.get("side") or "unknown")
         if event_type == "own_goal":
@@ -570,6 +596,35 @@ def _normalize_and_validate_event_scan_result(result: dict[str, Any]) -> dict[st
         else:
             event["own_goal_by"] = None
             event["credited_side"] = "unknown"
+        event["image_indices"] = sorted({int(x) for x in (event.get("image_indices") or []) if str(x).isdigit()})
+
+    # Overlapping screenshots often contain the same row twice. Merge only when
+    # otherwise-identical events originate from disjoint, non-empty image sets.
+    # This keeps two legitimate rows from the same screenshot untouched.
+    def dedupe_key(event: dict[str, Any]) -> tuple[Any, ...]:
+        norm=lambda value: " ".join(str(value or "").casefold().split())
+        return (
+            str(event.get("event_type") or "unknown"), event.get("minute"), event.get("stoppage"),
+            str(event.get("side") or "unknown"), norm(event.get("player")), norm(event.get("own_goal_by")),
+            norm(event.get("related_player")),
+        )
+    deduped: list[dict[str, Any]] = []
+    for event in events:
+        images=set(event.get("image_indices") or [])
+        existing=None
+        if images:
+            for candidate in deduped:
+                candidate_images=set(candidate.get("image_indices") or [])
+                if candidate_images and candidate_images.isdisjoint(images) and dedupe_key(candidate)==dedupe_key(event):
+                    existing=candidate;break
+        if existing is None:
+            deduped.append(event)
+        else:
+            existing["image_indices"]=sorted(set(existing.get("image_indices") or [])|images)
+            if str(event.get("confidence") or "").lower()=="high":
+                existing["confidence"]="high"
+    events=deduped
+    result["events"]=events
 
     score_left = result.get("score_left")
     score_right = result.get("score_right")
@@ -952,10 +1007,15 @@ async def match_scan_preview(
     tournament_id: str,
     match_no: int,
     images: list[UploadFile] = File(...),
+    authorization: str | None = Header(default=None),
     x_admin_password: str | None = Header(default=None, alias="X-Admin-Password"),
 ) -> dict[str, Any]:
     """Context-aware OpenAI scan for one real FIFA Night match. Never writes to Neon."""
-    _require_vision_test_admin(x_admin_password)
+    # Streamlit can keep using X-Admin-Password. The APK uses its controller token;
+    # public test tournaments and 1 VS 1 are intentionally controllable without it.
+    admin_ok=bool(x_admin_password and _admin_password() and hmac.compare_digest(str(x_admin_password), _admin_password()))
+    if not admin_ok:
+        _require_game_control(tournament_id, authorization)
     if not images:
         raise HTTPException(422, "Dodaj co najmniej jedno zdjęcie.")
     try:
@@ -988,7 +1048,7 @@ async def match_scan_preview(
 
     api_key = _openai_api_key()
     if not api_key:
-        raise HTTPException(503, "OPENAI_API_KEY nie jest ustawiony na serwerze API.")
+        raise HTTPException(503, "Odczyt zdjęć jest chwilowo niedostępny na serwerze.")
     content: list[dict[str, Any]] = [{"type": "input_text", "text": _match_event_scan_prompt(context)}]
     for item in prepared:
         encoded = base64.b64encode(item["normalized"]).decode("ascii")
@@ -1013,9 +1073,9 @@ async def match_scan_preview(
                 json=body,
             )
     except httpx.TimeoutException as exc:
-        raise HTTPException(504, "OpenAI nie odpowiedział w ciągu 75 sekund.") from exc
+        raise HTTPException(504, "Odczyt zdjęć nie odpowiedział w wymaganym czasie. Spróbuj ponownie.") from exc
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Nie udało się połączyć z OpenAI: {exc}") from exc
+        raise HTTPException(502, "Nie udało się połączyć z usługą odczytu zdjęć. Spróbuj ponownie.") from exc
     elapsed_ms = round((time.perf_counter() - started) * 1000)
     try:
         payload = response.json()
@@ -1023,12 +1083,12 @@ async def match_scan_preview(
         payload = {}
     if response.status_code >= 400:
         message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:800]
-        raise HTTPException(502, f"OpenAI API zwrócił błąd: {message}")
+        raise HTTPException(502, "Usługa odczytu zdjęć zwróciła błąd. Spróbuj ponownie.")
     raw_text = _extract_openai_output_text(payload)
     try:
         result = json.loads(raw_text)
     except Exception as exc:
-        raise HTTPException(502, f"OpenAI nie zwrócił poprawnego JSON: {raw_text[:800]}") from exc
+        raise HTTPException(502, "Odczyt zdjęć zwrócił niepełne dane. Spróbuj ponownie.") from exc
     result = _map_scan_to_fifa_context(result, context)
     usage = payload.get("usage") or {}
     input_tokens = int(usage.get("input_tokens") or 0)
@@ -1062,8 +1122,342 @@ def auth_me(_claims: dict[str, Any] = Depends(require_controller)) -> dict[str, 
     return {"controller": True}
 
 
+def _special_event_payload(tid: str, fmt: str) -> dict[str, Any] | None:
+    """Return one normalized in-tournament draw/reveal card for the mobile clients."""
+    try:
+        if fmt == "double7":
+            state = db.double7_combined_draw_state(tid)
+            if state and not state.get("ack"):
+                return {"kind": "double7_combined", "selected": bool(state.get("selected")), **state}
+        if fmt == "double8":
+            state = db.double_wb_draw_state(tid)
+            if state and not state.get("ack"):
+                return {"kind": "double8_wb", "selected": bool(state.get("selected")), **state}
+        if fmt == "double5":
+            state = db.double5_draw_state(tid)
+            if state and not state.get("ack"):
+                return {"kind": "double5_opponent", "selected": bool(state.get("selected")), **state}
+        if fmt in ("groups6", "groups6_full", "groups7", "groups7_sf", "groups8_sf", "groups8_barrage"):
+            state = db.group_playoff_reveal_state(tid)
+            if state:
+                # Pairings are already prepared by the scheduler; on mobile the user
+                # only acknowledges the reveal before play continues.
+                return {"kind": "group_playoffs", "selected": True, **state}
+    except Exception:
+        return None
+    return None
+
+
+def _setup_payload(tid: str) -> dict[str, Any]:
+    b = db.setup_bundle(tid)
+    t = b.get("tournament") or {}
+    meta = b.get("meta") or {}
+    extra = meta.get("extra") or {}
+    players = b.get("players") or []
+    fmt = str(meta.get("format_key") or "")
+    player_rows = [{
+        "player_id": p.get("player_id"), "name": p.get("name"), "team": p.get("team"),
+        "team_reveal_order": int(p.get("team_reveal_order") or 0),
+        "team_revealed": bool(int(p.get("team_revealed") or 0)),
+        "group_name": p.get("group_name") or "",
+    } for p in players]
+    try:
+        available = db.available_draft_teams(tid) if str(t.get("phase") or "") == "team_draft" else []
+    except Exception:
+        available = []
+    try:
+        wildcard_suggestions = db.available_wildcard_suggestions(tid)
+    except Exception:
+        wildcard_suggestions = list(WILDCARD_TEAM_SUGGESTIONS)
+    tournament_payload = {
+        "id": tid, "status": t.get("status"), "phase": t.get("phase"),
+        "is_test": bool(int(t.get("is_test") or 0)), "player_count": int(meta.get("player_count") or len(players)),
+        "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt),
+        "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
+        "stake_per_player": float(extra.get("stake_per_player") or 0),
+    }
+    meta_payload = {
+        "extra": {
+            **extra,
+            "draft_order_revealed": bool(extra.get("draft_order_revealed")),
+            "draft_redraw_count": int(extra.get("draft_redraw_count") or 0),
+            "pending_wildcard": extra.get("pending_wildcard"),
+        },
+        "draw": meta.get("draw") or {},
+        "draw_revealed": bool(int(meta.get("draw_revealed") or 0)),
+        "redraw_count": int(meta.get("redraw_count") or 0),
+        "team_pool": list(meta.get("team_pool") or []),
+    }
+    # Hybrid response keeps the API convenient for the final app while remaining
+    # easy to inspect from older/debug clients.
+    return {
+        "tournament": tournament_payload, "meta": meta_payload, "players": player_rows,
+        "draft_available": available, "wildcard_suggestions": wildcard_suggestions,
+        "pending_wildcard": extra.get("pending_wildcard"),
+        **tournament_payload,
+        "team_pool": meta_payload["team_pool"], "draw": meta_payload["draw"],
+        "draw_revealed": meta_payload["draw_revealed"], "redraw_count": meta_payload["redraw_count"],
+        "draft_order_revealed": bool(extra.get("draft_order_revealed")),
+        "draft_redraw_count": int(extra.get("draft_redraw_count") or 0),
+        "available_draft_teams": available,
+    }
+
+
+def live_payload() -> dict[str, Any]:
+    tournament = db.current_tournament()
+    if not tournament:
+        return {"server_time": utc_now(), "api_version": API_VERSION, "tournament": None}
+
+    tid = str(tournament["id"])
+    phase=str(tournament.get("phase") or "")
+    # During setup there are no playable matches yet; return the setup state directly.
+    if phase in {"draft_order","team_draft","team_draw","structure_draw"}:
+        setup=_setup_payload(tid)
+        return {"server_time": utc_now(), "api_version": API_VERSION, "tournament": {
+            "id":tid,"status":tournament.get("status"),"phase":phase,"is_test":bool(int(tournament.get("is_test") or 0)),
+            "player_count":setup["player_count"],"format_key":setup["format_key"],"format_label":setup["format_label"],
+            "format_matches":setup["format_matches"],"created_at":tournament.get("created_at"),"completed_at":tournament.get("completed_at"),
+            "players":setup["players"],"current_match":None,"current_context":None,"next_match":None,"schedule":[],"standings":{},
+            "live_scorers":[],"summary":None,"setup":setup,"special_event":None,"special_draw":None,
+            "controls":{},"defer":{"allowed":False},"skip":{"allowed":False},"active_absences":[],
+        }}
+
+    bundle = db.bundle(tid)
+    meta = bundle.get("meta") or {}
+    extra = meta.get("extra") or {}
+    matches = bundle.get("matches") or []
+    schedule_raw = db.live_schedule_from(matches, extra)
+    current_raw = db.current_match_from(matches, extra)
+    current_context = None
+    if current_raw and current_raw.get("home_player_id") and current_raw.get("away_player_id"):
+        try: current_context = db.match_context(current_raw["home_player_id"], current_raw["away_player_id"])
+        except Exception: current_context = None
+    current_no = int(current_raw.get("match_no") or 0) if current_raw else 0
+    next_raw = db.next_ready_match_from(matches, current_no, extra) if current_raw else None
+    try: standings = db.standings(tid)
+    except Exception: standings = {}
+    try: scorers = db.tournament_live_scorers(tid, 5)
+    except Exception: scorers=[]
+    fmt = str(meta.get("format_key") or tournament.get("format_key") or "")
+    summary = None
+    if str(tournament.get("status")) == "completed":
+        try: summary=db.tournament_summary(tid)
+        except Exception: summary=None
+    controls={}
+    if current_raw:
+        try: controls["defer"]=db.can_defer_match(tid,current_no)
+        except Exception: controls["defer"]={"allowed":False}
+        try: controls["skip"]=db.can_skip_match(tid,current_no)
+        except Exception: controls["skip"]={"allowed":False}
+    try: absences=db.active_absences(tid)
+    except Exception: absences=[]
+    special=_special_event_payload(tid,fmt) if str(tournament.get("status"))=="active" else None
+    return {
+        "server_time": utc_now(), "api_version": API_VERSION,
+        "tournament": {
+            "id": tid, "status": tournament.get("status"), "phase": tournament.get("phase"),
+            "is_test": bool(int(tournament.get("is_test") or 0)), "player_count": int(meta.get("player_count") or tournament.get("player_count") or 0),
+            "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt), "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
+            "created_at": tournament.get("created_at"), "completed_at": tournament.get("completed_at"),
+            "players": [{"player_id":p.get("player_id"),"name":p.get("name"),"team":p.get("team"),"group_name":p.get("group_name")} for p in (bundle.get("players") or [])],
+            "current_match": clean_match(current_raw) if current_raw else None,
+            "current_context": current_context,
+            "next_match": clean_match(next_raw) if next_raw else None,
+            "schedule": [clean_match(m) for m in schedule_raw], "standings": standings, "live_scorers": scorers,
+            "summary": summary, "setup": None, "special_event": special, "special_draw": special,
+            "stake_per_player": float(extra.get("stake_per_player") or 0),
+            "cash_player_ids": [str(x) for x in (extra.get("cash_player_ids") or [])],
+            "cash_player_names": list(extra.get("cash_player_names") or []),
+            "jackpot_cents": db.current_jackpot_cents(),
+            "controls": controls, "defer": controls.get("defer") or {"allowed": False},
+            "skip": controls.get("skip") or {"allowed": False}, "active_absences": absences,
+        },
+    }
+
+
 @app.get("/api/v1/live")
 def get_live() -> dict[str, Any]:
+    return live_payload()
+
+
+@app.get("/api/v1/config")
+def get_config() -> dict[str, Any]:
+    formats: dict[str, list[dict[str, str]]] = {}
+    format_keys = {
+        3: ["league3_final"], 4: ["league4_final", "double4"], 5: ["double5", "league5_final"],
+        6: ["groups6", "groups6_full", "double6"], 7: ["double7", "groups7", "groups7_sf"],
+        8: ["groups8_sf", "double8", "groups8_barrage"],
+    }
+    for count, keys in format_keys.items():
+        formats[str(count)] = [{"key": k, "label": FORMAT_LABELS.get(k, k), "matches": FORMAT_MATCH_COUNTS.get(k, "")} for k in keys]
+    return {
+        "api_version": API_VERSION,
+        "players": db.official_player_names(),
+        "official_names": db.official_player_names(),
+        "last_player_count": db.last_player_count(),
+        "last_lineups": {str(n): db.last_lineup(n) for n in range(3, 9)},
+        "last_stake": db.last_stake(),
+        "jackpot_cents": db.current_jackpot_cents(),
+        "fixed_teams": list(FIXED_TEAMS),
+        "wildcard_suggestions": db.wildcard_team_suggestions(),
+        "formats": formats,
+        "format_labels": FORMAT_LABELS,
+        "format_match_counts": FORMAT_MATCH_COUNTS,
+    }
+
+
+@app.post("/api/v1/tournaments")
+def create_tournament(payload: CreateTournamentPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _ensure_can_start(bool(payload.is_test), authorization)
+    try:
+        teams=allowed_teams(int(payload.player_count))
+        tid=db.create_tournament(payload.player_names,int(payload.player_count),payload.format_key,teams,bool(payload.is_test),float(payload.stake_per_player),payload.cash_flags or None)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"id":tid,"live":live_payload()}
+
+
+@app.post("/api/v1/duels")
+def create_duel(payload: CreateDuelPayload) -> dict[str, Any]:
+    current=db.current_tournament()
+    if current and str(current.get("status") or "") == "active": raise HTTPException(409,"Najpierw zakończ albo zresetuj bieżący FIFA Night.")
+    if current: db.start_new()
+    try: tid=db.create_duel(payload.player_names,payload.team_names,False,float(payload.stake_per_player),payload.cash_flags or None)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"id":tid,"live":live_payload()}
+
+
+@app.get("/api/v1/tournaments/{tournament_id}/setup")
+def get_setup(tournament_id: str) -> dict[str, Any]:
+    _current_tournament_or_409(tournament_id)
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/test-mode")
+def set_test_mode(tournament_id: str, payload: TestModePayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization)
+    _current_tournament_or_409(tournament_id)
+    try: db.set_test_mode(tournament_id,bool(payload.is_test))
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+def _setup_action_control(tid: str, authorization: str | None) -> None:
+    _require_game_control(tid,authorization)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draft/reveal")
+def draft_reveal(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.reveal_draft_order(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draft/reroll")
+def draft_reroll(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.reroll_draft_order(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draft/confirm")
+def draft_confirm(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.confirm_draft_order(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/draft/pick")
+def draft_pick(tournament_id: str, payload: DraftPickPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.draft_pick(tournament_id,payload.player_id,payload.slot,payload.wildcard_name)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/teams/reveal")
+def teams_reveal(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: revealed=db.reveal_next_team(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"revealed":revealed,"setup":_setup_payload(tournament_id)}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/wildcard/confirm")
+def wildcard_confirm(tournament_id: str, payload: WildcardPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: team=db.confirm_wildcard_team(tournament_id,payload.player_id,payload.team_name)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"team":team,"setup":_setup_payload(tournament_id)}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/teams/finish")
+def teams_finish(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.start_structure_draw(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/structure/reveal")
+def structure_reveal(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.reveal_structure(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/structure/reroll")
+def structure_reroll(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.reroll_structure(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return _setup_payload(tournament_id)
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/structure/confirm")
+def structure_confirm(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: db.confirm_structure(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/special/{kind}/reveal")
+def special_reveal(tournament_id: str, kind: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    try:
+        if kind=="double7_combined": db.reveal_double7_combined_draw(tournament_id)
+        elif kind=="double8_wb": db.reveal_double_wb_draw(tournament_id)
+        elif kind=="double5_opponent": db.reveal_double5_opponent(tournament_id)
+        else: raise ValueError("To losowanie nie ma osobnej akcji losuj.")
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/special/{kind}/ack")
+def special_ack(tournament_id: str, kind: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    try:
+        if kind=="double7_combined": db.ack_double7_combined_draw(tournament_id)
+        elif kind=="double8_wb": db.ack_double_wb_draw(tournament_id)
+        elif kind=="double5_opponent": db.ack_double5_draw(tournament_id)
+        elif kind=="group_playoffs": db.ack_group_playoffs(tournament_id)
+        else: raise ValueError("Nieznany etap specjalny.")
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/new")
+def start_new_tournament(tournament_id: str) -> dict[str, Any]:
+    current = db.current_tournament()
+    if current and str(current.get("id")) != str(tournament_id):
+        raise HTTPException(409, "Na serwerze jest już inna bieżąca rozgrywka.")
+    if current and str(current.get("status") or "") == "active":
+        raise HTTPException(409, "Najpierw zakończ albo zresetuj bieżącą rozgrywkę.")
+    db.start_new()
     return live_payload()
 
 
@@ -1077,117 +1471,363 @@ def get_records() -> dict[str, Any]:
     return {"records": db.all_time_records(), "server_time": utc_now()}
 
 
+@app.get("/api/v1/stats/teams-scorers")
+def get_teams_scorers() -> dict[str, Any]:
+    return {"teams":db.team_stats(),"scorers":db.scorer_stats(),"event_stats":db.player_event_stats(),"server_time":utc_now()}
+
+
+@app.get("/api/v1/stats/finance")
+def get_finance_stats() -> dict[str, Any]:
+    return {"ranking":db.financial_ranking(),"tournaments":db.settlement_tournaments(200),"jackpot_cents":db.current_jackpot_cents()}
+
+
+@app.get("/api/v1/stats/teams")
+def get_team_stats() -> dict[str, Any]:
+    return {"teams": db.team_stats(), "server_time": utc_now()}
+
+@app.get("/api/v1/stats/scorers")
+def get_scorer_stats() -> dict[str, Any]:
+    return {"scorers": db.scorer_stats(), "server_time": utc_now()}
+
+@app.get("/api/v1/finance/tournaments")
+def get_finance_tournaments() -> dict[str, Any]:
+    data = get_finance_stats()
+    return {"items": data.get("tournaments") or [], "ranking": data.get("ranking") or [], "jackpot_cents": data.get("jackpot_cents") or 0}
+
+
 @app.get("/api/v1/players/{player_id}")
 def get_player_profile(player_id: str) -> dict[str, Any]:
     profile = db.player_profile(player_id)
-    if not profile:
-        raise HTTPException(404, "Nie znaleziono gracza.")
+    if not profile: raise HTTPException(404, "Nie znaleziono gracza.")
     try:
         center = db.achievement_center()
         achievement = next((p for p in center.get("players", []) if str(p.get("player_id")) == str(player_id)), None)
-    except Exception:
-        achievement = None
-    try:
-        awards = db.player_award_wins(player_id)
-    except Exception:
-        awards = []
-    return {"profile": profile, "achievement": achievement, "awards": awards}
+    except Exception: achievement = None
+    try: awards = db.player_award_wins(player_id)
+    except Exception: awards = []
+    try: trophy=db.player_trophy_case(player_id)
+    except Exception: trophy={}
+    try: event_stats=db.player_detailed_event_stats(player_id)
+    except Exception: event_stats={}
+    return {"profile": profile, "achievement": achievement, "awards": awards, "trophy_case":trophy,"event_stats":event_stats}
 
 
 @app.get("/api/v1/awards/{year}")
 def get_awards(year: int) -> dict[str, Any]:
-    if year < 2020 or year > 2100:
-        raise HTTPException(422, "Nieprawidłowy rok.")
+    if year < 2020 or year > 2100: raise HTTPException(422, "Nieprawidłowy rok.")
     return db.annual_awards(int(year))
+
+
+@app.get("/api/v1/milestones")
+def get_milestones() -> dict[str, Any]:
+    return db.global_milestones()
 
 
 @app.get("/api/v1/tournaments/{tournament_id}/matches/{match_no}/scorer-options")
 def scorer_options(tournament_id: str, match_no: int) -> dict[str, Any]:
     match = next((m for m in db.matches(tournament_id) if int(m.get("match_no") or 0) == int(match_no)), None)
-    if not match:
-        raise HTTPException(404, "Nie znaleziono meczu.")
+    if not match: raise HTTPException(404, "Nie znaleziono meczu.")
     return {
-        "home": {
-            "team": match.get("home_team") or "",
-            "options": db.team_scorer_options(match.get("home_team") or "") if match.get("home_team") else [],
-        },
-        "away": {
-            "team": match.get("away_team") or "",
-            "options": db.team_scorer_options(match.get("away_team") or "") if match.get("away_team") else [],
-        },
+        "home":{"team":match.get("home_team") or "","options":db.team_scorer_options(match.get("home_team") or "") if match.get("home_team") else []},
+        "away":{"team":match.get("away_team") or "","options":db.team_scorer_options(match.get("away_team") or "") if match.get("away_team") else []},
     }
 
 
+@app.post("/api/v1/tournaments/{tournament_id}/matches/{match_no}/scorers")
+def add_match_scorer(tournament_id: str, match_no: int, payload: AddScorerPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    match=next((m for m in db.matches(tournament_id) if int(m.get("match_no") or 0)==int(match_no)),None)
+    if not match: raise HTTPException(404,"Nie znaleziono meczu.")
+    side=payload.side.lower().strip()
+    if side not in {"home","away"}: raise HTTPException(422,"Strona musi być home albo away.")
+    team=str(match.get(f"{side}_team") or "").strip()
+    if not team: raise HTTPException(422,"Brak drużyny dla tej strony meczu.")
+    try: db.add_team_scorers(team,[payload.name.strip()])
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return scorer_options(tournament_id,match_no)
+
+
 def _scorers_to_dict(payload: ScorersPayload | None, match: dict[str, Any]) -> dict[str, Any] | None:
-    if payload is None:
-        return None
+    if payload is None: return None
     out: dict[str, Any] = {}
     for side in ("home", "away"):
         side_payload = getattr(payload, side)
         if side_payload is None:
-            out[side] = {"team": match.get(f"{side}_team") or "", "items": []}
-            continue
+            out[side] = {"team": match.get(f"{side}_team") or "", "items": []}; continue
         team = side_payload.team.strip() or str(match.get(f"{side}_team") or "")
         out[side] = {"team": team, "items": [{"name": x.name.strip(), "goals": int(x.goals)} for x in side_payload.items if x.name.strip()]}
     return out
 
 
+def _normalize_events_for_save(match: dict[str, Any], fmt: str, hs: int, ass: int, events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Canonicalize user-corrected scan events and prove that all match goals are accounted for.
+
+    The client may edit event type, footballer and FIFA Night side after scan-preview.
+    Never trust credited_player_id/synthetic_de from the client: derive both again here.
+    """
+    allowed={"normal_goal","penalty_goal","own_goal","penalty_miss","yellow_card","red_card","injury","substitution"}
+    home_pid=str(match.get("home_player_id") or "")
+    away_pid=str(match.get("away_player_id") or "")
+    participant_ids={home_pid,away_pid}
+    participant_ids.discard("")
+    if len(participant_ids)!=2:
+        raise ValueError("Ten mecz nie ma dwóch ustalonych graczy.")
+    info={
+        home_pid:{"name":match.get("home_name"),"team":str(match.get("home_team") or "")},
+        away_pid:{"name":match.get("away_name"),"team":str(match.get("away_team") or "")},
+    }
+    normalized=[]
+    for original_order,raw in enumerate(events,1):
+        if not isinstance(raw,dict):
+            continue
+        typ=str(raw.get("event_type") or "unknown").strip()
+        if typ not in allowed:
+            # Same behaviour as the Streamlit editor: unknown/unsupported rows are ignored.
+            continue
+        actor_pid=str(raw.get("actor_player_id") or "").strip()
+        if actor_pid not in participant_ids:
+            raise ValueError(f"Wydarzenie {original_order}: wybierz gracza FIFA Night, którego dotyczy zdarzenie.")
+        credited_pid=None
+        if typ in {"normal_goal","penalty_goal"}:
+            credited_pid=actor_pid
+        elif typ=="own_goal":
+            credited_pid=away_pid if actor_pid==home_pid else home_pid
+        footballer=" ".join(str(raw.get("footballer_name") or "").strip().split())
+        related=" ".join(str(raw.get("related_footballer_name") or "").strip().split())
+        minute=raw.get("minute");stoppage=raw.get("stoppage")
+        try:minute=int(minute) if minute is not None and str(minute)!="" else None
+        except Exception:minute=None
+        try:stoppage=int(stoppage) if stoppage is not None and str(stoppage)!="" else None
+        except Exception:stoppage=None
+        # User corrections may arrive as a display label such as 90+2. Store a
+        # punctuation-free canonical label; the UI adds the minute mark exactly once.
+        raw_minute_label=str(raw.get("minute_label") or "").strip().replace("’","").replace("′","").replace("'","")
+        label_match=re.fullmatch(r"(\d{1,3})(?:\s*\+\s*(\d{1,2}))?",raw_minute_label) if raw_minute_label else None
+        if label_match:
+            minute=int(label_match.group(1))
+            stoppage=int(label_match.group(2)) if label_match.group(2) else None
+        minute_label=(f"{minute}+{stoppage}" if minute is not None and stoppage is not None else str(minute) if minute is not None else "")
+        actor=info[actor_pid];credited=info.get(str(credited_pid or ""))
+        normalized.append({
+            "_original_order":original_order,"event_type":typ,"minute":minute,"stoppage":stoppage,
+            "minute_label":minute_label,
+            "footballer_name":footballer,"related_footballer_name":related,
+            "actor_player_id":actor_pid,"actor_player_name":actor.get("name"),"actor_team_name":actor.get("team"),
+            "credited_player_id":credited_pid,"credited_player_name":credited.get("name") if credited else None,
+            "credited_team_name":credited.get("team") if credited else None,
+            "synthetic_de":False,"confidence":raw.get("confidence") or "manual",
+            "source_images":list(raw.get("source_images") or []),
+        })
+    normalized.sort(key=lambda e:(999 if e.get("minute") is None else int(e["minute"]),-1 if e.get("stoppage") is None else int(e["stoppage"]),int(e.get("_original_order") or 9999)))
+    for idx,e in enumerate(normalized,1):
+        e["event_order"]=idx
+        e.pop("_original_order",None)
+    # The Winners Bracket bonus is implemented as the first visible own goal credited to HOME.
+    if fmt.startswith("double") and str(match.get("stage") or "")=="FINAL":
+        for e in normalized:
+            if e.get("event_type")=="own_goal" and str(e.get("credited_player_id") or "")==home_pid:
+                e["synthetic_de"]=True
+                break
+    goal_types={"normal_goal","penalty_goal","own_goal"}
+    hg=sum(1 for e in normalized if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "")==home_pid)
+    ag=sum(1 for e in normalized if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "")==away_pid)
+    missing_names=sum(1 for e in normalized if e.get("event_type") in {"normal_goal","penalty_goal"} and not str(e.get("footballer_name") or "").strip())
+    validation={
+        "home_goals":hg,"away_goals":ag,"missing_home":max(int(hs)-hg,0),"missing_away":max(int(ass)-ag,0),
+        "over":hg>int(hs) or ag>int(ass),"missing_goal_names":missing_names,
+        "complete":hg==int(hs) and ag==int(ass) and missing_names==0,
+    }
+    if not validation["complete"]:
+        details=[]
+        if validation["missing_home"]:details.append(f"HOME: brakuje {validation['missing_home']} gola/goli")
+        if validation["missing_away"]:details.append(f"AWAY: brakuje {validation['missing_away']} gola/goli")
+        if validation["over"]:details.append(f"wydarzenia dają {hg}:{ag}, a wynik to {int(hs)}:{int(ass)}")
+        if missing_names:details.append("gol lub gol z karnego nie ma wpisanego piłkarza")
+        raise ValueError("Odczyt wydarzeń wymaga korekty: "+("; ".join(details) or "sprawdź gole i ich przypisanie."))
+    return normalized,validation
+
+
 @app.post("/api/v1/tournaments/{tournament_id}/matches/{match_no}/result")
-def save_match_result(
-    tournament_id: str,
-    match_no: int,
-    payload: ResultPayload,
-    _claims: dict[str, Any] = Depends(require_controller),
-) -> dict[str, Any]:
-    tournament = db.current_tournament()
-    if not tournament or str(tournament.get("id")) != str(tournament_id):
-        raise HTTPException(409, "Ten turniej nie jest aktualnie aktywny.")
-    match = next((m for m in db.matches(tournament_id) if int(m.get("match_no") or 0) == int(match_no)), None)
-    if not match:
-        raise HTTPException(404, "Nie znaleziono meczu.")
-    if match.get("home_score") is not None or str(match.get("match_status") or "pending") == "skipped":
-        raise HTTPException(409, "Ten mecz jest już zakończony.")
-    current = live_payload().get("tournament", {}).get("current_match")
-    if not current or int(current.get("match_no") or 0) != int(match_no):
-        raise HTTPException(409, "To nie jest aktualny mecz w kolejności LIVE.")
-
-    scorers = _scorers_to_dict(payload.scorers, match)
-    if scorers:
-        fmt = str(tournament.get("format_key") or "")
-        wb_bonus = fmt.startswith("double") and str(match.get("stage")) == "FINAL"
-        expected_home = max(0, int(payload.home_score) - (1 if wb_bonus else 0))
-        expected_away = int(payload.away_score)
-        home_sum = sum(int(x["goals"]) for x in scorers.get("home", {}).get("items", []))
-        away_sum = sum(int(x["goals"]) for x in scorers.get("away", {}).get("items", []))
-        if home_sum > expected_home or away_sum > expected_away:
-            raise HTTPException(422, "Suma wpisanych goli strzelców nie może przekraczać wyniku meczu.")
-
+def save_match_result(tournament_id: str, match_no: int, payload: ResultPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    tournament=_current_tournament_or_409(tournament_id)
+    _require_game_control(tournament_id,authorization)
+    match=next((m for m in db.matches(tournament_id) if int(m.get("match_no") or 0)==int(match_no)),None)
+    if not match: raise HTTPException(404,"Nie znaleziono meczu.")
+    if match.get("home_score") is not None or str(match.get("match_status") or "pending")=="skipped":
+        raise HTTPException(409,"Ten mecz został już zapisany na innym urządzeniu. Odświeżono stan FIFA Night.")
+    current=(live_payload().get("tournament") or {}).get("current_match")
+    if not current or int(current.get("match_no") or 0)!=int(match_no):
+        raise HTTPException(409,"Kolejność FIFA Night zmieniła się na innym urządzeniu. Odśwież ekran.")
+    scorers=_scorers_to_dict(payload.scorers,match)
+    fmt=str(tournament.get("format_key") or "")
+    events=payload.events
+    if scorers and events is None:
+        wb_bonus=fmt.startswith("double") and str(match.get("stage"))=="FINAL"
+        expected_home=max(0,int(payload.home_score)-(1 if wb_bonus else 0));expected_away=int(payload.away_score)
+        home_sum=sum(int(x["goals"]) for x in scorers.get("home",{}).get("items",[]));away_sum=sum(int(x["goals"]) for x in scorers.get("away",{}).get("items",[]))
+        if home_sum>expected_home or away_sum>expected_away: raise HTTPException(422,"Suma wpisanych goli strzelców nie może przekraczać wyniku meczu.")
+    if events is not None:
+        try:events,_=_normalize_events_for_save(match,fmt,int(payload.home_score),int(payload.away_score),events)
+        except ValueError as exc:raise HTTPException(422,str(exc)) from exc
     try:
-        db.save_result(
-            tournament_id,
-            int(match_no),
-            int(payload.home_score),
-            int(payload.away_score),
-            payload.home_penalties,
-            payload.away_penalties,
-            scorers,
-        )
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        db.save_result(tournament_id,int(match_no),int(payload.home_score),int(payload.away_score),payload.home_penalties,payload.away_penalties,scorers,events)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return live_payload()
 
 
 @app.post("/api/v1/tournaments/{tournament_id}/undo-last")
-def undo_last(
-    tournament_id: str,
-    _claims: dict[str, Any] = Depends(require_controller),
-) -> dict[str, Any]:
-    tournament = db.current_tournament()
-    if not tournament or str(tournament.get("id")) != str(tournament_id):
-        raise HTTPException(409, "Ten turniej nie jest aktualnie aktywny.")
-    match_no = db.undo_last_result(tournament_id)
-    if match_no is None:
-        raise HTTPException(409, "Nie ma wyniku do cofnięcia.")
-    payload = live_payload()
-    payload["undone_match_no"] = int(match_no)
-    return payload
+def undo_last(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    match_no=db.undo_last_result(tournament_id)
+    if match_no is None: raise HTTPException(409,"Nie ma wyniku ani pominięcia do cofnięcia.")
+    payload=live_payload();payload["undone_match_no"]=int(match_no);return payload
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/matches/{match_no}/defer")
+def defer_match(tournament_id: str, match_no: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    try: db.defer_match(tournament_id,int(match_no))
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/matches/{match_no}/skip")
+def skip_match(tournament_id: str, match_no: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    try: db.skip_match(tournament_id,int(match_no))
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/abandon")
+def abandon_tournament(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization)
+    _current_tournament_or_409(tournament_id)
+    try: result=db.abandon_tournament(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"result":result,"live":live_payload()}
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/reset")
+def reset_tournament(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    try: db.reset_current(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return live_payload()
+
+
+@app.get("/api/v1/history")
+def get_history(include_tests: bool = Query(default=False)) -> dict[str, Any]:
+    items=[]
+    for row in db.completed_tournaments(include_tests=bool(include_tests),limit=500):
+        item=dict(row)
+        fmt=str(item.get("format_key") or "")
+        item["format_label"]=FORMAT_LABELS.get(fmt,fmt)
+        item["unfinished"]=str(item.get("status") or "")=="abandoned"
+        item["is_duel"]=fmt=="duel1v1"
+        items.append(item)
+    return {"items":items}
+
+
+@app.get("/api/v1/history/{tournament_id}")
+def get_history_detail(tournament_id: str) -> dict[str, Any]:
+    rows=db.completed_tournaments(include_tests=True,limit=500)
+    row=next((x for x in rows if str(x.get("id"))==str(tournament_id)),None)
+    if not row: raise HTTPException(404,"Nie znaleziono pozycji w Historii.")
+    b=db.bundle(tournament_id);t=b.get("tournament") or {};fmt=str((b.get("meta") or {}).get("format_key") or row.get("format_key") or "")
+    player_names={str(p.get("id") or p.get("player_id") or ""):str(p.get("name") or "") for p in (b.get("players") or [])}
+    detailed=[]
+    for m in b.get("matches") or []:
+        item=clean_match(m)
+        try:item["scorers"]=db.match_scorers(tournament_id,int(m.get("match_no") or 0))
+        except Exception:item["scorers"]=[]
+        try:
+            item["events"]=db.match_events(tournament_id,int(m.get("match_no") or 0))
+            for event in item["events"]:
+                event["actor_player_name"]=player_names.get(str(event.get("actor_player_id") or "")) or event.get("actor_player_name")
+                event["credited_player_name"]=player_names.get(str(event.get("credited_player_id") or "")) or event.get("credited_player_name")
+        except Exception:item["events"]=[]
+        detailed.append(item)
+    try: standings=db.standings(tournament_id)
+    except Exception: standings={}
+    summary=None
+    if str(t.get("status") or "")=="completed":
+        try: summary=db.tournament_summary(tournament_id)
+        except Exception: summary=None
+    try:finance=db.finance_event(tournament_id)
+    except Exception:finance=None
+    try:unlocked=db.achievements_unlocked_in_tournament(tournament_id)
+    except Exception:unlocked=[]
+    try:milestones=db.milestones_in_tournament(tournament_id)
+    except Exception:milestones=[]
+    tournament_payload=dict(t)
+    tournament_payload["unfinished"]=str(tournament_payload.get("status") or "")=="abandoned"
+    tournament_payload["format_label"]=FORMAT_LABELS.get(fmt,fmt)
+    archive_payload=dict(row)
+    archive_payload["unfinished"]=str(archive_payload.get("status") or "")=="abandoned"
+    archive_payload["format_label"]=FORMAT_LABELS.get(fmt,fmt)
+    return {"archive":archive_payload,"tournament":tournament_payload,"meta":b.get("meta") or {},"players":b.get("players") or [],"matches":detailed,"standings":standings,"summary":summary,"finance":finance,"achievements":unlocked,"milestones":milestones,"format_label":FORMAT_LABELS.get(fmt,fmt)}
+
+
+@app.delete("/api/v1/history/{tournament_id}")
+def delete_history_item(tournament_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization)
+    try:deleted=db.delete_archived_tournament(tournament_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"deleted":deleted}
+
+
+@app.post("/api/v1/finance/settlement")
+def settlement(payload: SettlementRequest) -> dict[str, Any]:
+    return db.settlement_summary(payload.tournament_ids)
+
+
+@app.post("/api/v1/finance/settled")
+def set_settled(payload: SettledPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization)
+    count=db.set_tournaments_settled(payload.tournament_ids,bool(payload.settled))
+    return {"updated":count,"finance":get_finance_stats()}
+
+
+@app.get("/api/v1/exports/tournament/{tournament_id}/summary.png")
+def export_tournament_png(tournament_id: str) -> Response:
+    rows=db.completed_tournaments(include_tests=True,limit=500)
+    row=next((x for x in rows if str(x.get("id"))==str(tournament_id)),None)
+    if not row: raise HTTPException(404,"Nie znaleziono turnieju.")
+    if str(row.get("status") or "")!="completed": raise HTTPException(422,"Niedokończony turniej nie ma końcowego podsumowania PNG.")
+    b=db.bundle(tournament_id);summary=db.tournament_summary(tournament_id)
+    png=generate_summary_png(b,summary,FORMAT_LABELS,row.get("official_no"))
+    return Response(content=png,media_type="image/png",headers={"Content-Disposition":f'inline; filename="fifa-night-{row.get("official_no") or "test"}.png"'})
+
+
+@app.get("/api/v1/exports/settlement.png")
+def export_settlement_png(ids: str = Query(default="")) -> Response:
+    tids=[x.strip() for x in ids.split(",") if x.strip()]
+    if not tids: raise HTTPException(422,"Wybierz co najmniej jeden turniej.")
+    data=db.settlement_summary(tids)
+    labels=[]
+    for e in data.get("tournaments") or []:
+        labels.append(f"{FORMAT_LABELS.get(str(e.get('format_key') or ''),str(e.get('format_key') or ''))} • {str(e.get('completed_at') or e.get('created_at') or '')[:10]}")
+    return Response(content=generate_settlement_png(data,labels),media_type="image/png")
+
+
+@app.get("/api/v1/exports/year/{year}/summary.png")
+def export_year_png(year: int) -> Response:
+    data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or []
+    highlights=[]
+    if overview.get("top_player"):highlights.append({"label":"Lider klasyfikacji Gracza Roku","value":overview.get("top_player")})
+    if overview.get("top_team"):highlights.append({"label":"Najwyżej sklasyfikowana drużyna","value":overview.get("top_team")})
+    match_cat=next((c for c in cats if c.get("key")=="match_year"),None)
+    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Roku — lider na teraz","value":match_cat["candidates"][0].get("name")})
+    return Response(content=generate_year_summary_png(year,overview,highlights),media_type="image/png")
+
+
+@app.get("/api/v1/exports/year/{year}/awards.png")
+def export_awards_png(year: int) -> Response:
+    data=db.annual_awards(year);sels=data.get("selections") or {};rows=[]
+    for cat in data.get("categories") or []:
+        sel=sels.get(cat.get("key")) or {}
+        if sel.get("name"):
+            title=str(cat.get("title") or "");title=title.split(" ",1)[1] if " " in title else title
+            rows.append({"title":title,"name":sel.get("name")})
+    return Response(content=generate_awards_png(year,rows),media_type="image/png")

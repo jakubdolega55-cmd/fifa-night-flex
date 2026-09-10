@@ -1889,7 +1889,9 @@ class Database:
         latest=max(timed,key=minute_value) if timed else None
         def goal_desc(g):
             if not g:return None
-            label=str(g.get("minute_label") or "").strip()
+            # Keep API data punctuation-free; individual UIs add their own minute mark.
+            # Some scan/manual clients historically stored labels such as ``10'``.
+            label=str(g.get("minute_label") or "").strip().replace("′","").replace("'","")
             if not label:
                 try:
                     m=int(g.get("minute"));stp=int(g.get("stoppage") or 0);label=f"{m}+{stp}" if stp else str(m)
@@ -2723,14 +2725,6 @@ class Database:
             conn.execute("DELETE FROM flex_tournament_meta")
             self._setting_set_conn(conn,CURRENT_KEY,"")
 
-    def history_locked(self) -> bool:
-        with self.connect() as conn:
-            return self._setting_get_conn(conn,"fifa_history_locked")=="1"
-
-    def set_history_locked(self, locked: bool) -> None:
-        with self.connect() as conn:
-            self._setting_set_conn(conn,"fifa_history_locked","1" if locked else "0")
-
     def _finance_ledger_conn(self, conn) -> tuple[list[dict],dict[str,str],int]:
         """Replay official cash events chronologically, including tournament jackpots.
 
@@ -2937,7 +2931,6 @@ class Database:
 
     def delete_last_completed_tournament(self) -> dict | None:
         with self.connect() as conn:
-            if self._setting_get_conn(conn,"fifa_history_locked")=="1": raise ValueError("Historia jest zablokowana.")
             t=self._fetchone(conn,"""SELECT t.id,t.status,t.created_at,t.completed_at,t.champion_player_id,p.name champion_name
                 FROM tournaments t LEFT JOIN players p ON p.id=t.champion_player_id
                 WHERE t.status IN ('completed','abandoned') AND t.is_test=0
@@ -2950,7 +2943,7 @@ class Database:
     def delete_archived_tournament(self, tid: str) -> dict:
         """Delete one selected archived tournament (or a completed 1 VS 1 match).
 
-        History lock is respected. We intentionally do not support deleting one match
+        Deletion always requires an explicit admin confirmation in the UI/API. We intentionally do not support deleting one match
         from the middle of a completed multi-match tournament because it would break
         bracket/standings/champion consistency; such corrections should be made before
         the tournament is closed or by deleting the whole archived tournament.
@@ -2958,8 +2951,6 @@ class Database:
         tid=str(tid or "").strip()
         if not tid: raise ValueError("Brak turnieju do usunięcia.")
         with self.connect() as conn:
-            if self._setting_get_conn(conn,"fifa_history_locked")=="1":
-                raise ValueError("Historia jest zablokowana. Odblokuj ją najpierw w Ustawieniach.")
             t=self._fetchone(conn,"SELECT id,status,is_test,created_at,completed_at FROM tournaments WHERE id=?",(tid,))
             if not t: raise ValueError("Nie znaleziono turnieju w historii.")
             if str(t.get("status") or "") not in ("completed","abandoned"):
@@ -2971,7 +2962,6 @@ class Database:
 
     def clear_all_history(self) -> None:
         with self.connect() as conn:
-            if self._setting_get_conn(conn,"fifa_history_locked")=="1": raise ValueError("Historia jest zablokowana.")
             conn.execute("DELETE FROM flex_match_sources")
             conn.execute("DELETE FROM match_scorers")
             conn.execute("DELETE FROM tournament_absences")
@@ -4324,24 +4314,24 @@ class Database:
             wp=pc(pid,v);cl=(v["clutch_w"]/v["clutch_m"]*100 if v["clutch_m"] else 0);gdpm=(v["gf"]-v["ga"])/v["m"]
             score=v["titles"]*27+v["finals"]*14+wp*.28+cl*.11+gdpm*4+len(participant_tournaments[pid])
             items.append(cand(pid,score,f"{v['titles']} tytuł(y), {v['finals']} finał(y), W% {wp}, bilans {v['gf']}:{v['ga']}"))
-        add("player_year","🏆 Gracz Roku","Najlepszy sezon w całym roku. Liczą się przede wszystkim tytuły i finały, a także wyniki, bilans bramek, regularność i mecze o dużą stawkę. Mecze 1v1 nie są liczone.",items)
+        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, wyniki i najważniejsze mecze. 1 VS 1 gra tu we własnej lidze.",items)
         items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=2]
-        add("offensive","🔥 Ofensywny Gracz Roku","Dla graczy, którzy regularnie strzelają dużo goli i wysoko wygrywają.",items)
+        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Gole, gole i jeszcze raz gole.",items)
         items=[]
         for pid,v in ps.items():
             if v["m"]<3:continue
             ga_pm=v["ga"]/v["m"];cs_rate=v["clean_sheets"]/v["m"]*100
             score=110-ga_pm*25+min(v["m"],20)+cs_rate*.18+v["clean_sheets"]*1.5
             items.append(cand(pid,score,f"{ga_pm:.2f} gola straconego/mecz • {v['clean_sheets']} czystych kont • {v['ga']} straconych • {v['m']} meczów"))
-        add("defense","🧱 Beton Roku","Dla graczy, którzy tracą najmniej goli i najczęściej zachowują czyste konto.",items)
+        add("defense","🧱 Beton Roku","Tu gole wpuszcza się niechętnie, a najlepiej wcale.",items)
         items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=2]
-        add("clutch","🎯 Clutch Player Roku","Liczą się mecze, po których porażka kończy udział w turnieju albo walkę o tytuł. Winners Bracket nie jest liczony, bo po porażce nadal można grać.",items)
+        add("clutch","🎯 Clutch Player Roku","Najważniejsze są mecze bez marginesu błędu. Przegrywasz — kończy się droga po tytuł. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi.",items)
         items=[cand(
             pid,
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
             f"WC: {v['wc_w']}/{v['wc_m']} W • bilans {v['wc_gf']}:{v['wc_ga']} • {v['wc_finals']} finał(y) WC • {v['wc_titles']} tytuł(y) WC"
         ) for pid,v in ps.items() if v["wc_m"]>=3]
-        add("wildcards","🎲 Król Wild Cardów","Liczą się wyniki osiągnięte Wild Cardem: zwycięstwa, bilans bramek, finały i tytuły.",items,award=False)
+        add("wildcards","🎲 Król Wild Cardów","Wild Card miał być niewiadomą. Niektórzy robią z niego broń.",items,award=False)
         items=[]
         for pid,v in ps.items():
             seq=v["result_points"]
@@ -4349,7 +4339,7 @@ class Database:
             mid=len(seq)//2;early=seq[:mid];late=seq[mid:]
             epts=sum(x[0] for x in early)/len(early);lpts=sum(x[0] for x in late)/len(late);egd=sum(x[1] for x in early)/len(early);lgd=sum(x[1] for x in late)/len(late)
             items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • bilans bramek/mecz {egd:+.2f} → {lgd:+.2f}"))
-        add("progress","📈 Największy Progres","Porównujemy pierwszą i drugą część roku i sprawdzamy, kto najbardziej poprawił wyniki oraz bilans bramek.",items,award=False)
+        add("progress","📈 Największy Progres","Kto zaczął rok jednym graczem, a kończy go jak zupełnie inny zawodnik?",items,award=False)
         items=[]
         for pid,v in ps.items():
             vals=v["spectacle_scores"]
@@ -4360,14 +4350,14 @@ class Database:
             score=avg*80+spectacular_rate*20
             avg_goals=v["spectacle_goals"]/len(vals)
             items.append(cand(pid,score,f"{avg_goals:.2f} gola/mecz w jego spotkaniach • {spectacular}/{len(vals)} bardzo widowiskowych • {v['spectacle_pens']} mecz(e) z karnymi"))
-        add("spectacle","🎆 Najbardziej Widowiskowy Gracz","Liczy się, jak często mecze z udziałem gracza są wyrównane, bramkowe i kończą się karnymi. Minimum 5 meczów.",items)
+        add("spectacle","🎆 Najbardziej Widowiskowy Gracz","Jeśli gra, zwykle coś się dzieje. Gole, końcówki, karne — spokojne 1:0 mile widziane gdzie indziej. Minimum 5 meczów.",items)
         items=[]
         for pid,v in ps.items():
             vals=[tr["pts"]/tr["m"] for tr in v["t_results"].values() if tr["m"]]
             if len(vals)<3:continue
             avg=sum(vals)/len(vals);sd=statistics.pstdev(vals) if len(vals)>1 else 0
             items.append(cand(pid,avg*25-sd*14+len(vals),f"{len(vals)} turniejów • średnio {avg:.2f} pkt/mecz • odchylenie {sd:.2f}"))
-        add("regular","🎯 Najbardziej Regularny","Liczy się utrzymywanie podobnego, dobrego poziomu w kolejnych turniejach.",items,award=False)
+        add("regular","🎯 Najbardziej Regularny","Bez wielkich zjazdów i przypadkowych wyskoków. Forma ma się zgadzać turniej po turnieju.",items,award=False)
 
         # Detailed-event Awards. These are official Award categories, unlike the
         # informational rankings below.
@@ -4375,7 +4365,7 @@ class Database:
         for pid,v in discipline.items():
             if v["points"]<=0: continue
             items.append(cand(pid,v["points"],f"{v['points']} pkt dyscypliny • 🟨 {v['yellow']} • 🟥 {v['red']} (żółta = 1, czerwona = 3)"))
-        add("sharpest","🪓 Najostrzejszy Gracz","Najwięcej punktów dyscyplinarnych w meczach ze szczegółowym przebiegiem. Żółta kartka = 1 pkt, czerwona = 3 pkt.",items)
+        add("sharpest","🪓 Najostrzejszy Gracz","Kartki mówią same za siebie. Im więcej koloru pokazuje sędzia, tym wyżej tutaj.",items)
 
         items=[]
         for pid,v in late_stats.items():
@@ -4386,7 +4376,7 @@ class Database:
                 "_sort":(int(v["late_goals"]),int(v["goals_90plus"]),int(v["latest_value"])),
                 "reason":f"{v['late_goals']} goli od 85. minuty • {v['goals_90plus']} od 90. minuty • najpóźniejszy {v['latest_label'] or '—'}"
             })
-        add("late_king","⏰ Król Końcówek","Gole zdobyte od 85. minuty wzwyż. Przy remisie wyżej jest gracz z większą liczbą goli 90+ i późniejszym golem.",items)
+        add("late_king","⏰ Król Końcówek","Od 85. minuty zaczyna się jego ulubiona część meczu. Im później boli rywala, tym lepiej.",items)
 
         items=[]
         for pid,v in comeback_stats.items():
@@ -4397,7 +4387,7 @@ class Database:
                 "_sort":(int(v["points"]),int(v["max_deficit"]),int(v["wins"])),
                 "reason":f"{v['wins']} comeback win • {v['points']} pkt comebacku • największa odrobiona strata {v['max_deficit']} gola(e)"+(f" • {breakdown}" if breakdown else "")
             })
-        add("comeback_king","🔄 Comeback King","Wygrane po wcześniejszym przegrywaniu. Punktacja za największą odrobioną stratę w meczu: 1 gol = 1 pkt, 2 = 2 pkt, 3 = 4 pkt, 4 = 7 pkt, 5 = 11 pkt itd. Jeden mecz daje punkty tylko raz. Liczymy tylko mecze z kompletnym szczegółowym przebiegiem.",items)
+        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie. Liczymy zwycięstwa, w których trzeba było naprawdę wracać z daleka.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
@@ -4408,25 +4398,25 @@ class Database:
                 "score":round(100-ppm*20,4),"_sort":(-ppm,int(matches_n),-int(d["points"])),
                 "reason":f"{d['points']} pkt dyscypliny w {matches_n} meczach • {ppm:.2f} pkt/mecz • 🟨 {d['yellow']} • 🟥 {d['red']}"
             })
-        add("fair_play","😇 Fair Play","Najmniej punktów dyscyplinarnych na mecz. Minimum 3 mecze ze szczegółowym przebiegiem; żółta = 1 pkt, czerwona = 3 pkt.",items)
+        add("fair_play","😇 Fair Play","Da się wygrać bez koszenia wszystkiego, co się rusza. Minimum 3 mecze ze szczegółowym przebiegiem.",items)
 
         # Additional live rankings based on detailed EA FC event timelines.
         # They are informational and do not create an official Award winner.
         items=[cand(pid,v["penalties_awarded"],f"{v['penalties_awarded']} przyznanych karnych (trafione + niewykorzystane)")
                for pid,v in event_rank.items() if v["penalties_awarded"]>0]
-        add("simulator","🎭 Największy symulant","Ranking liczby karnych przyznanych graczowi FIFA Night — liczymy zarówno trafione, jak i niewykorzystane. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        add("simulator","🎭 Największy symulant","Kto najczęściej słyszy gwizdek i od razu wskazanie na wapno? Liczymy karne w trakcie meczu.",items,award=False)
         items=[cand(pid,v["penalty_goals"],f"{v['penalty_goals']} goli z karnych")
                for pid,v in event_rank.items() if v["penalty_goals"]>0]
-        add("penaldo","🐐 Penaldo","Ranking goli zdobytych z rzutów karnych w trakcie meczu. Seria karnych po meczu nie jest liczona. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        add("penaldo","🐐 Penaldo","Ile razy wapno zamieniło się w gola. Serie po meczu zostają poza tą klasyfikacją.",items,award=False)
         items=[cand(pid,v["first_goals"],f"{v['first_goals']} razy strzelił pierwszy gol meczu")
                for pid,v in event_rank.items() if v["first_goals"]>0]
-        add("first_goals","🥇 Najwięcej pierwszych goli","Ile razy gracz FIFA Night zdobył pierwszą bramkę meczu. Techniczny samobój z finału DE jest pomijany. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        add("first_goals","🥇 Najwięcej pierwszych goli","Kto najczęściej otwiera wynik. Techniczne 1:0 w finale DE oczywiście się nie wciska do statystyk.",items,award=False)
         items=[cand(pid,v["own_goals"],f"{v['own_goals']} samobój(e) jego drużyny")
                for pid,v in event_rank.items() if v["own_goals"]>0]
-        add("own_goals","↩️ Samobóje","Liczba samobójów popełnionych przez drużynę gracza. Techniczny samobój z finału DE nie jest liczony. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        add("own_goals","↩️ Samobóje","Czasem przeciwnik nawet nie musi strzelać. Techniczne 1:0 w finale DE się nie liczy.",items,award=False)
         items=[cand(pid,v["penalty_misses"],f"{v['penalty_misses']} niewykorzystany(e) karny(e)")
                for pid,v in event_rank.items() if v["penalty_misses"]>0]
-        add("penalty_misses","❌🎯 Niewykorzystane karne","Ranking niewykorzystanych rzutów karnych w trakcie meczu. Seria karnych po meczu nie jest liczona. Tylko mecze ze szczegółowym przebiegiem.",items,award=False)
+        add("penalty_misses","❌🎯 Niewykorzystane karne","Wapno było. Gol już niekoniecznie. Serie po meczu zostają poza tą klasyfikacją.",items,award=False)
 
         first_by={str(x["player_id"]):str(x.get("first_date") or "") for x in first_dates}
         # Debiut Roku ma własną tożsamość: oceniamy wyłącznie początek kariery FIFA Night,
@@ -4467,14 +4457,14 @@ class Database:
             primary=debut10 if debut10 else debut5
             add(
                 "debut","🚀 Debiut Roku",
-                "Porównujemy początek kariery w FIFA Night: osobno pierwsze 5 i pierwsze 10 meczów. Główny ranking opiera się na pierwszych 10.",
+                "Pierwsze mecze pamięta się najlepiej. Patrzymy osobno na start po 5 i 10 oficjalnych spotkaniach.",
                 primary
             )
             cats[-1]["debut_first5"]=top(debut5)
             cats[-1]["debut_first10"]=top(debut10)
             cats[-1]["debut_primary_window"]=10 if debut10 else 5
         items=[cand(pid,pc(pid,v)+v["w"]*2+(v["gf"]-v["ga"])*.4,f"maks. 1 tytuł • W% {pc(pid,v)} • {v['w']} W") for pid,v in ps.items() if v["m"]>=3 and v["titles"]<=1]
-        add("outsider","🏅 Najlepszy spoza dominatorów","Najlepszy wynik wśród graczy, którzy wygrali w roku najwyżej jeden turniej.",items)
+        add("outsider","🏅 Najlepszy spoza dominatorów","Dla tych, którzy jeszcze nie zapełnili półki pucharami, ale regularnie depczą liderom po piętach.",items)
         successful_teams=defaultdict(set)
         for (tid,pid),stages in stages_by_player_tournament.items():
             fmt=str(event_by.get(tid,{}).get("format_key") or "")
@@ -4522,7 +4512,7 @@ class Database:
                 "_sort":(goals,-team_matches,hattricks,str(scorer).casefold()),
                 "reason":f"{goals} goli • {team_matches} meczów {team_txt} • {hattricks} hat-trick(i) • gracz: {player}"
             })
-        add("player_scorers","👟 Król Strzelców FIFA Night","Liczymy gole konkretnego piłkarza dla konkretnego gracza. Przy remisie wyżej jest wynik osiągnięty w mniejszej liczbie meczów daną drużyną, a potem większa liczba hat-tricków.",items)
+        add("player_scorers","👟 Król Strzelców FIFA Night","Kto znalazł swojego napastnika idealnego? Liczymy gole konkretnego piłkarza zdobyte dla konkretnego gracza FIFA Night.",items)
         # finance for events completed this year
         finance=defaultdict(lambda:{"paid":0,"won":0})
         year_ids=set(tids)
@@ -4535,7 +4525,7 @@ class Database:
         for pid,v in finance.items():
             bal=v["won"]-v["paid"];fin_items.append(cand(pid,bal/100,f"bilans {(bal/100):+.2f} zł • wygrane {v['won']/100:.2f} zł • wpłaty {v['paid']/100:.2f} zł"))
         sponsor=min(fin_items,key=lambda x:x["score"],default=None)
-        add("finance","🦈 Rekin Finansowy","Najlepszy bilans finansowy roku. Na drugim końcu tabeli pokazujemy Sponsora FIFA Night.",fin_items,secondary=sponsor)
+        add("finance","🦈 Rekin Finansowy","Kto najlepiej wyszedł na FIFA Night w złotówkach? Na drugim końcu czeka honorowy Sponsor wieczorów.",fin_items,secondary=sponsor)
         # duel king
         dv=defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0})
         for m in matches:
@@ -4543,14 +4533,14 @@ class Database:
             for pid,gf,ga in ((str(m["home_player_id"]),int(m["home_score"]),int(m["away_score"])),(str(m["away_player_id"]),int(m["away_score"]),int(m["home_score"]))):
                 dv[pid]["m"]+=1;dv[pid]["gf"]+=gf;dv[pid]["ga"]+=ga;dv[pid]["w"]+=int(m.get("winner_player_id")==pid)
         items=[cand(pid,v["w"]/v["m"]*100+v["w"]*3+(v["gf"]-v["ga"])/v["m"]*2,f"{v['w']}/{v['m']} W • bilans {v['gf']}:{v['ga']}") for pid,v in dv.items() if v["m"]>=5]
-        add("duel","⚔️ Król 1 vs 1","Liczą się wyniki wyłącznie w oficjalnych meczach 1v1. Minimum 5 spotkań.",items,award=False)
+        add("duel","⚔️ Król 1 vs 1","Bez grup, bez drabinki, bez wymówek. Tylko oficjalne 1 VS 1; minimum 5 spotkań.",items,award=False)
         # non-individual categories
         rivalry=[]
         for (a,b),v in pair.items():
             if v["n"]<3:continue
             balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"]);score=v["n"]*5+balance*20+v["importance_points"]*2
             na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"));rivalry.append({"id":f"{a}|{b}","name":f"{na} vs {nb}","score":round(score,2),"reason":f"{v['n']} meczów • {v['aw']}:{v['bw']} w zwycięstwach • ważne mecze {v['important_matches']}"})
-        add("rivalry","⚔️ Rywalizacja Roku","Liczą się częste bezpośrednie mecze, wyrównany bilans i spotkania o większą stawkę. Minimum 3 mecze H2H w roku.",rivalry)
+        add("rivalry","⚔️ Rywalizacja Roku","Są pary, które po prostu lubią na siebie wpadać. Minimum 3 bezpośrednie mecze w roku.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
             if not v["m"]:continue
@@ -4559,14 +4549,14 @@ class Database:
             teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}"})
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
         worst_team=top(worst,1)[0] if worst else None
-        add("team_best","🏟️ Drużyny Roku","Najlepsza i najsłabsza drużyna roku liczone tym samym ratingiem: wyniki, bilans bramek, liczba meczów i tytuły. Oficjalny wybór dotyczy Drużyny Roku; na dole pokazujemy też najgorszą drużynę.",teamitems,secondary=worst_team)
+        add("team_best","🏟️ Drużyny Roku","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje.",teamitems,secondary=worst_team)
         scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
-        add("superscorer","⚡ Supersnajper Roku","Piłkarz z EA FC, który łącznie strzelił najwięcej wpisanych goli u wszystkich graczy.",scorer_items)
-        add("match_year","🎬 Mecz Roku","Liczą się przede wszystkim emocje: wyrównany wynik, liczba goli, karne oraz stawka i faza meczu.",match_candidates)
+        add("superscorer","⚡ Supersnajper Roku","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
+        add("match_year","🎬 Mecz Roku","Taki mecz, o którym jeszcze długo ktoś będzie mówił: „pamiętasz to…?”.",match_candidates)
         items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
-        add("minimalist","📐 Król Minimalistów","Najwięcej zwycięstw dokładnie jedną bramką.",items,award=False)
+        add("minimalist","📐 Król Minimalistów","Po co strzelać pięć, skoro jedna bramka przewagi też daje zwycięstwo?",items,award=False)
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
-        add("unlucky","🤕 Pechowiec Roku","Najwięcej minimalnych porażek jedną bramką lub po karnych.",items,award=False)
+        add("unlucky","🤕 Pechowiec Roku","Prawie się nie liczy. Statystyki i tak pamiętają każdą porażkę o włos.",items,award=False)
 
         # Summary of participant nominations across individual award categories.
         # Count a category at most once per player. Team/match/rivalry/EA-player
