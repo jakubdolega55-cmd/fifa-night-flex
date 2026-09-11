@@ -1,0 +1,9 @@
+FIFA NIGHT 1.0.2 — WHEEL/TV HOTFIX v2
+
+Validation:
+- backend smoke tests: 50/50 PASS
+- Python py_compile (ui.py): PASS
+- sequential reveal interval: ~4.5 s (mobile + TV + Streamlit draw views)
+- team wheel spin: ~10 s
+- TV AUTO: ~30 s
+- no backend schema changes in v2 timing tweak

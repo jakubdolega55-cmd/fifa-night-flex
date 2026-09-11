@@ -3035,9 +3035,9 @@ def render_tv_screen(tid:str):
     auto_slide=0
     if tv_mode=="🔄 AUTO":
         started=float(st.session_state.get(start_key) or time.time())
-        auto_slide=int(max(0,time.time()-started)//10)%4
+        auto_slide=int(max(0,time.time()-started)//30)%4
         labels=["🎮 TERAZ / NASTĘPNY","🗺️ SYTUACJA TURNIEJU","⚽ WYNIKI I STRZELCY","📊 FIFA NIGHT NA ŻYWO"]
-        st.caption(f"🔄 TV AUTO • {labels[auto_slide]} • zmiana co około 10 s")
+        st.caption(f"🔄 TV AUTO • {labels[auto_slide]} • zmiana co około 30 s")
     if t.get("status")=="completed":
         summary=db.tournament_summary(tid);champ=summary.get("champion") or "—"
         label="ZWYCIĘZCA 1 VS 1" if fmt=="duel1v1" else "MISTRZ FIFA NIGHT"
@@ -3169,7 +3169,7 @@ def render_tv_screen(tid:str):
             c1,c2=st.columns(2)
             with c1:st.markdown("#### Grupa A");st.dataframe(standings_df(tables["A"]),hide_index=True,use_container_width=True)
             with c2:st.markdown("#### Grupa B");st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
-    st.caption("📺 LIVE odświeża dane co 5 sekund. W trybie AUTO ekran sam przełącza widoki co około 10 sekund.")
+    st.caption("📺 LIVE odświeża dane co 5 sekund. W trybie AUTO ekran sam przełącza widoki co około 30 sekund.")
 
 def render_viewer_live(t):
     title="1 vs 1" if t.get("format_key")=="duel1v1" else f"{t['player_count']} graczy"

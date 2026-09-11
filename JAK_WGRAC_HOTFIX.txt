@@ -1,0 +1,30 @@
+FIFA NIGHT 1.0.2 — WHEEL / TV HOTFIX
+
+To jest MAŁY HOTFIX do obecnego RC2/PWA.
+Nie zawiera całego projektu.
+
+1. Rozpakuj ZIP.
+2. Skopiuj zawartość tego folderu na obecne repo FIFA Night.
+3. Zgódź się na podmianę plików.
+4. Nie kopiuj node_modules i nie kasuj innych plików repo.
+
+Podmieniane pliki:
+- app.py
+- ui.py
+- mobile_api.py
+- mobile/app.json
+- mobile/package.json
+- mobile/src/FifaScreen.tsx
+- tests/mobile_api_smoke.py
+
+Po wgraniu na GitHub Render powinien wdrożyć nowy backend/Streamlit.
+/api/v1/health powinno pokazać api_version 1.0.2.
+
+Android:
+cd mobile
+npm.cmd install
+npm.cmd run check
+npx.cmd expo-doctor
+npx.cmd eas-cli@latest build --platform android --profile preview
+
+Oczekiwany Android versionCode: 4.

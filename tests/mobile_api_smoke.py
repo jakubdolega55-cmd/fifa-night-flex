@@ -54,7 +54,7 @@ def req(method,path,*,json_data=None,headers=None,expect=200):
 
 # health/config/auth
 try:
-    d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.0.1'; ok('health')
+    d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.0.2'; ok('health')
     d,_=req('GET','/api/v1/config'); assert all(str(n) in d['formats'] for n in range(3,9)); ok('config formats 3-8')
     _,_=req('POST','/api/v1/tournaments',json_data={'player_names':['A','B','C'],'player_count':3,'format_key':'league3_final','is_test':False},expect=401); ok('official create requires controller')
     d,_=req('POST','/api/v1/auth/controller',json_data={'password':'test-admin'}); token=d['token']; AUTH={'Authorization':f'Bearer {token}'}; ok('controller login')

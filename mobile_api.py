@@ -26,7 +26,7 @@ from logic import (
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "1.0.1"
+API_VERSION = "1.0.2"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {

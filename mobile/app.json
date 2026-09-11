@@ -3,12 +3,12 @@
     "name": "FIFA Night",
     "slug": "fifa-night-mobile",
     "owner": "kubsi",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "android": {
       "package": "pl.fifanight.flex",
-      "versionCode": 3,
+      "versionCode": 4,
       "adaptiveIcon": {
         "backgroundColor": "#07111f"
       }

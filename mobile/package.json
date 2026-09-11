@@ -1,6 +1,6 @@
 {
   "name": "fifa-night-mobile",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
