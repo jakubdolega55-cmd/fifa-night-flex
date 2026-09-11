@@ -1,3 +1,4 @@
+import '@expo/metro-runtime';
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   ActivityIndicator,
@@ -10,8 +11,8 @@ import {
   Text,
   TextInput,
   View,
+  Platform,
 } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
 import {useKeepAwake} from 'expo-keep-awake';
 import FifaScreen from './src/FifaScreen';
 import StatsScreen from './src/StatsScreen';
@@ -20,6 +21,10 @@ import {api, API_URL} from './src/api';
 import {LiveResponse} from './src/types';
 import {colors} from './src/theme';
 import {Btn, Card, ErrorBox, Muted, Pill, ToggleRow} from './src/ui';
+import {getStoredItem,setStoredItem} from './src/storage';
+import {installWebCompat} from './src/webCompat';
+
+installWebCompat();
 
 type RootTab = 'fifa' | 'stats' | 'awards' | 'settings';
 const KEEP_AWAKE_KEY = 'fifa-night-keep-awake-v1';
@@ -87,7 +92,7 @@ function SettingsScreen({
   };
   const changeKeepAwake = async (value:boolean) => {
     setKeepAwake(value);
-    await SecureStore.setItemAsync(KEEP_AWAKE_KEY, value ? '1' : '0');
+    await setStoredItem(KEEP_AWAKE_KEY, value ? '1' : '0');
   };
 
   return (
@@ -137,8 +142,9 @@ function SettingsScreen({
 
       <Card>
         <Text style={s.cardTitle}>ℹ️ FIFA Night</Text>
-        <Muted>Aplikacja {APP_VERSION} • Android</Muted>
+        <Muted>Aplikacja {APP_VERSION} • {Platform.OS==='web'?'iPhone / PWA':'Android'}</Muted>
         <Muted>Wyniki i historia są wspólne z wersją Streamlit. Telefon jest pilotem, Neon pamięta resztę.</Muted>
+        {Platform.OS==='web'?<><Muted>Na iPhonie otwórz FIFA Night w Safari → Udostępnij → Dodaj do ekranu początkowego. Po instalacji uruchamiaj aplikację z ikony.</Muted><Muted>Wersja web wymaga internetu. Niewygaszanie ekranu zależy od obsługi przez Safari/iOS.</Muted></>:null}
       </Card>
     </ScrollView>
   );
@@ -194,7 +200,7 @@ export default function App() {
     mounted.current = true;
     (async () => {
       try {
-        const storedKeep = await SecureStore.getItemAsync(KEEP_AWAKE_KEY);
+        const storedKeep = await getStoredItem(KEEP_AWAKE_KEY);
         if (storedKeep !== null && mounted.current) setKeepAwake(storedKeep !== '0');
         if (await api.hasToken()) {
           try { await api.me(); if (mounted.current) setController(true); }
@@ -270,7 +276,7 @@ const s = StyleSheet.create({
   statusDot:{fontSize:12},statusText:{color:colors.text,fontWeight:'800',fontSize:13},
   loader:{flex:1,padding:30,alignItems:'center',justifyContent:'center',gap:13},
   loaderText:{color:colors.muted,fontWeight:'700'},
-  busyOverlay:{...StyleSheet.absoluteFillObject,backgroundColor:'rgba(4,10,18,.62)',alignItems:'center',justifyContent:'center',zIndex:30},
+  busyOverlay:{...StyleSheet.absoluteFill,backgroundColor:'rgba(4,10,18,.62)',alignItems:'center',justifyContent:'center',zIndex:30},
   busyBox:{backgroundColor:'#0d1a2c',borderWidth:1,borderColor:'#29435e',borderRadius:18,paddingHorizontal:25,paddingVertical:18,alignItems:'center',gap:9},
   busyText:{color:colors.text,fontWeight:'900'},
 });

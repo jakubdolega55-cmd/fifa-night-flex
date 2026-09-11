@@ -1,12 +1,13 @@
-import * as SecureStore from 'expo-secure-store';
+import {Platform} from 'react-native';
+import {deleteStoredItem,getStoredItem,setStoredItem} from './storage';
 import {LiveResponse, SetupResponse} from './types';
 
 const TOKEN_KEY = 'fifa-night-controller-token-v1';
-const rawBaseUrl = process.env.EXPO_PUBLIC_API_URL ?? '';
+const rawBaseUrl = process.env.EXPO_PUBLIC_API_URL ?? (Platform.OS==='web' ? 'https://fifa-night-api.onrender.com' : '');
 export const API_URL = rawBaseUrl.replace(/\/$/, '');
 
 async function tokenHeader(): Promise<Record<string,string>> {
-  const token = await SecureStore.getItemAsync(TOKEN_KEY);
+  const token = await getStoredItem(TOKEN_KEY);
   return token ? {Authorization:`Bearer ${token}`} : {};
 }
 
@@ -83,9 +84,23 @@ export const api = {
   abandon:(tid:string)=>jsonRequest<any>(`/api/v1/tournaments/${tid}/abandon`,{method:'POST'}),
   startNew:(tid:string)=>jsonRequest<LiveResponse>(`/api/v1/tournaments/${tid}/new`,{method:'POST'}),
 
-  scanMatch:async(tid:string,no:number,uris:string[])=>{
+  scanMatch:async(tid:string,no:number,images:Array<{uri:string;file?:any;fileName?:string|null;mimeType?:string|null}>)=>{
     const form = new FormData();
-    uris.forEach((uri,i)=>form.append('images',{uri,name:`ea-fc-${i+1}.jpg`,type:'image/jpeg'} as any));
+    if(Platform.OS==='web'){
+      for(let i=0;i<images.length;i++){
+        const image=images[i];
+        if(!image?.uri)continue;
+        if(image.file){
+          form.append('images',image.file, image.fileName || `ea-fc-${i+1}.jpg`);
+        }else{
+          const response=await fetch(image.uri);
+          const blob=await response.blob();
+          form.append('images',blob as any,image.fileName || `ea-fc-${i+1}.jpg`);
+        }
+      }
+    }else{
+      images.forEach((image,i)=>image?.uri && form.append('images',{uri:image.uri,name:image.fileName||`ea-fc-${i+1}.jpg`,type:image.mimeType||'image/jpeg'} as any));
+    }
     return formRequest<any>(`/api/v1/tournaments/${tid}/matches/${no}/scan-preview`,form);
   },
 
@@ -105,13 +120,13 @@ export const api = {
 
   login:async(password:string)=>{
     const d=await jsonRequest<{token:string}>('/api/v1/auth/controller',{method:'POST',body:JSON.stringify({password})});
-    await SecureStore.setItemAsync(TOKEN_KEY,d.token);
+    await setStoredItem(TOKEN_KEY,d.token);
     return d;
   },
   me:()=>jsonRequest<any>('/api/v1/auth/me'),
-  logout:()=>SecureStore.deleteItemAsync(TOKEN_KEY),
-  hasToken:async()=>Boolean(await SecureStore.getItemAsync(TOKEN_KEY)),
-  token:()=>SecureStore.getItemAsync(TOKEN_KEY),
+  logout:()=>deleteStoredItem(TOKEN_KEY),
+  hasToken:async()=>Boolean(await getStoredItem(TOKEN_KEY)),
+  token:()=>getStoredItem(TOKEN_KEY),
 };
 
 export async function authHeaders(){return tokenHeader();}

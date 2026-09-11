@@ -29,6 +29,13 @@
       "eas": {
         "projectId": "cbb45c49-4757-4587-8a05-e4814cb5f60a"
       }
+    },
+    "web": {
+      "output": "single",
+      "name": "FIFA Night",
+      "shortName": "FIFA Night",
+      "lang": "pl",
+      "favicon": "./public/favicon.png"
     }
   }
 }

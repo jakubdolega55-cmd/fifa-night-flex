@@ -7,7 +7,10 @@
     "start": "expo start",
     "android": "expo start --android",
     "check": "tsc --noEmit",
-    "build:apk": "eas build --platform android --profile preview"
+    "build:apk": "eas build --platform android --profile preview",
+    "web": "expo start --web",
+    "build:web": "expo export --platform web && node scripts/pwa-postbuild.mjs",
+    "check:web": "tsc --noEmit"
   },
   "dependencies": {
     "expo": "~57.0.20",
@@ -18,7 +21,10 @@
     "expo-secure-store": "~57.0.3",
     "expo-sharing": "~57.0.18",
     "react": "19.2.3",
-    "react-native": "0.86.3"
+    "react-native": "0.86.3",
+    "@expo/metro-runtime": "~57.0.15",
+    "react-dom": "19.2.3",
+    "react-native-web": "~0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",

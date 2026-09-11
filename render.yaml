@@ -17,3 +17,19 @@ services:
         sync: false
       - key: GOOGLE_VISION_API_KEY
         sync: false
+
+  - type: web
+    name: fifa-night-pwa
+    runtime: static
+    rootDir: mobile
+    buildCommand: npm install && npm run build:web
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: EXPO_PUBLIC_API_URL
+        value: https://fifa-night-api.onrender.com
