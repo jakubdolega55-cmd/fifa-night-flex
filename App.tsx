@@ -23,7 +23,7 @@ import {Btn, Card, ErrorBox, Muted, Pill, ToggleRow} from './src/ui';
 
 type RootTab = 'fifa' | 'stats' | 'awards' | 'settings';
 const KEEP_AWAKE_KEY = 'fifa-night-keep-awake-v1';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 
 function KeepAwakeGate() {
   useKeepAwake('fifa-night-controller');
@@ -166,15 +166,27 @@ export default function App() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const [nextLive, nextOptions] = await Promise.all([api.live(), api.setupOptions()]);
+      // LIVE is the only request needed for an already active FIFA Night.  Keeping
+      // /config out of the polling loop makes warm starts and phone<->TV sync much faster.
+      const nextLive = await api.live();
       if (!mounted.current) return;
       setLive(nextLive);
-      setOptions(nextOptions);
       setConnectionError('');
     } catch (e:any) {
       if (mounted.current) setConnectionError(e?.message ?? String(e));
     } finally {
       if (mounted.current) { setRefreshing(false); setInitializing(false); }
+    }
+  }, []);
+
+  const loadOptions = useCallback(async () => {
+    try {
+      const nextOptions=await api.setupOptions();
+      if (mounted.current) setOptions(nextOptions);
+    } catch (e:any) {
+      // /config is only needed when starting a new night.  Do not let a slower
+      // config request destabilise the fast LIVE polling loop for an active game.
+      if (mounted.current) setConnectionError(prev=>prev || (e?.message ?? String(e)));
     }
   }, []);
 
@@ -188,11 +200,16 @@ export default function App() {
           try { await api.me(); if (mounted.current) setController(true); }
           catch { await api.logout(); if (mounted.current) setController(false); }
         }
-      } finally { await refresh(); }
+      } finally {
+        // Do not make the first screen wait for the relatively heavier setup config.
+        // An active tournament can render as soon as /live answers; config loads beside it.
+        void loadOptions();
+        await refresh();
+      }
     })();
     const timer = setInterval(() => { void refresh(); }, 5000);
     return () => { mounted.current = false; clearInterval(timer); };
-  }, [refresh]);
+  }, [refresh, loadOptions]);
 
   const tournamentActive = live?.tournament?.status === 'active';
   const keepScreenOn = Boolean(keepAwake && controller && tournamentActive);
@@ -204,8 +221,8 @@ export default function App() {
       <Header controller={controller} refreshing={refreshing} onRefresh={()=>void refresh()}/>
       {connectionError && live ? <View style={s.connectionBar}><Text style={s.connectionBarText}>⚠️ Chwilowo bez połączenia. Pokazuję ostatni odczyt.</Text></View> : null}
       <View style={s.content}>
-        {initializing && !live && !options ? (
-          <View style={s.loader}><ActivityIndicator color={colors.green} size="large"/><Text style={s.loaderText}>Łączę z FIFA Night…</Text>{connectionError?<ErrorBox message={connectionError}/>:null}</View>
+        {(initializing && !live) || (live && !live.tournament && !options) ? (
+          <View style={s.loader}><ActivityIndicator color={colors.green} size="large"/><Text style={s.loaderText}>{connectionError?'Próbuję ponownie połączyć…':'Łączę z FIFA Night…'}</Text><Muted center>{!connectionError?'Przy pierwszym wejściu uśpiony serwer może potrzebować chwili na start.':''}</Muted>{connectionError?<ErrorBox message={connectionError}/>:null}</View>
         ) : tab === 'fifa' ? (
           <FifaScreen live={live} options={options ?? {}} controller={controller} refresh={refresh} setBusy={setBusy}/>
         ) : tab === 'stats' ? (

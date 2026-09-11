@@ -26,7 +26,7 @@ from logic import (
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "1.0.0"
+API_VERSION = "1.0.1"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {
@@ -1280,6 +1280,20 @@ def get_live() -> dict[str, Any]:
     return live_payload()
 
 
+@app.get("/api/v1/tv/feed/{tournament_id}")
+def get_tv_feed(tournament_id: str) -> dict[str, Any]:
+    """Small public feed for the Streamlit TV synchronizer.
+
+    The TV browser polls this endpoint frequently during draws.  Events are queued in
+    the database, so a quick sequence of phone clicks is replayed in order instead of
+    being collapsed into the last visible state.
+    """
+    current=db.current_tournament()
+    if not current or str(current.get("id"))!=str(tournament_id):
+        raise HTTPException(404,"Ten FIFA Night nie jest już aktywną rozgrywką.")
+    return db.tv_feed(tournament_id,40)
+
+
 @app.get("/api/v1/config")
 def get_config() -> dict[str, Any]:
     formats: dict[str, list[dict[str, str]]] = {}
@@ -1290,10 +1304,11 @@ def get_config() -> dict[str, Any]:
     }
     for count, keys in format_keys.items():
         formats[str(count)] = [{"key": k, "label": FORMAT_LABELS.get(k, k), "matches": FORMAT_MATCH_COUNTS.get(k, "")} for k in keys]
+    official_names=db.official_player_names()
     return {
         "api_version": API_VERSION,
-        "players": db.official_player_names(),
-        "official_names": db.official_player_names(),
+        "players": official_names,
+        "official_names": official_names,
         "last_player_count": db.last_player_count(),
         "last_lineups": {str(n): db.last_lineup(n) for n in range(3, 9)},
         "last_stake": db.last_stake(),
@@ -1502,6 +1517,8 @@ def get_player_profile(player_id: str) -> dict[str, Any]:
     try:
         center = db.achievement_center()
         achievement = next((p for p in center.get("players", []) if str(p.get("player_id")) == str(player_id)), None)
+        if achievement is not None:
+            achievement={**achievement,"catalog":center.get("catalog") or []}
     except Exception: achievement = None
     try: awards = db.player_award_wins(player_id)
     except Exception: awards = []

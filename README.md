@@ -1,4 +1,4 @@
-# FIFA Night Mobile 1.0
+# FIFA Night Mobile 1.0.1 RC2
 
 Natywna aplikacja Android (React Native + Expo) sterująca tym samym FIFA Night, którego wersja web/TV działa w Streamlit.
 
@@ -9,8 +9,8 @@ Architektura: `APK -> FastAPI/Render -> Neon <- Streamlit/TV`. APK nie zawiera `
 - Expo/EAS: `@kubsi/fifa-night-mobile`
 - Android package: `pl.fifanight.flex`
 - EAS projectId: `cbb45c49-4757-4587-8a05-e4814cb5f60a`
-- Mobile version: `1.0.0`
-- Android versionCode: `2`
+- Mobile version: `1.0.1`
+- Android versionCode: `3`
 
 Nie zmieniaj package ID ani nie twórz nowego keystore, jeśli APK ma aktualizować wcześniej zainstalowaną wersję v0.1.
 

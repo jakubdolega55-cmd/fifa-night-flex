@@ -176,6 +176,10 @@ class Database:
                 source_match_no INTEGER NOT NULL, served_match_no INTEGER,
                 created_at TEXT NOT NULL, served_at TEXT,
                 UNIQUE (tournament_id, player_id, normalized_footballer, reason, source_match_no))""",
+            """CREATE TABLE IF NOT EXISTS flex_live_events (
+                id TEXT PRIMARY KEY, tournament_id TEXT NOT NULL, kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL, created_at TEXT NOT NULL)""",
+            """CREATE INDEX IF NOT EXISTS idx_flex_live_events_tid_created ON flex_live_events (tournament_id, created_at)""",
         ]
         with self.connect() as conn:
             for s in stmts: conn.execute(s)
@@ -945,6 +949,69 @@ class Database:
         extra = json.loads(meta["extra_json"] or "{}")
         return meta, extra
 
+    def _publish_live_event_conn(self, conn, tid: str, kind: str, payload: dict | None = None) -> dict:
+        """Persist a short-lived broadcast event for the Streamlit TV screen.
+
+        Events are deliberately separate from tournament state.  A TV client may poll
+        less frequently than the phone clicks; keeping a small queue means it can play
+        every draw animation in order instead of seeing only the final DB state.
+        """
+        event={
+            "id":str(uuid.uuid4()),
+            "tournament_id":str(tid),
+            "kind":str(kind),
+            "payload":payload or {},
+            "created_at":now_iso(),
+        }
+        conn.execute(self._sql("INSERT INTO flex_live_events (id,tournament_id,kind,payload_json,created_at) VALUES (?,?,?,?,?)"),
+                     (event["id"],str(tid),event["kind"],json.dumps(event["payload"],ensure_ascii=False),event["created_at"]))
+        # Retain a generous queue; cleanup is intentionally simple and portable across
+        # SQLite/PostgreSQL.  This also prevents a long-running install growing forever.
+        old=self._fetchall(conn,"SELECT id FROM flex_live_events WHERE tournament_id=? ORDER BY created_at DESC",(tid,))
+        for row in old[80:]:
+            conn.execute(self._sql("DELETE FROM flex_live_events WHERE id=?"),(row["id"],))
+        return event
+
+    def publish_live_event(self, tid: str, kind: str, payload: dict | None = None) -> dict:
+        with self.connect() as conn:
+            return self._publish_live_event_conn(conn,tid,kind,payload)
+
+    def _structure_live_payload_conn(self, conn, tid: str, format_key: str, draw: dict, redraw_count: int = 0) -> dict:
+        rows=self._fetchall(conn,"""SELECT tp.player_id,p.name FROM tournament_players tp
+            JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?""",(tid,))
+        names={str(r.get("player_id")):str(r.get("name") or "?") for r in rows}
+        slots=draw.get("slots") or {}
+        items=[{"slot":str(slot),"player_id":str(pid),"name":names.get(str(pid),"?")} for slot,pid in slots.items()]
+        return {"format_key":str(format_key),"items":items,"redraw_count":int(redraw_count or 0)}
+
+    def tv_feed(self, tid: str, limit: int = 40) -> dict:
+        """Lightweight feed used by the browser-side TV synchronizer."""
+        with self.connect() as conn:
+            t=self._fetchone(conn,"SELECT id,status,phase,is_test,created_at,completed_at FROM tournaments WHERE id=?",(tid,))
+            if not t: return {"tournament":None,"events":[]}
+            meta=self._fetchone(conn,"SELECT player_count,format_key,team_pool_json,draw_json,extra_json,draw_revealed,redraw_count FROM flex_tournament_meta WHERE tournament_id=?",(tid,)) or {}
+            players=self._fetchall(conn,"""SELECT tp.player_id,tp.team,tp.team_reveal_order,tp.team_revealed,tp.group_name,p.name
+                FROM tournament_players tp JOIN players p ON p.id=tp.player_id
+                WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order""",(tid,))
+            rows=self._fetchall(conn,"SELECT id,kind,payload_json,created_at FROM flex_live_events WHERE tournament_id=? ORDER BY created_at DESC",(tid,))[:max(1,min(int(limit),80))]
+        events=[]
+        for r in reversed(rows):
+            try: payload=json.loads(r.get("payload_json") or "{}")
+            except Exception: payload={}
+            events.append({"id":r.get("id"),"kind":r.get("kind"),"payload":payload,"created_at":r.get("created_at")})
+        try: extra=json.loads(meta.get("extra_json") or "{}")
+        except Exception: extra={}
+        try: draw=json.loads(meta.get("draw_json") or "{}")
+        except Exception: draw={}
+        try: pool=json.loads(meta.get("team_pool_json") or "[]")
+        except Exception: pool=[]
+        return {
+            "tournament":{**t,"player_count":int(meta.get("player_count") or 0),"format_key":meta.get("format_key") or ""},
+            "players":players,
+            "meta":{"team_pool":pool,"draw":draw,"draw_revealed":bool(int(meta.get("draw_revealed") or 0)),"redraw_count":int(meta.get("redraw_count") or 0),"extra":extra},
+            "events":events,
+        }
+
     def reveal_draft_order(self, tid: str) -> None:
         with self.connect() as conn:
             t=self._fetchone(conn,"SELECT phase FROM tournaments WHERE id=?",(tid,))
@@ -952,6 +1019,8 @@ class Database:
             meta,extra=self._meta_extra_conn(conn,tid)
             extra["draft_order_revealed"]=True
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+            players=self._fetchall(conn,"SELECT tp.player_id,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order",(tid,))
+            self._publish_live_event_conn(conn,tid,"draft_order",{"players":[{"player_id":x.get("player_id"),"name":x.get("name")} for x in players],"redraw_count":int(extra.get("draft_redraw_count") or 0)})
 
     def reroll_draft_order(self, tid: str) -> None:
         rng=random.SystemRandom()
@@ -976,6 +1045,7 @@ class Database:
             extra["draft_redraw_count"]=int(extra.get("draft_redraw_count",0))+1
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             players=self._fetchall(conn,"SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order",(tid,))
+            self._publish_live_event_conn(conn,tid,"draft_order",{"players":[{"player_id":x.get("player_id"),"name":x.get("name")} for x in players],"redraw_count":int(extra["draft_redraw_count"])})
             return {"players":players,"redraw_count":int(extra["draft_redraw_count"])}
 
     def confirm_draft_order(self, tid: str) -> None:
@@ -1031,6 +1101,8 @@ class Database:
                 if self._norm_team_name(slot) in picked_norm: raise ValueError("Ta drużyna została już wybrana.")
                 team=slot
             conn.execute(self._sql("UPDATE tournament_players SET team=?,team_revealed=1 WHERE tournament_id=? AND player_id=?"),(team,tid,player_id))
+            prow=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(player_id,)) or {}
+            self._publish_live_event_conn(conn,tid,"draft_pick",{"player_id":player_id,"name":prow.get("name") or "?","team":team})
             left=self._fetchone(conn,"SELECT COUNT(*) AS c FROM tournament_players WHERE tournament_id=? AND team_revealed=0",(tid,))
             finished=not left or int(left["c"])==0
             if finished: conn.execute(self._sql("UPDATE tournaments SET phase='structure_draw' WHERE id=?"),(tid,))
@@ -1040,7 +1112,7 @@ class Database:
         with self.connect() as conn:
             # One state query instead of separate meta + player queries. This path is
             # hit on every wheel click, so keeping it short matters for perceived speed.
-            row=self._fetchone(conn,"""SELECT tp.player_id,tp.team,p.name,fm.extra_json
+            row=self._fetchone(conn,"""SELECT tp.player_id,tp.team,p.name,fm.extra_json,fm.team_pool_json
                 FROM tournament_players tp
                 JOIN players p ON p.id=tp.player_id
                 JOIN flex_tournament_meta fm ON fm.tournament_id=tp.tournament_id
@@ -1054,8 +1126,14 @@ class Database:
                 pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
                 extra["pending_wildcard"]=pending
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+                try: pool=json.loads(row.get("team_pool_json") or "[]")
+                except Exception: pool=[]
+                self._publish_live_event_conn(conn,tid,"team_wheel",{"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":"🃏 Wild Card","pool":pool,"wildcard":True})
                 return {**pending,"wildcard":True}
             conn.execute(self._sql("UPDATE tournament_players SET team_revealed=1 WHERE tournament_id=? AND player_id=?"),(tid,row["player_id"]))
+            try: pool=json.loads(row.get("team_pool_json") or "[]")
+            except Exception: pool=[]
+            self._publish_live_event_conn(conn,tid,"team_wheel",{"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":row["team"],"pool":pool,"wildcard":False})
             return {"player_id":row["player_id"],"name":row["name"],"team":row["team"],"wildcard":False}
 
     def pending_wildcard(self, tid: str) -> dict | None:
@@ -1072,6 +1150,8 @@ class Database:
             conn.execute(self._sql("UPDATE tournament_players SET team=?,team_revealed=1 WHERE tournament_id=? AND player_id=?"),(team,tid,player_id))
             extra.pop("pending_wildcard",None)
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+            prow=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(player_id,)) or {}
+            self._publish_live_event_conn(conn,tid,"wildcard_confirm",{"player_id":player_id,"name":prow.get("name") or "?","team":team})
             return team
 
     def start_structure_draw(self, tid: str) -> None:
@@ -1079,6 +1159,7 @@ class Database:
             left = self._fetchone(conn, "SELECT COUNT(*) AS c FROM tournament_players WHERE tournament_id=? AND team_revealed=0", (tid,))
             if left and int(left["c"]) > 0: raise ValueError("Najpierw zakończ losowanie drużyn.")
             conn.execute(self._sql("UPDATE tournaments SET phase='structure_draw' WHERE id=?"), (tid,))
+            self._publish_live_event_conn(conn,tid,"stage",{"phase":"structure_draw","title":"Losowanie struktury turnieju"})
 
     def _apply_draw_groups_conn(self, conn, tid: str, format_key: str, draw: dict) -> None:
         # Reset group metadata first.
@@ -1097,7 +1178,11 @@ class Database:
         # metadata is only needed once the structure is accepted, so don't perform
         # 6–8 remote UPDATEs before the reveal animation can start.
         with self.connect() as conn:
+            meta=self._fetchone(conn,"SELECT format_key,draw_json,redraw_count FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
+            if not meta: raise ValueError("Brak konfiguracji turnieju.")
             conn.execute(self._sql("UPDATE flex_tournament_meta SET draw_revealed=1 WHERE tournament_id=?"), (tid,))
+            draw=json.loads(meta.get("draw_json") or "{}")
+            self._publish_live_event_conn(conn,tid,"structure_draw",self._structure_live_payload_conn(conn,tid,meta.get("format_key") or "",draw,int(meta.get("redraw_count") or 0)))
 
     def reroll_structure(self, tid: str) -> None:
         rng = random.SystemRandom()
@@ -1124,8 +1209,10 @@ class Database:
                 new=apply_cross_tournament_bye_priority(new,meta["format_key"],carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 extra["cross_tournament_priority"]=carry
             conn.execute(self._sql("UPDATE flex_tournament_meta SET draw_json=?,extra_json=?,draw_revealed=1,redraw_count=redraw_count+1 WHERE tournament_id=?"), (json.dumps(new),json.dumps(extra),tid))
+            new_count=int(meta.get("redraw_count") or 0)+1
+            self._publish_live_event_conn(conn,tid,"structure_draw",self._structure_live_payload_conn(conn,tid,meta["format_key"],new,new_count))
             # As above, defer group metadata writes until the draw is accepted.
-            return {"draw":new,"redraw_count":int(meta.get("redraw_count") or 0)+1,"format_key":meta["format_key"]}
+            return {"draw":new,"redraw_count":new_count,"format_key":meta["format_key"]}
 
     def confirm_structure(self, tid: str) -> None:
         rng = random.SystemRandom()
@@ -1153,6 +1240,7 @@ class Database:
                 conn.execute(self._sql("INSERT INTO flex_match_sources (tournament_id,match_no,home_source,away_source) VALUES (?,?,?,?)"), (tid,item["match_no"],item["home"],item["away"]))
             conn.execute(self._sql("UPDATE tournaments SET phase='active' WHERE id=?"), (tid,))
             self._resolve_all_conn(conn, tid, meta["format_key"])
+            self._publish_live_event_conn(conn,tid,"tournament_start",{"format_key":meta["format_key"]})
 
     def _matches_conn(self, conn, tid: str) -> list[dict]:
         return self._fetchall(conn, """SELECT m.*, hp.name home_name, ap.name away_name, htp.team home_team, atp.team away_team
@@ -1301,7 +1389,9 @@ class Database:
             self._resolve_all_conn(conn,tid,"double5")
             chosen=int(extra["d5_opponent_match"]); m=mm[chosen]
             pid=m.get("winner_player_id"); name=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(pid,)) if pid else None
-            return {"match_no":chosen,"player_id":pid,"name":name["name"] if name else "?"}
+            result={"match_no":chosen,"player_id":pid,"name":name["name"] if name else "?"}
+            self._publish_live_event_conn(conn,tid,"special_draw",{"special_kind":"double5_opponent",**result})
+            return result
 
     def ack_double5_draw(self, tid: str) -> None:
         with self.connect() as conn:
@@ -1377,7 +1467,9 @@ class Database:
                 pid=self._loser_of(mm.get(no))
                 if pid: candidates.append({"match_no":no,"player_id":pid,"name":players.get(pid,"?")})
             lucky_no=int(extra["d7_lb_bye_match"]); lucky=next((c for c in candidates if int(c["match_no"])==lucky_no),None)
-            return {"pairs":pairs,"candidates":candidates,"selected_lucky":lucky}
+            result={"pairs":pairs,"candidates":candidates,"selected_lucky":lucky}
+            self._publish_live_event_conn(conn,tid,"special_draw",{"special_kind":"double7_combined",**result})
+            return result
 
     def ack_double7_combined_draw(self, tid: str) -> None:
         with self.connect() as conn:
@@ -1435,7 +1527,9 @@ class Database:
             out=[]
             for no in ((4,5) if fmt=="double7" else (5,6)):
                 m=by_no[no];out.append({"match_no":no,"stage":"WB","home_name":m.get("home_name"),"away_name":m.get("away_name")})
-            return {"format_key":fmt,"pairs":out}
+            result={"format_key":fmt,"pairs":out}
+            self._publish_live_event_conn(conn,tid,"special_draw",{"special_kind":"double_wb","format_key":fmt,"pairs":out})
+            return result
 
     def ack_double_wb_draw(self, tid: str) -> None:
         with self.connect() as conn:
@@ -1477,7 +1571,9 @@ class Database:
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             self._resolve_all_conn(conn,tid,"double7")
             no=int(extra["d7_lb_bye_match"]); pid=self._loser_of(mm.get(no)); name=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(pid,)) if pid else None
-            return {"match_no":no,"player_id":pid,"name":name["name"] if name else "?"}
+            result={"match_no":no,"player_id":pid,"name":name["name"] if name else "?"}
+            self._publish_live_event_conn(conn,tid,"special_draw",{"special_kind":"double7_lb_bye",**result})
+            return result
 
     def ack_double7_lb_draw(self, tid: str) -> None:
         with self.connect() as conn:
@@ -1597,6 +1693,19 @@ class Database:
         extra["playoff_sources"]=src; extra["playoff_display_sources"]=display
         conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
         self._resolve_all_conn(conn,tid,fmt)
+        rows2=self._matches_conn(conn,tid); mm2={int(m["match_no"]):m for m in rows2}
+        if fmt in ("groups6","groups6_full"): start=7
+        elif fmt in ("groups7","groups7_sf"): start=10
+        else: start=13
+        pairs=[]
+        for no in range(start,start+2):
+            m=mm2.get(no) or {}
+            if m.get("home_player_id") and m.get("away_player_id"):
+                pairs.append({"match_no":no,"stage":m.get("stage"),"home_name":m.get("home_name"),"away_name":m.get("away_name")})
+        direct=[]
+        if fmt in ("groups6_full","groups7","groups8_barrage"):
+            direct=[{"group":"A","name":ta[0]["name"]},{"group":"B","name":tb[0]["name"]}]
+        self._publish_live_event_conn(conn,tid,"special_draw",{"special_kind":"group_playoffs","format_key":fmt,"pairs":pairs,"direct":direct})
         return extra
 
     def group_playoff_reveal_state(self, tid: str) -> dict | None:

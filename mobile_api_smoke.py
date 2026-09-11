@@ -54,7 +54,7 @@ def req(method,path,*,json_data=None,headers=None,expect=200):
 
 # health/config/auth
 try:
-    d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.0.0'; ok('health')
+    d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.0.1'; ok('health')
     d,_=req('GET','/api/v1/config'); assert all(str(n) in d['formats'] for n in range(3,9)); ok('config formats 3-8')
     _,_=req('POST','/api/v1/tournaments',json_data={'player_names':['A','B','C'],'player_count':3,'format_key':'league3_final','is_test':False},expect=401); ok('official create requires controller')
     d,_=req('POST','/api/v1/auth/controller',json_data={'password':'test-admin'}); token=d['token']; AUTH={'Authorization':f'Bearer {token}'}; ok('controller login')
@@ -65,6 +65,20 @@ except Exception as e:
 
 def current():
     d,_=req('GET','/api/v1/live'); return d.get('tournament')
+
+# Phone -> TV event queue: a draw must be available immediately and in a replayable feed.
+try:
+    d,_=req('POST','/api/v1/tournaments',json_data={'player_names':['TV A','TV B','TV C','TV D','TV E'],'player_count':5,'format_key':'double5','is_test':True})
+    tv_tid=d['id']
+    r,_=req('POST',f'/api/v1/tournaments/{tv_tid}/teams/reveal')
+    feed,_=req('GET',f'/api/v1/tv/feed/{tv_tid}')
+    ev=[x for x in feed.get('events',[]) if x.get('kind')=='team_wheel']
+    assert ev and ev[-1].get('payload',{}).get('player_id')==r.get('revealed',{}).get('player_id')
+    assert ev[-1].get('payload',{}).get('team')
+    ok('phone draw is queued for synchronized TV replay')
+    req('POST',f'/api/v1/tournaments/{tv_tid}/reset')
+except Exception as e:
+    fail('phone draw is queued for synchronized TV replay',repr(e)); traceback.print_exc()
 
 def setup_tournament(count,fmt,is_test=True,auth=None,stake=0):
     names=[f'P{count}_{i+1}' for i in range(count)]

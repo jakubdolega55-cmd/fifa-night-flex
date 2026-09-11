@@ -201,3 +201,73 @@ def render_playoff_reveal(format_key: str, pairs: list[dict], direct: list[dict]
         cards.append(f"<div class='pair' style='--d:{1.0+i*.75:.2f}s'><span>{stage} • M{int(p.get('match_no') or 0)}</span><b>{html.escape(str(p.get('home_name') or '?'))}</b><i>VS</i><b>{html.escape(str(p.get('away_name') or '?'))}</b></div>")
     headline="FAZA PUCHAROWA" if format_key!="groups6" else "PÓŁFINAŁY"
     components.html(f"""<div class='po'><div class='eye'>FAZA GRUPOWA ZAKOŃCZONA</div><div class='title'>{headline}</div>{direct_html}<div class='pairs'>{''.join(cards)}</div><div class='foot'>VAR przeliczył tabelę. Reklamacji brak.</div></div><style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.po{{max-width:850px;margin:auto;padding:24px;border-radius:24px;background:radial-gradient(circle at 50% 0,#163b46,#101d32 45%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center}}.eye{{font-size:11px;font-weight:950;letter-spacing:.18em;color:#67e8f9}}.title{{font-size:27px;font-weight:1000;margin:5px 0 16px}}.direct{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}}.bye{{padding:14px;border-radius:16px;background:#052e2b;border:1px solid #10b981;display:flex;flex-direction:column}}.bye span{{font-size:10px;color:#6ee7b7;font-weight:900}}.bye b{{font-size:18px}}.bye em{{font-style:normal;font-size:10px;color:#a7f3d0;font-weight:900}}.pairs{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.pair{{padding:17px 12px;border-radius:18px;background:#111c31;border:1px solid #334155;display:grid;gap:4px;opacity:0;transform:translateY(8px);animation:reveal .42s ease var(--d) forwards}}.pair span{{font-size:10px;letter-spacing:.1em;color:#94a3b8;font-weight:900}}.pair b{{font-size:18px}}.pair i{{font-style:normal;color:#64748b;font-size:11px;font-weight:900}}.foot{{margin-top:14px;color:#86efac;opacity:0;animation:reveal .35s ease 2.5s forwards}}@keyframes reveal{{to{{opacity:1;transform:none}}}}@media(max-width:620px){{.po{{padding:16px 8px;border-radius:18px}}.direct,.pairs{{grid-template-columns:1fr;gap:8px}}.pair b,.bye b{{overflow-wrap:anywhere;word-break:break-word}}.title{{font-size:22px}}}}</style>{FIT_SCRIPT}""",height=430 if direct else 330,scrolling=True)
+
+
+def render_synced_setup_tv(tid: str, api_url: str):
+    """Browser-side TV view for pre-tournament draws controlled from the phone.
+
+    JavaScript polls the lightweight API feed directly.  This avoids Streamlit's
+    multi-second rerun cadence and keeps a queue of draw events, so rapid phone actions
+    are animated one by one instead of collapsing into the final state.
+    """
+    import json as _json
+    feed_url=f"{str(api_url).rstrip('/')}/api/v1/tv/feed/{tid}"
+    url_js=_json.dumps(feed_url)
+    components.html(f"""
+    <div id="tvroot" class="tvroot">
+      <div class="top"><div><div class="eyebrow">FIFA NIGHT • TV SYNC</div><div id="headline" class="headline">Łączę ekran z losowaniem…</div></div><div class="live"><i></i> TELEFON STERUJE</div></div>
+      <div id="stage" class="stage"><div class="loader"></div><div class="muted">Czekam na stan turnieju.</div></div>
+      <div class="foot">Losowania są kolejkowane — ekran nie pomija szybkich akcji z telefonu.</div>
+    </div>
+    <style>
+    html,body{{margin:0;background:transparent;font-family:Inter,Segoe UI,system-ui;color:#f8fafc}}*{{box-sizing:border-box}}
+    .tvroot{{max-width:1050px;margin:0 auto;padding:22px 24px 18px;border-radius:26px;background:radial-gradient(circle at 50% 0,#173853 0,#0f1d31 43%,#091321 100%);border:1px solid rgba(148,163,184,.22);min-height:590px;box-shadow:0 18px 55px rgba(2,8,23,.25)}}
+    .top{{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:18px}}.eyebrow{{font-size:11px;letter-spacing:.18em;font-weight:950;color:#7dd3fc}}.headline{{font-size:clamp(25px,4vw,38px);font-weight:1000;margin-top:3px}}
+    .live{{font-size:11px;font-weight:950;letter-spacing:.08em;color:#86efac;background:#062c25;border:1px solid #145c48;border-radius:999px;padding:8px 12px;white-space:nowrap}}.live i{{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;margin-right:6px;box-shadow:0 0 0 4px rgba(52,211,153,.12)}}
+    .stage{{min-height:450px;display:grid;place-items:center}}.muted{{color:#94a3b8}}.foot{{text-align:center;color:#64748b;font-size:12px;margin-top:8px}}
+    .grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%}}.card{{padding:17px;border-radius:18px;background:#101c31;border:1px solid #2a4059}}.card b{{font-size:20px}}.card small{{display:block;color:#94a3b8;font-weight:850;letter-spacing:.08em;margin-bottom:4px}}
+    .order{{width:min(720px,100%);display:grid;gap:8px}}.row{{padding:13px 16px;border-radius:15px;background:#101c31;border:1px solid #2a4059;display:flex;align-items:center;gap:14px;opacity:0;transform:translateY(9px);animation:reveal .42s ease var(--d) forwards}}.num{{width:34px;height:34px;border-radius:999px;background:#18324b;color:#7dd3fc;display:grid;place-items:center;font-weight:950}}.row b{{font-size:21px}}
+    .wheelWrap{{width:100%;display:grid;grid-template-columns:minmax(310px,440px) 1fr;gap:30px;align-items:center;justify-content:center}}.wheelBox{{position:relative;width:min(76vw,420px);aspect-ratio:1;margin:auto}}.wheel{{position:absolute;inset:12px;border-radius:50%;border:8px solid #e8f1fa;box-shadow:0 20px 30px rgba(0,0,0,.35);transform:rotate(0deg)}}.wheel.spin{{animation:spin 2.9s cubic-bezier(.10,.72,.12,1) forwards}}.pointer{{position:absolute;z-index:5;top:-2px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:18px solid transparent;border-right:18px solid transparent;border-top:36px solid #f8fafc;filter:drop-shadow(0 3px 3px rgba(0,0,0,.4))}}.hub{{position:absolute;z-index:4;left:50%;top:50%;transform:translate(-50%,-50%);width:84px;height:84px;border-radius:50%;background:#081421;border:7px solid #f8fafc;display:grid;place-items:center;font-weight:1000;font-size:22px}}.wlabel{{position:absolute;left:50%;top:50%;width:100px;margin-left:-50px;text-align:center;font-size:11px;font-weight:1000;color:white;text-shadow:0 2px 3px #000;transform-origin:50% 50%}}
+    .result{{text-align:left}}.result .who{{color:#94a3b8;font-size:15px}}.result .name{{font-size:30px;font-weight:1000;margin:4px 0 8px}}.result .team{{font-size:clamp(26px,4vw,42px);font-weight:1000;color:#86efac;opacity:0;transform:translateY(8px);animation:reveal .35s ease 2.65s forwards}}.chips{{display:flex;flex-wrap:wrap;gap:7px;margin-top:15px}}.chip{{padding:5px 8px;border-radius:999px;background:#14283e;color:#a8bed3;font-size:10px;font-weight:850}}
+    .drawGrid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;width:100%}}.drawItem{{padding:15px;border-radius:17px;background:#101c31;border:1px solid #334155;opacity:0;transform:translateY(8px);animation:reveal .4s ease var(--d) forwards}}.drawItem span{{display:block;color:#7dd3fc;font-size:11px;font-weight:950;letter-spacing:.1em}}.drawItem b{{font-size:20px}}
+    .specialTitle{{font-size:30px;font-weight:1000;text-align:center;margin-bottom:16px}}.specialGrid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;width:100%}}.pair{{padding:18px;border-radius:18px;background:#151c31;border:1px solid #4a5568;text-align:center;opacity:0;transform:translateY(8px);animation:reveal .4s ease var(--d) forwards}}.pair small{{color:#94a3b8;font-weight:900}}.pair b{{display:block;font-size:20px;margin:4px}}.lucky{{margin-top:18px;padding:16px 22px;border-radius:18px;border:1px solid #fbbf24;background:#422006;color:#fde68a;font-size:22px;font-weight:1000;text-align:center;opacity:0;animation:reveal .4s ease 1.9s forwards}}
+    .bigReveal{{text-align:center;padding:36px 24px;border-radius:24px;background:linear-gradient(145deg,#10293b,#101827);border:1px solid #31536f;min-width:min(720px,100%)}}.bigReveal .icon{{font-size:54px}}.bigReveal h2{{font-size:34px;margin:8px 0}}.bigReveal p{{font-size:22px;color:#86efac;font-weight:900}}
+    .loader{{width:45px;height:45px;border-radius:50%;border:4px solid #25405d;border-top-color:#34d399;animation:rot .8s linear infinite;margin:auto auto 12px}}
+    @keyframes reveal{{to{{opacity:1;transform:none}}}}@keyframes rot{{to{{transform:rotate(360deg)}}}}@keyframes spin{{to{{transform:rotate(var(--rot))}}}}
+    @media(max-width:760px){{.tvroot{{padding:16px 12px;min-height:520px}}.top{{align-items:flex-start}}.live{{font-size:9px}}.wheelWrap{{grid-template-columns:1fr;gap:10px}}.result{{text-align:center}}.wheelBox{{width:min(68vw,340px)}}.drawGrid,.specialGrid,.grid{{grid-template-columns:1fr}}.stage{{min-height:400px}}}}
+    </style>
+    <script>
+    (()=>{{
+      const FEED={url_js}; const root=document.getElementById('stage'); const headline=document.getElementById('headline');
+      const seen=new Set(); const queue=[]; let initialized=false, playing=false, latest=null, timer=null;
+      const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]));
+      const short=s=>{{s=String(s||'');return s.replace('Dowolna drużyna (Real Madryt banned)','WILD CARD').replace('Manchester City','MAN CITY').replace('Bayern Monachium','BAYERN').replace('FC Barcelona','BARCA').slice(0,15).toUpperCase()}};
+      function phaseName(p){{return ({{draft_order:'Losowanie kolejności draftu',team_draft:'Draft drużyn',team_draw:'Koło drużyn',structure_draw:'Losowanie struktury'}})[p]||'Przygotowanie FIFA Night'}}
+      function idle(feed){{if(playing)return; const t=feed?.tournament||{{}}, ps=feed?.players||[]; headline.textContent=phaseName(t.phase); let body='';
+        if(!ps.length) body='<div class="muted">Czekam na uczestników…</div>'; else body='<div class="grid">'+ps.map((p,i)=>`<div class="card"><small>${{i+1}}. GRACZ</small><b>${{esc(p.name)}}</b><div class="muted">${{p.team_revealed?esc(p.team||'—'):'oczekuje na losowanie'}}</div></div>`).join('')+'</div>';
+        root.innerHTML=body;
+      }}
+      function finish(ms){{clearTimeout(timer);timer=setTimeout(()=>{{playing=false;idle(latest);playNext()}},ms)}}
+      function play(ev){{playing=true; const p=ev.payload||{{}};
+        if(ev.kind==='team_wheel'){{
+          headline.textContent='🎡 Koło drużyn'; const pool=(p.pool||[]); const n=Math.max(pool.length,1); const idx=Math.max(0,pool.indexOf(p.wheel_team)); const colors=['#2563EB','#DB2777','#0891B2','#EA580C','#16A34A','#7C3AED','#CA8A04','#DC2626']; const parts=pool.map((_,i)=>`${{colors[i%colors.length]}} ${{i*360/n}}deg ${{(i+1)*360/n}}deg`).join(','); const rot=1800+(360-(idx*360/n+180/n));
+          const labels=pool.map((x,i)=>{{const a=i*360/n+180/n;return `<span class="wlabel" style="transform:translate(-50%,-50%) rotate(${{a}}deg) translateY(-150px) rotate(${{-a}}deg)">${{esc(short(x))}}</span>`}}).join('');
+          root.innerHTML=`<div class="wheelWrap"><div class="wheelBox"><div class="pointer"></div><div class="wheel spin" style="background:conic-gradient(${{parts}});--rot:${{rot}}deg"></div>${{labels}}<div class="hub">FC</div></div><div class="result"><div class="who">Losujemy dla</div><div class="name">${{esc(p.name)}}</div><div class="team">${{esc(p.team||p.wheel_team||'')}}</div><div class="chips">${{pool.map(x=>`<span class="chip">${{esc(short(x))}}</span>`).join('')}}</div></div></div>`; finish(3450); return;
+        }}
+        if(ev.kind==='draft_order'){{headline.textContent='🎱 Kto wybiera pierwszy?'; const rows=(p.players||[]).map((x,i)=>`<div class="row" style="--d:${{.55+i*.65}}s"><span class="num">${{i+1}}</span><b>${{esc(x.name)}}</b></div>`).join(''); root.innerHTML=`<div class="order">${{rows}}</div>`;finish(1250+(p.players||[]).length*650);return}}
+        if(ev.kind==='structure_draw'){{headline.textContent='🎲 Oficjalne losowanie turnieju';const items=(p.items||[]).map((x,i)=>`<div class="drawItem" style="--d:${{.55+i*.55}}s"><span>${{esc(x.slot)}}</span><b>${{esc(x.name)}}</b></div>`).join('');root.innerHTML=`<div class="drawGrid">${{items}}</div>`;finish(1200+(p.items||[]).length*550);return}}
+        if(ev.kind==='draft_pick'||ev.kind==='wildcard_confirm'){{headline.textContent=ev.kind==='draft_pick'?'⚽ Wybór drużyny':'🃏 Wild Card';root.innerHTML=`<div class="bigReveal"><div class="icon">${{ev.kind==='draft_pick'?'⚽':'🃏'}}</div><h2>${{esc(p.name)}}</h2><p>${{esc(p.team)}}</p></div>`;finish(2200);return}}
+        if(ev.kind==='special_draw'){{headline.textContent='🎲 Losowanie w trakcie turnieju';const pairs=(p.pairs||[]).map((x,i)=>`<div class="pair" style="--d:${{.5+i*.55}}s"><small>M${{esc(x.match_no||'')}}${{x.stage?' • '+esc(x.stage):''}}</small><b>${{esc(x.home_name||'?')}}</b><span>VS</span><b>${{esc(x.away_name||'?')}}</b></div>`).join('');let lucky=p.selected_lucky?.name||p.name||'';root.innerHTML=`<div style="width:100%"><div class="specialTitle">${{p.special_kind==='group_playoffs'?'Faza pucharowa':p.special_kind==='double7_combined'?'Winners + Szczęśliwy los':'Losowanie drabinki'}}</div><div class="specialGrid">${{pairs}}</div>${{lucky?`<div class="lucky">🍀 ${{esc(lucky)}}</div>`:''}}</div>`;finish(3400);return}}
+        if(ev.kind==='tournament_start'){{headline.textContent='✅ Losowanie zakończone';root.innerHTML='<div class="bigReveal"><div class="icon">🔥</div><h2>DRABINKA GOTOWA</h2><p>Zaczynamy FIFA Night</p></div>';finish(1800);return}}
+        if(ev.kind==='stage'){{headline.textContent=esc(p.title||'Kolejny etap');root.innerHTML='<div class="bigReveal"><div class="icon">🎲</div><h2>'+esc(p.title||'Kolejny etap')+'</h2></div>';finish(1500);return}}
+        finish(600);
+      }}
+      function playNext(){{if(playing||!queue.length)return;play(queue.shift())}}
+      async function poll(){{try{{const r=await fetch(FEED,{{cache:'no-store'}});if(!r.ok)throw new Error('HTTP '+r.status);const feed=await r.json();latest=feed;const events=feed.events||[];const now=Date.now();
+          if(!initialized){{events.forEach(e=>{{const age=now-Date.parse(e.created_at||0);seen.add(e.id);if(age>=0&&age<8500)queue.push(e)}});initialized=true}} else {{events.forEach(e=>{{if(!seen.has(e.id)){{seen.add(e.id);queue.push(e)}}}})}}
+          if(!playing&&!queue.length)idle(feed);playNext();
+        }}catch(e){{if(!playing){{headline.textContent='Czekam na połączenie…';root.innerHTML='<div><div class="loader"></div><div class="muted">Serwer TV chwilowo nie odpowiada. Próba ponownie za moment.</div></div>'}}}}}}
+      poll();setInterval(poll,650);
+    }})();
+    </script>
+    """,height=680,scrolling=False)

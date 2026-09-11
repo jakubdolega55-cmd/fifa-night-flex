@@ -15,7 +15,7 @@ from database import Database
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
-                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal)
+                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv)
 
 
 
@@ -36,6 +36,8 @@ def fmt_history_datetime(value):
 
 st.set_page_config(page_title="FIFA Night Flex",page_icon="⚽",layout="wide",initial_sidebar_state="collapsed")
 inject_css(); db=Database()
+MOBILE_API_PUBLIC_URL=str(os.getenv("MOBILE_API_PUBLIC_URL") or "https://fifa-night-api.onrender.com").rstrip("/")
+SETUP_PHASES={"draft_order","team_draft","team_draw","structure_draw"}
 if not st.session_state.get("_flex_schema_ready"):
     db.init_schema(); st.session_state._flex_schema_ready=True
 
@@ -625,8 +627,45 @@ def draft_order(tid:str):
                 render_draft_order(refreshed.get("players",players),int(refreshed.get("redraw_count",0)))
 
 
+@st.fragment(run_every="1s")
+def render_setup_tv_watch(tid:str):
+    fresh=db.current_tournament()
+    if not fresh or str(fresh.get("id"))!=str(tid):
+        st.info("Brak aktywnego turnieju.")
+        return
+    phase=str(fresh.get("phase") or "")
+    exit_key=f"_setup_tv_exit_{tid}"
+    if phase not in SETUP_PHASES:
+        # Keep the synchronized browser animation alive long enough to play the
+        # final tournament_start event.  Without this grace period Streamlit could
+        # swap to normal LIVE before the phone-controlled reveal had finished.
+        started=st.session_state.get(exit_key)
+        if not started:
+            st.session_state[exit_key]=time.time(); started=st.session_state[exit_key]
+        if time.time()-float(started)>=4.2:
+            st.session_state.pop(exit_key,None)
+            st.session_state["view"]="📺 TV"
+            st.rerun()
+    else:
+        st.session_state.pop(exit_key,None)
+    render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL)
+
+
+def setup_tv_gate(t) -> bool:
+    mode=st.segmented_control(
+        "Widok przygotowania",["🎮 STEROWANIE","📺 TV"],default="🎮 STEROWANIE",
+        key=f"setup_display_mode_{t['id']}",label_visibility="collapsed"
+    ) or "🎮 STEROWANIE"
+    if mode=="📺 TV":
+        st.caption("📺 TV SYNC • steruj losowaniem z telefonu — ten ekran pokazuje każde losowanie w kolejce.")
+        render_setup_tv_watch(t["id"])
+        return True
+    return False
+
+
 def render_draft_order_stage(t):
     hero(f"Etap 1/3 • losowanie kolejności wyboru • {t['player_count']} graczy")
+    if setup_tv_gate(t): return
     render_tournament_status_control(t,"draft_order")
     draft_order(t["id"]);reset_controls(t,"draft_order")
 
@@ -660,6 +699,7 @@ def team_draft(tid:str):
 
 def render_team_draft(t):
     hero(f"Etap 2/3 • draft drużyn • {t['player_count']} graczy")
+    if setup_tv_gate(t): return
     render_tournament_status_control(t,"team_draft")
     team_draft(t["id"]);reset_controls(t,"team_draft")
 
@@ -772,6 +812,7 @@ def team_draw(tid:str):
 
 def render_team_draw(t):
     hero(f"Etap 1/2 • losowanie drużyn • {t['player_count']} graczy")
+    if setup_tv_gate(t): return
     render_tournament_status_control(t,"team_draw")
     team_draw(t["id"]);reset_controls(t,"draw")
 
@@ -811,6 +852,7 @@ def render_structure(t):
     title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
     step="Etap 3/3" if int(t["player_count"]) in (3,4) else "Etap 2/2"
     hero(f"{step} • {title}")
+    if setup_tv_gate(t): return
     render_tournament_status_control(t,"structure")
     structure_draw(t["id"]);reset_controls(t,"structure")
 
@@ -2234,7 +2276,22 @@ def render_stats(t=None,readonly:bool=False):
                 st.markdown("**FIFA Night Awards:** " + " • ".join(f"{x['title']} {x['year']}" for x in awards_won))
             badges=pa_profile.get("unlocked") or []
             if badges:
-                st.markdown("#### 🏅 Odznaki")
+                bh1,bh2=st.columns([8,2])
+                with bh1: st.markdown("#### 🏅 Odznaki")
+                with bh2:
+                    with st.popover("❔ Jak zdobywać",use_container_width=True):
+                        st.markdown("**Wszystkie odznaki i warunki zdobycia**")
+                        all_badges=[]
+                        unlocked_keys={str(x.get("key")) for x in badges}
+                        locked_by={str(x.get("key")):x for x in (pa_profile.get("locked") or [])}
+                        for c in (ach.get("catalog") or []):
+                            key=str(c.get("key") or "")
+                            if key in unlocked_keys:
+                                status="✅ Zdobyta";progress="—"
+                            else:
+                                status="🔒 Do zdobycia";progress=(locked_by.get(key) or {}).get("progress") or "—"
+                            all_badges.append({"Odznaka":f"{c.get('icon','🏅')} {c.get('name','')}","Jak zdobyć":c.get("desc") or "—","Status":status,"Postęp":progress})
+                        st.dataframe(pd.DataFrame(all_badges),hide_index=True,use_container_width=True)
                 bcols=st.columns(2)
                 for i,a in enumerate(badges):
                     with bcols[i%2]:
@@ -2246,7 +2303,14 @@ def render_stats(t=None,readonly:bool=False):
                             detail=(" • "+str(a.get("detail"))) if a.get("detail") else ""
                             st.caption(f"Zdobyta: {date} • {where}{detail}")
             else:
-                st.caption("Brak odblokowanych odznak.")
+                bh1,bh2=st.columns([8,2])
+                with bh1:
+                    st.markdown("#### 🏅 Odznaki")
+                    st.caption("Brak odblokowanych odznak.")
+                with bh2:
+                    with st.popover("❔ Jak zdobywać",use_container_width=True):
+                        st.markdown("**Wszystkie odznaki i warunki zdobycia**")
+                        st.dataframe(pd.DataFrame([{"Odznaka":f"{c.get('icon','🏅')} {c.get('name','')}","Jak zdobyć":c.get("desc") or "—","Status":"🔒 Do zdobycia"} for c in (ach.get("catalog") or [])]),hide_index=True,use_container_width=True)
             locked_badges=pa_profile.get("locked") or []
             if locked_badges:
                 with st.expander("🔒 Odznaki do zdobycia",expanded=False):
@@ -2906,7 +2970,45 @@ def render_public_start():
     render_start(public_mode=True)
 
 
-@st.fragment(run_every="5s")
+def render_tv_special_event(tid:str,b:dict) -> bool:
+    """Read-only TV rendering for special draws triggered from the phone."""
+    fmt=(b.get("meta") or {}).get("format_key")
+    if fmt=="double7":
+        state=db.double7_combined_draw_state(tid)
+        if state and not state.get("ack"):
+            if state.get("selected"):
+                render_double7_combined_draw(state.get("pairs",[]),state.get("candidates",[]),state.get("selected_lucky"))
+            else:
+                st.markdown("### 🎱 Losowanie Double Elimination")
+                st.info("📱 Telefon steruje losowaniem. Czekam na odkrycie drabinki…")
+            return True
+    if fmt=="double8":
+        state=db.double_wb_draw_state(tid)
+        if state and not state.get("ack"):
+            if state.get("selected"):
+                render_double_wb_pairing_draw(fmt,state.get("pairs",[]))
+            else:
+                st.markdown("### 🎱 Losowanie par Winners Bracket")
+                st.info("📱 Telefon steruje losowaniem. Czekam na pary…")
+            return True
+    if fmt=="double5":
+        state=db.double5_draw_state(tid)
+        if state and not state.get("ack"):
+            if state.get("selected"):
+                render_double5_mid_draw(state.get("player_name","?"),state.get("candidates",[]),state.get("selected"))
+            else:
+                st.markdown("### 🎱 Losowanie przeciwnika")
+                st.info("📱 Telefon steruje losowaniem. Czekam na wynik…")
+            return True
+    if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
+        state=db.group_playoff_reveal_state(tid)
+        if state:
+            render_playoff_reveal(fmt,state.get("pairs",[]),state.get("direct",[]))
+            return True
+    return False
+
+
+@st.fragment(run_every="2s")
 def render_tv_screen(tid:str):
     fresh=db.current_tournament()
     if not fresh or str(fresh.get("id"))!=str(tid):
@@ -2946,15 +3048,11 @@ def render_tv_screen(tid:str):
             c1,c2=st.columns(2);c1.success(f"🏆 **{champ}**");c2.info(f"🥈 **{runner}**")
         st.caption("Ekran odświeża się automatycznie. Nowy turniej uruchamia urządzenie ze sterowaniem.")
         return
-    if str(t.get("phase") or "") in ("draft_order","team_draft","team_draw","structure_draw"):
-        phase_names={"draft_order":"Losowanie kolejności wyboru","team_draft":"Wybór drużyn","team_draw":"Losowanie drużyn","structure_draw":"Losowanie struktury turnieju"}
-        st.markdown("### 🎱 Turniej w przygotowaniu")
-        st.info(phase_names.get(str(t.get("phase")),"Przygotowanie turnieju"))
-        players=b.get("players") or []
-        if players:
-            rows=[{"Gracz":p.get("name"),"Drużyna":p.get("team") or "—"} for p in players]
-            st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
-        st.caption("Ten ekran odświeża się automatycznie co kilka sekund.")
+    if str(t.get("phase") or "") in SETUP_PHASES:
+        render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL)
+        return
+    if render_tv_special_event(tid,b):
+        st.caption("📺 TV SYNC • losowanie uruchomione z telefonu")
         return
     cur=db.current_match_from(b.get("matches") or [],extra)
     schedule=db.live_schedule_from(b.get("matches") or [],extra)
