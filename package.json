@@ -9,8 +9,9 @@
     "check": "tsc --noEmit",
     "build:apk": "eas build --platform android --profile preview",
     "web": "expo start --web",
-    "build:web": "expo export --platform web && node scripts/pwa-postbuild.mjs",
-    "check:web": "tsc --noEmit"
+    "build:web": "expo export --platform web && node scripts/pwa-postbuild.mjs && node scripts/pwa-verify.mjs",
+    "check:web": "tsc --noEmit",
+    "verify:web": "node scripts/pwa-verify.mjs"
   },
   "dependencies": {
     "expo": "~57.0.20",

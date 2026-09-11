@@ -1,0 +1,25 @@
+RENDER — NAJBEZPIECZNIEJSZE WDROZENIE PWA
+
+NIE zmieniaj istniejacej uslugi fifa-night-api.
+PWA ma byc osobnym Static Site.
+
+OPCJA A — recznie w Render Dashboard (polecana przy pierwszym wdrozeniu)
+1. New -> Static Site.
+2. Wybierz to samo repo FIFA Night.
+3. Name: fifa-night-pwa
+4. Root Directory: mobile
+5. Build Command: npm install && npm run build:web
+6. Publish Directory: dist
+7. Environment variables:
+   NODE_VERSION = 22.16.0
+   EXPO_PUBLIC_API_URL = https://fifa-night-api.onrender.com
+8. Rewrite:
+   Source: /*
+   Destination: /index.html
+9. Deploy.
+
+OPCJA B — Blueprint tylko dla PWA
+Repo zawiera render-pwa-only.yaml. Jesli Render pozwala wskazac sciezke Blueprintu,
+wybierz ten plik zamiast glownego render.yaml. Definiuje on TYLKO fifa-night-pwa.
+
+Po sukcesie dostaniesz publiczny adres HTTPS. To ten adres wysylasz testerom iPhone.

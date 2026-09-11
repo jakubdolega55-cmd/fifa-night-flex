@@ -1,0 +1,33 @@
+FIFA NIGHT — TEST NA IPHONE
+
+LINK:
+[TU WKLEJ LINK Z RENDERA]
+
+INSTALACJA
+1. Otworz link w SAFARI na iPhonie.
+2. Kliknij Udostepnij (kwadrat ze strzalka).
+3. Wybierz „Dodaj do ekranu poczatkowego”.
+4. Kliknij „Dodaj”.
+5. Uruchamiaj FIFA Night z nowej ikony na ekranie iPhone'a.
+
+TEST
+1. Sprawdz, czy otwieraja sie: FIFA NIGHT, STATYSTYKI, AWARDS, USTAWIENIA.
+2. Sprawdz, czy widzisz ten sam aktywny turniej co drugi telefon/laptop.
+3. Podczas setupu zrob losowanie z telefonu i sprawdz, czy TV/laptop pokazuje je na zywo.
+4. Wpisz wynik i sprawdz synchronizacje z laptopem.
+5. Sprawdz aparat i wybor zdjecia z galerii.
+6. Zrob zdjecie ekranu EA FC i sprawdz podglad odczytanych zdarzen.
+7. Niczego ze skanu nie zatwierdzaj bez sprawdzenia zawodnikow, minut i rodzaju zdarzenia.
+8. Sprawdz Historie, statystyki, odznaki oraz zapis/udostepnienie PNG.
+
+GDY COS NIE DZIALA
+Wyslij screenshot + napisz:
+- co kliknales,
+- czego oczekiwales,
+- co faktycznie sie stalo,
+- model iPhone'a,
+- wersje iOS (jesli wiesz),
+- czy aplikacja byla uruchomiona z ikony czy w zwyklej karcie Safari.
+
+UWAGA
+Aplikacja wymaga internetu. Jesli API Render bylo uspione, pierwsze polaczenie moze trwac dluzej.

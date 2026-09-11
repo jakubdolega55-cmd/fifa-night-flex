@@ -1,0 +1,21 @@
+FIFA NIGHT RC2 + iPhone PWA HOME READY
+
+VALIDATED IN CHATGPT ENVIRONMENT:
+- Python py_compile: PASS
+- Backend/mobile API smoke tests: 50 PASS / 0 FAIL
+- JSON config parse: PASS
+- render.yaml parse: PASS
+- render-pwa-only.yaml parse: PASS
+- PWA manifest present with 192/512 icons and standalone mode: PASS
+- CORS for browser client present in FastAPI: PASS
+- PWA production verification script added: scripts/pwa-verify.mjs
+- Windows one-click build script added: BUILD_PWA_HOME.cmd
+
+MUST STILL RUN ON USER HOME PC (requires npm registry access):
+- npm install
+- npm run check
+- expo-doctor
+- npm run build:web
+- generated dist verification (automatic in build:web)
+
+DO NOT call PWA deployed until the above passes and Render serves the HTTPS site.
