@@ -2,3 +2,13 @@
 .local/
 __pycache__/
 *.pyc
+
+# React Native / Expo mobile workspace
+mobile/node_modules/
+mobile/.expo/
+mobile/.env
+mobile/.env.*
+!mobile/.env.example
+mobile/dist/
+*.apk
+*.aab

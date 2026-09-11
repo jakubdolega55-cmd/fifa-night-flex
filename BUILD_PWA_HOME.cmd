@@ -14,7 +14,7 @@ if errorlevel 1 goto NODE_MISSING
 
 echo [0/5] Srodowisko
 node -v
-npm.cmd -v
+call npm.cmd -v
 
 echo.
 echo [1/5] Instalacja zaleznosci...
