@@ -1,0 +1,292 @@
+import React,{useEffect,useMemo,useRef,useState} from 'react';
+import {Alert,Animated,Image,Modal,Platform,Pressable,ScrollView,StyleSheet,Text,View} from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import {api} from './api';
+import {getPng} from './export';
+import {LiveResponse,LiveTournament,Match,SetupResponse} from './types';
+import {colors} from './theme';
+import {Btn,Card,Chip,ErrorBox,HScroll,Input,Muted,Pill,SectionTitle,ToggleRow} from './ui';
+
+type Props={live:LiveResponse|null;options:any;controller:boolean;refresh:()=>Promise<void>;setBusy:(v:boolean)=>void};
+const formatMap:any={3:['league3_final'],4:['league4_final','double4'],5:['double5','league5_final'],6:['groups6','groups6_full','double6'],7:['double7','groups7','groups7_sf'],8:['groups8_sf','double8','groups8_barrage']};
+const stageKnockout=(s:string)=>!['GROUP','LEAGUE'].includes(s);
+const SCAN_EVENT_TYPES=['normal_goal','penalty_goal','own_goal','penalty_miss','yellow_card','red_card','injury','substitution','unknown'] as const;
+const SCAN_EVENT_LABELS:Record<string,string>={
+ normal_goal:'⚽ gol',penalty_goal:'🥅 gol z karnego',own_goal:'↩️ samobój',penalty_miss:'❌ nietrafiony karny',
+ yellow_card:'🟨 żółta kartka',red_card:'🟥 czerwona kartka',injury:'🚑 kontuzja',substitution:'🔁 zmiana',unknown:'❓ nieznane',other:'❓ inne',
+};
+const SCAN_SAVED_TYPES=new Set(['normal_goal','penalty_goal','own_goal','penalty_miss','yellow_card','red_card','injury','substitution']);
+const SCAN_GOAL_TYPES=new Set(['normal_goal','penalty_goal','own_goal']);
+function scanCreditPlayerId(e:any,m:Match){
+ const actor=String(e?.actor_player_id||'');
+ if(e?.event_type==='normal_goal'||e?.event_type==='penalty_goal')return actor;
+ if(e?.event_type==='own_goal')return actor===String(m.home_player_id||'')?String(m.away_player_id||''):actor===String(m.away_player_id||'')?String(m.home_player_id||''):'';
+ return '';
+}
+function parseDecimalAmount(value:string){
+ const raw=String(value||'').trim();
+ if(!raw)return 0;
+ const normalized=raw.replace(/\s+/g,'').replace(',','.');
+ const amount=Number(normalized);
+ return Number.isFinite(amount)&&amount>=0?amount:NaN;
+}
+function minuteText(e:any){
+ const label=String(e?.minute_label||'').trim().replace(/[’′']/g,'');
+ if(label)return label;
+ if(e?.minute==null||e?.minute==='')return '';
+ return `${e.minute}${e?.stoppage!=null&&e?.stoppage!==''?`+${e.stoppage}`:''}`;
+}
+function minutePatch(value:string){
+ const raw=String(value||'').trim().replace(/[’′']/g,'');
+ if(!raw)return {minute:null,stoppage:null,minute_label:'',_minute_invalid:false};
+ const match=raw.match(/^(\d{1,3})(?:\s*\+\s*(\d{1,2}))?$/);
+ if(!match)return {minute_label:raw,_minute_invalid:true};
+ const minute=Number(match[1]),stoppage=match[2]?Number(match[2]):null;
+ return {minute,stoppage,minute_label:stoppage==null?String(minute):`${minute}+${stoppage}`,_minute_invalid:false};
+}
+function scanValidation(events:any[],m:Match,hs:number,as:number){
+ const homePid=String(m.home_player_id||''),awayPid=String(m.away_player_id||'');
+ let homeGoals=0,awayGoals=0,missingNames=0,badActors=0,badMinutes=0;
+ for(const e of events||[]){
+  if(e?._minute_invalid)badMinutes++;
+  const typ=String(e?.event_type||'unknown');
+  if(!SCAN_SAVED_TYPES.has(typ))continue;
+  const actor=String(e?.actor_player_id||'');
+  if(actor!==homePid&&actor!==awayPid){badActors++;continue}
+  if((typ==='normal_goal'||typ==='penalty_goal')&&!String(e?.footballer_name||'').trim())missingNames++;
+  if(SCAN_GOAL_TYPES.has(typ)){
+   const credited=scanCreditPlayerId(e,m);
+   if(credited===homePid)homeGoals++;else if(credited===awayPid)awayGoals++;
+  }
+ }
+ const missingHome=Math.max(hs-homeGoals,0),missingAway=Math.max(as-awayGoals,0),over=homeGoals>hs||awayGoals>as;
+ return {homeGoals,awayGoals,missingHome,missingAway,over,missingNames,badActors,badMinutes,complete:homeGoals===hs&&awayGoals===as&&!missingNames&&!badActors&&!badMinutes};
+}
+
+function scoreText(m:Match){if(m.home_score==null)return '—';let x=`${m.home_score}:${m.away_score}`;if(m.home_penalties!=null&&m.away_penalties!=null)x+=` (k. ${m.home_penalties}:${m.away_penalties})`;return x}
+
+function RevealMotion({children,revealKey,delay=0}:{children:React.ReactNode;revealKey:string;delay?:number}){
+ const opacity=useRef(new Animated.Value(0)).current;
+ const translateY=useRef(new Animated.Value(10)).current;
+ const scale=useRef(new Animated.Value(.97)).current;
+ useEffect(()=>{
+  opacity.setValue(0);translateY.setValue(10);scale.setValue(.97);
+  Animated.parallel([
+   Animated.timing(opacity,{toValue:1,duration:260,delay,useNativeDriver:true}),
+   Animated.timing(translateY,{toValue:0,duration:360,delay,useNativeDriver:true}),
+   Animated.spring(scale,{toValue:1,delay,useNativeDriver:true,speed:18,bounciness:5}),
+  ]).start();
+ },[revealKey,delay,opacity,translateY,scale]);
+ return <Animated.View style={{opacity,transform:[{translateY},{scale}]}}>{children}</Animated.View>;
+}
+
+function TeamWheelReveal({event,pool,onDone}:{event:any;pool:string[];onDone:()=>void}){
+ const spin=useRef(new Animated.Value(0)).current;
+ const doneRef=useRef(onDone);
+ useEffect(()=>{doneRef.current=onDone},[onDone]);
+ const result=String(event?.team||event?.wheel_team||'');
+ const labels=(pool||[]).slice(0,8);
+ const wheelTarget=String(event?.wheel_team||event?.team||'');
+ const selectedIndex=Math.max(0,labels.findIndex((x:string)=>String(x)===wheelTarget));
+ const angle=labels.length?(360/labels.length)*selectedIndex:0;
+ const endDeg=1800+((360-angle)%360);
+ useEffect(()=>{
+  spin.setValue(0);
+  Animated.timing(spin,{toValue:1,duration:2850,useNativeDriver:true}).start();
+  const timer=setTimeout(()=>doneRef.current(),3600);return()=>clearTimeout(timer);
+ },[event?.player_id,event?.team,event?.wheel_team,endDeg,spin]);
+ const rotate=spin.interpolate({inputRange:[0,1],outputRange:['0deg',`${endDeg}deg`]});
+ return <View style={st.wheelReveal}><Text style={st.smallLabel}>LOSOWANIE DRUŻYNY</Text><Text style={st.bigName}>Teraz losujemy dla {event?.name||'gracza'}</Text><View style={st.wheelShell}><View style={st.wheelPointer}/><Animated.View style={[st.wheelRing,{transform:[{rotate}]}]}>{labels.map((x:string,i:number)=>{const a=(360/Math.max(labels.length,1))*i;return <View key={`${x}-${i}`} style={[st.wheelLabelWrap,{transform:[{rotate:`${a}deg`},{translateY:-92},{rotate:`-${a}deg`}]}]}><Text style={st.wheelLabel}>{String(x).replace('Dowolna drużyna (Real Madryt banned)','WILD CARD').replace('Bayern Monachium','BAYERN').replace('FC Barcelona','BARCA').replace('Manchester City','MAN CITY').slice(0,11).toUpperCase()}</Text></View>})}<View style={st.wheelHub}><Text style={st.wheelHubText}>FC</Text></View></Animated.View></View><RevealMotion revealKey={`${event?.player_id}-${result}`} delay={2550}><Text style={st.wheelResult}>{result}</Text></RevealMotion></View>;
+}
+
+function PulseIcon({icon}:{icon:string}){
+ const scale=useRef(new Animated.Value(1)).current;
+ useEffect(()=>{const a=Animated.loop(Animated.sequence([Animated.timing(scale,{toValue:1.12,duration:700,useNativeDriver:true}),Animated.timing(scale,{toValue:1,duration:700,useNativeDriver:true})]));a.start();return()=>a.stop()},[scale]);
+ return <Animated.Text style={[st.stageIcon,{transform:[{scale}]}]}>{icon}</Animated.Text>;
+}
+
+function StageSpotlight({m,formatKey}:{m:Match;formatKey:string}){
+ const stage=String(m.stage||''); let kicker='',title='',sub='',icon='';
+ if(stage==='FINAL'||stage==='RESET_FINAL'){kicker=stage==='RESET_FINAL'?'RESET FINAL':'WIELKI FINAŁ';title='WALKA O TYTUŁ';sub=formatKey.startsWith('double')?'Zwycięzca zostaje Mistrzem FIFA Night. Winners Bracket ma techniczny bonus 1:0.':'Zwycięzca tego meczu zostaje Mistrzem FIFA Night.';icon='🏆'}
+ else if(stage==='WB_FINAL'){kicker='FINAŁ WINNERS';title='GRA O WIELKI FINAŁ';sub='Zwycięzca melduje się w Wielkim Finale. Przegrany dostaje ostatnią szansę w Losers.';icon='🎯'}
+ else if(stage==='LB_FINAL'){kicker='FINAŁ LOSERS';title='OSTATNIA DROGA DO FINAŁU';sub='Zwycięzca awansuje do Wielkiego Finału. Przegrany odpada.';icon='☠️'}
+ else if(stage==='SF'){kicker='PÓŁFINAŁ';title='GRA O FINAŁ';sub='Zwycięzca awansuje do finału. Przegrany kończy turniej.';icon='🔥'}
+ else if(stage==='QF'||stage==='BARRAGE'){kicker=stage==='QF'?'ĆWIERĆFINAŁ':'BARAŻ';title='WYGRYWAJ ALBO ODPADASZ';sub='Zwycięzca gra dalej. Przegrany odpada z FIFA Night.';icon='⚔️'}
+ else return null;
+ return <View style={[st.stageSpotlight,(stage==='FINAL'||stage==='RESET_FINAL')&&st.finalSpotlight]}><Text style={st.stageKicker}>{kicker}</Text><PulseIcon icon={icon}/><Text style={st.stageTitle}>{title}</Text><Text style={st.stageSub}>{sub}</Text></View>;
+}
+
+function ChampionCelebration({name,duel=false}:{name:string;duel?:boolean}){
+ const drops=useRef(Array.from({length:18},()=>new Animated.Value(0))).current;
+ useEffect(()=>{const animations=drops.map((v,i)=>Animated.sequence([Animated.delay((i%6)*120),Animated.timing(v,{toValue:1,duration:1800+(i%4)*160,useNativeDriver:true})]));Animated.stagger(65,animations).start();},[drops]);
+ const icons=['✨','🏆','⚽','🎉','⭐','🔥'];
+ return <View style={st.celebration}><View pointerEvents="none" style={StyleSheet.absoluteFill}>{drops.map((v,i)=><Animated.Text key={i} style={[st.confetti,{left:`${5+((i*17)%88)}%` as any,transform:[{translateY:v.interpolate({inputRange:[0,1],outputRange:[-35,390]})},{rotate:v.interpolate({inputRange:[0,1],outputRange:['0deg',`${180+(i%4)*90}deg`]})}],opacity:v.interpolate({inputRange:[0,.1,.85,1],outputRange:[0,1,1,0]})}]}>{icons[i%icons.length]}</Animated.Text>)}</View><PulseIcon icon={duel?'⚔️':'🏆'}/><Text style={st.kicker}>{duel?'ZWYCIĘZCA 1 VS 1':'MISTRZ FIFA NIGHT'}</Text><Text style={st.championBig}>{name||'—'}</Text><Text style={st.stageSub}>{duel?'Pojedynek rozstrzygnięty.':'Wieczór ma swojego mistrza.'}</Text></View>;
+}
+
+function MatchAbsences({m,absences}:{m:Match;absences:any[]}){
+ const ids=new Set([String(m.home_player_id||''),String(m.away_player_id||'')]);
+ const rows=(absences||[]).filter((x:any)=>ids.has(String(x.player_id||'')));
+ if(!rows.length)return null;
+ return <Card><Text style={st.cardTitle}>🚑 Niedostępni w tym meczu</Text>{rows.map((x:any,i:number)=><Text style={st.line} key={`${x.player_id}-${x.footballer_name}-${i}`}>{x.footballer_name||x.scorer_name||'?'} • {x.player_name||''} • {x.reason||x.event_type||''}</Text>)}</Card>;
+}
+
+function MatchCard({m,current=false,onDetails}:{m:Match;current?:boolean;onDetails?:()=>void}){
+ const played=m.home_score!=null, skipped=m.match_status==='skipped';
+ return <Pressable onPress={onDetails} disabled={!onDetails} style={[st.matchCard,current&&st.current,played&&st.played]}>
+  <View style={st.row}><Pill text={`M${m.match_no} • ${m.stage_label||m.stage}`} tone={current?'green':played?'blue':'muted'}/><Text style={st.score}>{skipped?'POMINIĘTY':scoreText(m)}</Text></View>
+  <View style={st.matchNames}><View style={{flex:1}}><Text style={st.name}>{m.home_name||'Czeka na rozstrzygnięcie'}</Text><Text style={st.team}>{m.home_team||'—'}</Text></View><Text style={st.vs}>VS</Text><View style={{flex:1}}><Text style={st.name}>{m.away_name||'Czeka na rozstrzygnięcie'}</Text><Text style={st.team}>{m.away_team||'—'}</Text></View></View>
+ </Pressable>
+}
+
+function PlayerEntry({idx,value,cash,onName,onCash,suggestions}:{idx:number;value:string;cash:boolean;onName:(v:string)=>void;onCash:(v:boolean)=>void;suggestions:string[]}){
+ const matches=suggestions.filter(x=>x.toLowerCase().includes(value.toLowerCase())&&x.toLowerCase()!==value.toLowerCase()).slice(0,4);
+ return <Card><Text style={st.smallLabel}>GRACZ {idx+1}</Text><Input value={value} onChangeText={onName} placeholder="Nick" autoCapitalize="words"/>{matches.length?<HScroll>{matches.map(x=><Chip key={x} label={x} onPress={()=>onName(x)}/>)}</HScroll>:null}<ToggleRow label="💰 Gra za kasę" value={cash} onChange={onCash}/></Card>
+}
+
+function StartWizard({options,controller,refresh,setBusy}:{options:any;controller:boolean;refresh:()=>Promise<void>;setBusy:(v:boolean)=>void}){
+ const [variant,setVariant]=useState(String(options?.last_player_count||6));
+ const count=variant==='1v1'?2:Number(variant);
+ const [format,setFormat]=useState('groups6');
+ const [isTest,setIsTest]=useState(!controller);
+ const [stake,setStake]=useState(String(options?.last_stake??0));
+ const initial=useMemo(()=>Array.from({length:8},(_,i)=>String(options?.last_lineups?.[String(Math.max(3,count))]?.[i]||'')),[count,options]);
+ const [names,setNames]=useState<string[]>(initial);
+ const [cash,setCash]=useState<boolean[]>(Array(8).fill(true));
+ const [teams,setTeams]=useState<string[]>(['','']);
+ const [error,setError]=useState('');
+ useEffect(()=>{if(variant!=='1v1'){const f=formatMap[count]||[];if(!f.includes(format))setFormat(f[0]||'')} if(!controller)setIsTest(true)},[variant,count,controller]);
+ useEffect(()=>{setNames(old=>old.map((v,i)=>v||initial[i]||''))},[initial]);
+ const setName=(i:number,v:string)=>setNames(a=>a.map((x,j)=>j===i?v:x)); const setCashFlag=(i:number,v:boolean)=>setCash(a=>a.map((x,j)=>j===i?v:x));
+ const create=async()=>{setError('');setBusy(true);try{
+  const stakeValue=parseDecimalAmount(stake);
+  if(!Number.isFinite(stakeValue))throw new Error('Wpisz prawidłową stawkę, np. 10 lub 10,50.');
+  if(variant==='1v1'){
+   if(!names[0]?.trim()||!names[1]?.trim()||!teams[0]?.trim()||!teams[1]?.trim())throw new Error('Wpisz dwóch graczy i dwie drużyny.');
+   await api.createDuel({player1:names[0],player2:names[1],team1:teams[0],team2:teams[1],stake_per_player:stakeValue,cash1:cash[0],cash2:cash[1]});
+  }else{
+   if(names.slice(0,count).some(x=>!x.trim()))throw new Error('Wpisz wszystkich graczy.');
+   await api.createTournament({player_count:count,format_key:format,is_test:controller?isTest:true,stake_per_player:stakeValue,players:names.slice(0,count).map((name,i)=>({name,cash:cash[i]}))});
+  }
+  await refresh();
+ }catch(e:any){setError(e.message)}finally{setBusy(false)}};
+ const teamSuggestions=[...(options?.fixed_teams||[]),...(options?.wildcard_suggestions||[])];
+ return <ScrollView contentContainerStyle={st.pad} keyboardShouldPersistTaps="handled">
+  <Card style={st.hero}><Pill text="NOWY FIFA NIGHT" tone="green"/><Text style={st.heroTitle}>Wybierz wariant. Resztą zajmiemy się po drodze.</Text><Muted>Pełny oficjalny turniej 3–8 wymaga sterowania. Testy i oficjalne 1 vs 1 możesz uruchomić bez niego.</Muted></Card>
+  <SectionTitle>Wariant</SectionTitle><HScroll>{['1v1','3','4','5','6','7','8'].map(x=><Chip key={x} label={x==='1v1'?'⚔️ 1 VS 1':`${x} graczy`} active={variant===x} onPress={()=>setVariant(x)}/>)}</HScroll>
+  {variant!=='1v1'?<><SectionTitle>Format</SectionTitle><View style={{gap:8}}>{(options?.formats?.[String(count)]||[]).map((f:any)=><Pressable key={f.key} onPress={()=>setFormat(f.key)} style={[st.option,format===f.key&&st.optionActive]}><Text style={st.optionTitle}>{f.label}</Text><Text style={st.optionSub}>{f.matches}</Text></Pressable>)}</View></>:null}
+  <SectionTitle>Skład</SectionTitle>{Array.from({length:count},(_,i)=><PlayerEntry key={i} idx={i} value={names[i]||''} cash={cash[i]??true} onName={(v:string)=>setName(i,v)} onCash={v=>setCashFlag(i,v)} suggestions={options?.players||[]}/>) }
+  {variant==='1v1'?<Card><Text style={st.cardTitle}>Drużyny 1 vs 1</Text>{[0,1].map(i=><View key={i} style={{gap:7}}><Text style={st.smallLabel}>{names[i]||`Gracz ${i+1}`}</Text><Input value={teams[i]||''} onChangeText={(v:string)=>setTeams(a=>a.map((x,j)=>j===i?v:x))} placeholder="Drużyna"/><HScroll>{teamSuggestions.slice(0,8).map((x:string)=><Chip key={`${i}-${x}`} label={x} onPress={()=>setTeams(a=>a.map((y,j)=>j===i?x:y))}/>)}</HScroll></View>)}</Card>:null}
+  {variant!=='1v1'?<Card><Text style={st.cardTitle}>Status rozgrywki</Text>{controller?<ToggleRow label="🧪 Turniej testowy" value={isTest} onChange={setIsTest} sub={isTest?'Nie wejdzie do oficjalnych statystyk.':'Oficjalny FIFA Night.'}/>:<><Pill text="🧪 TEST" tone="amber"/><Muted>Aby utworzyć oficjalny turniej 3–8, przejmij sterowanie w Ustawieniach.</Muted></>}</Card>:<Card><Pill text="🏆 OFICJALNE 1 VS 1" tone="green"/><Muted>Każdy mecz 1 vs 1 jest oficjalny — niezależnie od tego, czy gracie za kasę.</Muted></Card>}
+  <Card><Text style={st.cardTitle}>💰 Stawka na osobę</Text><Input value={stake} onChangeText={setStake} keyboardType="decimal-pad" placeholder="0"/><Muted>Jeśli w 1 vs 1 choć jedna osoba ma wyłączone „Gra za kasę”, mecz jest bezpłatny. Aktualny jackpot: {((options?.jackpot_cents||0)/100).toFixed(2)} zł.</Muted></Card>
+  {error?<ErrorBox message={error}/>:null}<Btn title="🎮 UTWÓRZ ROZGRYWKĘ" onPress={create}/>
+ </ScrollView>
+}
+
+function SetupStage({t,controller,refresh,setBusy}:{t:LiveTournament;controller:boolean;refresh:()=>Promise<void>;setBusy:(v:boolean)=>void}){
+ const [setup,setSetup]=useState<SetupResponse|null>(null); const [error,setError]=useState(''); const [wild,setWild]=useState(''); const [pick,setPick]=useState(''); const [wheelReveal,setWheelReveal]=useState<any>(null);
+ const load=async()=>{try{setSetup(await api.setup(t.id))}catch(e:any){setError(e.message)}}; useEffect(()=>{load()},[t.id,t.phase]);
+ const act=async(fn:()=>Promise<any>,onResult?:(r:any)=>void)=>{setError('');setBusy(true);try{const r=await fn();onResult?.(r); if(r?.setup)setSetup(r.setup);else if(r?.meta)setSetup(r);else await load(); await refresh()}catch(e:any){await refresh();setError(e.message)}finally{setBusy(false)}};
+ if(!setup)return <ScrollView contentContainerStyle={st.pad}><Text style={st.muted}>Ładowanie losowania…</Text>{error?<ErrorBox message={error}/>:null}</ScrollView>;
+ const phase=setup.tournament?.phase||t.phase, players=setup.players||[], extra=setup.meta?.extra||{}, draw=setup.meta?.draw||{};
+ const editable=controller||t.is_test;
+ const pending=setup.pending_wildcard; const waiting=players.find((p:any)=>!p.team_revealed);
+ const groups=()=>{const slots=draw?.slots||{};const byId:any={};players.forEach((p:any)=>byId[p.player_id]=p.name);return Object.entries(slots).map(([slot,pid])=>`${slot}: ${byId[String(pid)]||'?'}`)};
+ return <ScrollView contentContainerStyle={st.pad}><Card style={st.hero}><View style={st.row}><Pill text={t.is_test?'🧪 TEST':'🏆 OFICJALNY'} tone={t.is_test?'amber':'green'}/><Pill text={`${t.player_count} GRACZY`} tone="blue"/></View><Text style={st.heroTitle}>{t.format_label}</Text><Muted>{phase==='draft_order'?'Etap 1/3 • kolejność draftu':phase==='team_draft'?'Etap 2/3 • wybór drużyn':phase==='team_draw'?'Etap 1/2 • koło drużyn':'Losowanie struktury turnieju'}</Muted></Card>
+  {!editable?<Card><Muted>Ten oficjalny etap wymaga sterowania na urządzeniu.</Muted></Card>:null}
+  {phase==='draft_order'?<Card><Text style={st.cardTitle}>🎱 Kolejność wyboru drużyn</Text>{extra.draft_order_revealed?<View style={{gap:6}}>{players.map((p:any,i)=><RevealMotion key={p.player_id} revealKey={`draft-${extra.draft_redraw_count||0}-${p.player_id}`} delay={450+i*620}><View style={st.drawRow}><Text style={st.drawNo}>{i+1}</Text><Text style={st.bigName}>{p.name}</Text></View></RevealMotion>)}</View>:<Muted>Kolejność jest jeszcze zakryta.</Muted>}<Btn title="🎱 LOSUJ KOLEJNOŚĆ" disabled={!editable||extra.draft_order_revealed} onPress={()=>act(()=>api.draftReveal(t.id))}/>{extra.draft_order_revealed?<><View style={st.two}><View style={{flex:1}}><Btn title="💸 LOSUJ PONOWNIE" tone="secondary" disabled={!editable} onPress={()=>act(()=>api.draftReroll(t.id))}/></View><View style={{flex:1}}><Btn title="✅ ZATWIERDŹ" disabled={!editable} onPress={()=>act(()=>api.draftConfirm(t.id))}/></View></View></>:null}</Card>:null}
+  {phase==='team_draft'?<Card><Text style={st.cardTitle}>⚽ Draft drużyn</Text>{players.filter((p:any)=>p.team_revealed).map((p:any)=><Text style={st.line} key={p.player_id}>✓ {p.name}: <Text style={st.green}>{p.team}</Text></Text>)}{waiting?<><Text style={st.bigName}>Teraz wybiera: {waiting.name}</Text><HScroll>{(setup.draft_available||[]).map(x=><Chip key={x} label={x} active={pick===x} onPress={()=>setPick(x)}/>)}</HScroll>{pick.includes('Wild')?<><Input value={wild} onChangeText={setWild} placeholder="Wpisz klub Wild Card"/><HScroll>{(setup.wildcard_suggestions||[]).slice(0,8).map(x=><Chip key={x} label={x} onPress={()=>setWild(x)}/>)}</HScroll></>:null}<Btn title="✅ WYBIERZ DRUŻYNĘ" disabled={!editable||!pick} onPress={()=>act(()=>api.draftPick(t.id,{player_id:waiting.player_id,slot:pick,wildcard_name:wild}))}/></>:<Btn title="🎲 PRZEJDŹ DO LOSOWANIA TURNIEJU" disabled={!editable} onPress={()=>act(()=>api.structureStart(t.id))}/>}</Card>:null}
+  {phase==='team_draw'?<Card><Text style={st.cardTitle}>🎡 Koło drużyn</Text>{wheelReveal?<TeamWheelReveal event={wheelReveal} pool={setup.meta?.team_pool||setup.team_pool||[]} onDone={()=>setWheelReveal(null)}/>:null}{!wheelReveal?players.filter((p:any)=>p.team_revealed).map((p:any,i:number)=><RevealMotion key={`${p.player_id}-${p.team}`} revealKey={`${p.player_id}-${p.team}`} delay={Math.min(i*55,220)}><Text style={st.line}>✓ {p.name}: <Text style={st.green}>{p.team}</Text></Text></RevealMotion>):null}{pending&&!wheelReveal?<RevealMotion revealKey={`wild-${pending.player_id}`}><View style={{gap:8}}><Text style={st.bigName}>🃏 Wild Card dla {pending.name}</Text><Input value={wild} onChangeText={setWild} placeholder="Wpisz drużynę"/><HScroll>{(setup.wildcard_suggestions||[]).slice(0,8).map(x=><Chip key={x} label={x} onPress={()=>setWild(x)}/>)}</HScroll><Btn title="✅ ZATWIERDŹ WILD CARD" disabled={!editable||!wild.trim()} onPress={()=>act(()=>api.wildcard(t.id,{player_id:pending.player_id,team_name:wild}))}/></View></RevealMotion>:waiting&&!wheelReveal?<Btn title="🎡 ZAKRĘĆ KOŁEM" disabled={!editable||!!wheelReveal} onPress={()=>act(()=>api.teamReveal(t.id),(r:any)=>setWheelReveal(r?.revealed||null))}/>:!waiting&&!wheelReveal?<Btn title="🎲 PRZEJDŹ DO LOSOWANIA TURNIEJU" disabled={!editable} onPress={()=>act(()=>api.structureStart(t.id))}/>:null}</Card>:null}
+  {phase==='structure_draw'?<Card><Text style={st.cardTitle}>🎲 Struktura turnieju</Text>{setup.meta?.draw_revealed?<><Muted>Oficjalne losowanie FIFA Night:</Muted><View style={{gap:7}}>{groups().map((x,i)=><RevealMotion key={`${setup.meta?.redraw_count||0}-${x}`} revealKey={`${setup.meta?.redraw_count||0}-${x}`} delay={500+i*580}><View style={st.structureRow}><Text style={st.line}>{x}</Text></View></RevealMotion>)}</View></>:<Muted>Pary / grupy są jeszcze zakryte.</Muted>}{!setup.meta?.draw_revealed?<Btn title="🎲 LOSUJ" disabled={!editable} onPress={()=>act(()=>api.structureReveal(t.id))}/>:<View style={st.two}><View style={{flex:1}}><Btn title="🔄 PONÓW" tone="secondary" disabled={!editable} onPress={()=>act(()=>api.structureReroll(t.id))}/></View><View style={{flex:1}}><Btn title="✅ START" disabled={!editable} onPress={()=>act(()=>api.structureConfirm(t.id))}/></View></View>}</Card>:null}
+  {error?<ErrorBox message={error}/>:null}
+  <DangerControls t={t} controller={controller} refresh={refresh}/>
+ </ScrollView>
+}
+
+function Standings({data}:{data:Record<string,any[]>}){const groups=Object.entries(data||{});if(!groups.length)return null;return <View style={{gap:10}}>{groups.map(([g,rows])=><Card key={g}><Text style={st.cardTitle}>{g==='L'?'📊 Tabela':`📊 Grupa ${g}`}</Text>{rows.map((r:any,i)=><View style={st.tableRow} key={r.player_id}><Text style={[st.tablePos,{width:24}]}>{i+1}</Text><View style={{flex:1}}><Text style={st.line}>{r.name}</Text><Text style={st.team}>{r.team}</Text></View><Text style={st.tablePos}>{r.pts??0} pkt</Text><Text style={st.tablePos}>{(r.gd??0)>0?'+':''}{r.gd??0}</Text></View>)}</Card>)}</View>}
+
+const DE_LAYOUT:any={double4:{wb:[[1,2],[4]],lb:[[3],[5]],final:[6]},double5:{wb:[[1,2],[3],[5]],lb:[[4],[6],[7]],final:[8]},double6:{wb:[[1,2],[3,4],[7]],lb:[[5],[6],[8],[9]],final:[10]},double7:{wb:[[1,2,3],[4,5],[9]],lb:[[6],[7,8],[10],[11]],final:[12]},double8:{wb:[[1,2,3,4],[5,6],[11]],lb:[[7,8],[9,10],[12],[13]],final:[14]}};
+function Bracket({t,matches}:{t:LiveTournament;matches:Match[]}){const lay=DE_LAYOUT[t.format_key];if(!lay)return null;const mm:any={};matches.forEach(m=>mm[m.match_no]=m);const Lane=({title,rounds}:{title:string;rounds:number[][]})=><View style={{gap:7}}><Text style={st.kicker}>{title}</Text><ScrollView horizontal showsHorizontalScrollIndicator><View style={st.bracketRow}>{rounds.map((round,i)=><View key={i} style={st.bracketCol}><Text style={st.roundTitle}>{i===rounds.length-1?'FINAŁ':`RUNDA ${i+1}`}</Text>{round.map(no=><MatchCard key={no} m={mm[no]||{match_no:no,stage:'',stage_label:'',match_status:'pending',ready:false} as Match} current={t.current_match?.match_no===no}/>)}</View>)}</View></ScrollView></View>;return <View style={{gap:14}}><Lane title="🌿 WINNERS BRACKET" rounds={lay.wb}/><Lane title="🩸 LOSERS BRACKET" rounds={lay.lb}/><Text style={st.kicker}>🏆 WIELKI FINAŁ</Text>{lay.final.map((no:number)=><MatchCard key={no} m={mm[no]} current={t.current_match?.match_no===no}/>)}</View>}
+
+function SpecialDraw({t,canEdit,refresh}:{t:LiveTournament;canEdit:boolean;refresh:()=>Promise<void>}){
+ const d=t.special_draw;
+ const [error,setError]=useState('');
+ const [readyAck,setReadyAck]=useState(false);
+ const revealKey=d?`${d.kind}-${d.selected_lucky?.player_id||d.selected_lucky?.name||''}-${d.selected?.player_id||d.selected?.name||''}-${(d.pairs||[]).map((p:any)=>`${p.match_no}:${p.home_name}:${p.away_name}`).join('|')}`:'none';
+ useEffect(()=>{if(!d?.selected){setReadyAck(false);return}const wait=Math.max(2300,900+(d.pairs||[]).length*650);const timer=setTimeout(()=>setReadyAck(true),wait);return()=>clearTimeout(timer)},[revealKey,d?.selected,(d?.pairs||[]).length]);
+ if(!d)return null;
+ const reveal=async()=>{try{setReadyAck(false);await api.specialReveal(t.id,d.kind);await refresh()}catch(e:any){await refresh();setError(e.message)}};
+ const ack=async()=>{try{await api.specialAck(t.id,d.kind);await refresh()}catch(e:any){await refresh();setError(e.message)}};
+ const title=d.kind==='group_playoffs'?'🎯 LOSOWANIE FAZY PUCHAROWEJ':d.kind==='double7_combined'?'🎟️ WINNERS + SZCZĘŚLIWY LOS':d.kind==='double5_opponent'?'🎟️ LOSOWANIE RYWALA':d.kind==='double7_lb_bye'?'🍀 SZCZĘŚLIWY LOS':'🎲 LOSOWANIE DRABINKI';
+ const subtitle=d.kind==='double7_combined'?'Najpierw pary Winners, potem jedna osoba dostaje wolny los.':d.kind==='group_playoffs'?'Pary pojawiają się kolejno — tak samo na ekranie TV.':'Jedno losowanie może zmienić całą drogę do finału.';
+ const lucky=d.selected_lucky||((d.kind==='double7_lb_bye'&&d.selected)?d.selected:null);
+ return <Card style={st.special}><Pill text="LOSOWANIE W TRAKCIE" tone="amber"/><Text style={st.cardTitle}>{title}</Text><Muted>{subtitle}</Muted>{d.selected?<View style={{gap:8}}>{(d.pairs||[]).map((p:any,i:number)=><RevealMotion key={`${revealKey}-${p.match_no}`} revealKey={`${revealKey}-${p.match_no}`} delay={350+i*650}><View style={st.specialPair}><Text style={st.smallLabel}>M{p.match_no}</Text><Text style={st.specialPairText}>{p.home_name} <Text style={st.vs}>VS</Text> {p.away_name}</Text></View></RevealMotion>)}{lucky?<RevealMotion revealKey={`${revealKey}-lucky`} delay={450+(d.pairs||[]).length*650}><View style={st.luckyReveal}><Text style={{fontSize:30}}>🍀</Text><View style={{flex:1}}><Text style={st.smallLabel}>SZCZĘŚLIWY LOS</Text><Text style={st.bigName}>{lucky.name}</Text></View></View></RevealMotion>:null}</View>:<View style={st.drawWaiting}><Text style={{fontSize:38}}>🎲</Text><Muted center>Wynik jest jeszcze zakryty.</Muted></View>}{d.selected?<Btn title={readyAck?'✅ ZATWIERDŹ I GRAJ DALEJ':'⏳ ODKRYWAM…'} disabled={!canEdit||!readyAck} onPress={ack}/>:<Btn title="🎲 ODKRYJ LOSOWANIE" disabled={!canEdit} onPress={reveal}/>} {error?<ErrorBox message={error}/>:null}</Card>;
+}
+
+function ScoreModal({t,matchNo,onClose,refresh,canEdit}:{t:LiveTournament;matchNo:number|null;onClose:()=>void;refresh:()=>Promise<void>;canEdit:boolean}){
+ const visible=matchNo!=null;
+ const m=matchNo==null?null:(t.schedule||[]).find(x=>x.match_no===matchNo)||(t.current_match?.match_no===matchNo?t.current_match:null);
+ const bonus=t.format_key.startsWith('double')&&m?.stage==='FINAL'?1:0;
+ const [hs,setHs]=useState(bonus),[as,setAs]=useState(0),[hp,setHp]=useState(0),[ap,setAp]=useState(0);
+ const [home,setHome]=useState<any[]>([]),[away,setAway]=useState<any[]>([]);
+ const [opts,setOpts]=useState<any>({home:{options:[]},away:{options:[]}});
+ const [newHome,setNewHome]=useState(''),[newAway,setNewAway]=useState('');
+ const [err,setErr]=useState('');const [saving,setSaving]=useState(false);
+ const [images,setImages]=useState<any[]>([]);const [events,setEvents]=useState<any[]|null>(null);const [scanInfo,setScanInfo]=useState<any>(null);
+ useEffect(()=>{if(visible&&m){setHs(bonus);setAs(0);setHp(0);setAp(0);setHome([]);setAway([]);setNewHome('');setNewAway('');setImages([]);setEvents(null);setScanInfo(null);setErr('');api.scorerOptions(t.id,m.match_no).then(setOpts).catch(()=>{})}},[visible,m?.match_no]);
+ if(!m)return null;
+ const tie=hs===as&&stageKnockout(m.stage);
+ const check=events?scanValidation(events,m,hs,as):null;
+ const add=(side:'home'|'away',name='')=>side==='home'?setHome(a=>[...a,{name,goals:1}]):setAway(a=>[...a,{name,goals:1}]);
+ const edit=(side:'home'|'away',i:number,key:string,v:any)=>{const fn=side==='home'?setHome:setAway;fn((a:any[])=>a.map((x,j)=>j===i?{...x,[key]:v}:x))};
+ const del=(side:'home'|'away',i:number)=>{const fn=side==='home'?setHome:setAway;fn((a:any[])=>a.filter((_,j)=>j!==i))};
+ const editEvent=(i:number,patch:any)=>setEvents(a=>(a||[]).map((x:any,j:number)=>j===i?{...x,...patch}:x));
+ const addManualEvent=()=>setEvents(a=>[...(a||[]),{event_order:(a?.length||0)+1,event_type:'normal_goal',minute:null,stoppage:null,minute_label:'',footballer_name:'',related_footballer_name:'',actor_player_id:m.home_player_id||'',confidence:'manual',source_images:[]}]);
+ const addToRoster=async(side:'home'|'away')=>{const name=(side==='home'?newHome:newAway).trim();const team=String((side==='home'?m.home_team:m.away_team)||'').trim();if(!name||!team)return;setSaving(true);setErr('');try{const r=await api.addScorer(t.id,m.match_no,side,name);setOpts((old:any)=>({...old,[side]:{...(old?.[side]||{}),team,options:r?.[side]?.options||[]}}));add(side,name);if(side==='home')setNewHome('');else setNewAway('')}catch(e:any){setErr(e.message)}finally{setSaving(false)}};
+ const pickImage=async(camera:boolean)=>{setErr('');try{if(camera){if(Platform.OS!=='web'){const perm=await ImagePicker.requestCameraPermissionsAsync();if(!perm.granted)throw new Error('Brak zgody na aparat.');}const r=await ImagePicker.launchCameraAsync({mediaTypes:['images'] as any,quality:.9});const asset=!r.canceled?r.assets?.[0]:undefined;if(asset?.uri)setImages(a=>[...a,asset].slice(0,6));}else{const r=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'] as any,allowsMultipleSelection:true,selectionLimit:6,quality:.9});if(!r.canceled)setImages(a=>[...a,...r.assets].slice(0,6));}}catch(e:any){setErr(e.message)}};
+ const scan=async()=>{if(!images.length)return;setSaving(true);setErr('');try{const r=await api.scanMatch(t.id,m.match_no,images);const f=r?.result?.fifa_night||{};if(typeof f.home_score==='number')setHs(f.home_score);if(typeof f.away_score==='number')setAs(f.away_score);if(typeof f.home_penalties==='number')setHp(f.home_penalties);if(typeof f.away_penalties==='number')setAp(f.away_penalties);setEvents((f.events||[]).map((e:any)=>({...e,_minute_invalid:false})));setScanInfo({serverValidation:f.goal_validation})}catch(e:any){setErr(e.message)}finally{setSaving(false)}};
+ const save=async()=>{setSaving(true);setErr('');try{if(tie&&hp===ap)throw new Error('W meczu pucharowym remis wymaga rozstrzygnięcia karnych.');if(events&&check&&!check.complete){const why=[];if(check.missingHome)why.push(`${m.home_name}: brakuje ${check.missingHome}`);if(check.missingAway)why.push(`${m.away_name}: brakuje ${check.missingAway}`);if(check.over)why.push(`wydarzenia dają ${check.homeGoals}:${check.awayGoals}, wynik to ${hs}:${as}`);if(check.missingNames)why.push('gol bez nazwiska strzelca');if(check.badActors)why.push('wydarzenie bez przypisanego gracza');if(check.badMinutes)why.push('nieprawidłowa minuta — użyj np. 90+2');throw new Error(`Popraw odczyt przed zapisem: ${why.join('; ')||'sprawdź wydarzenia.'}`)}const scorers=events?undefined:{home:{team:m.home_team||'',items:home.filter(x=>x.name.trim())},away:{team:m.away_team||'',items:away.filter(x=>x.name.trim())}};const cleanEvents=events?.map(({_minute_invalid,...e}:any)=>e);await api.saveResult(t.id,m.match_no,{home_score:hs,away_score:as,home_penalties:tie?hp:null,away_penalties:tie?ap:null,scorers,events:cleanEvents||undefined});onClose();await refresh()}catch(e:any){const message=String(e?.message||e);if(/innym urządzeniu|kolejność fifa night zmieniła się|nie jest już aktualnym meczem/i.test(message)){onClose();await refresh();Alert.alert('Stan rozgrywki się zmienił',`${message}\n\nOdświeżyłem aktualny mecz.`)}else setErr(message)}finally{setSaving(false)}};
+ const ScorerSide=({side,rows,options,title}:{side:'home'|'away';rows:any[];options:any[];title:string})=>{const fresh=side==='home'?newHome:newAway;const setFresh=side==='home'?setNewHome:setNewAway;return <Card><Text style={st.cardTitle}>{title}</Text><HScroll>{(options||[]).slice(0,12).map((x:any)=><Chip key={x.name} label={x.name} onPress={()=>add(side,x.name)}/>)}</HScroll>{rows.map((r:any,i)=><View key={i} style={st.scorerRow}><Input style={{flex:1}} value={r.name} onChangeText={(v:string)=>edit(side,i,'name',v)} placeholder="Nazwisko"/><Pressable style={st.mini} onPress={()=>edit(side,i,'goals',Math.max(1,r.goals-1))}><Text style={st.miniText}>−</Text></Pressable><Text style={st.line}>{r.goals}</Text><Pressable style={st.mini} onPress={()=>edit(side,i,'goals',r.goals+1)}><Text style={st.miniText}>+</Text></Pressable><Pressable onPress={()=>del(side,i)}><Text style={st.red}>×</Text></Pressable></View>)}<Btn title="➕ Dodaj strzelca" tone="secondary" small onPress={()=>add(side)}/><View style={st.rosterAdd}><Input style={{flex:1}} value={fresh} onChangeText={setFresh} placeholder="Brakuje piłkarza?"/><Pressable disabled={!fresh.trim()||saving} onPress={()=>addToRoster(side)} style={[st.rosterBtn,(!fresh.trim()||saving)&&{opacity:.45}]}><Text style={st.rosterBtnText}>+ DO LISTY</Text></Pressable></View><Text style={st.hint}>Dodany piłkarz zostanie też na przyszłe mecze tej drużyny.</Text></Card>};
+ return <Modal visible={visible} animationType="slide" onRequestClose={onClose}><View style={st.modal}><View style={st.modalHead}><View><Text style={st.kicker}>MECZ {m.match_no}</Text><Text style={st.modalTitle}>{m.home_name} — {m.away_name}</Text></View><Pressable onPress={onClose}><Text style={st.close}>×</Text></Pressable></View><ScrollView contentContainerStyle={st.pad} keyboardShouldPersistTaps="handled">
+  <Card><Text style={st.cardTitle}>{m.home_team} vs {m.away_team}</Text><View style={st.scoreRow}><Stepper value={hs} set={setHs} min={bonus}/><Text style={st.scoreColon}>:</Text><Stepper value={as} set={setAs}/></View>{bonus?<Text style={st.amber}>Winners Bracket zaczyna finał od technicznego 1:0.</Text>:null}{tie?<><Text style={st.smallLabel}>KARNE</Text><View style={st.scoreRow}><Stepper value={hp} set={setHp}/><Text style={st.scoreColon}>:</Text><Stepper value={ap} set={setAp}/></View></>:null}<Text style={st.banter}>Padł wynik? Zapiszmy go, zanim każdy zacznie pamiętać inny. 😄</Text></Card>
+  {canEdit?<Card><Text style={st.cardTitle}>📷 Odczytaj zdarzenia z EA FC</Text><Muted>Zrób zdjęcie ekranu Events. Jeśli lista jest dłuższa, dodaj kolejne. Najpierw zobaczysz odczyt i możesz go poprawić — zapis nastąpi dopiero po zatwierdzeniu wyniku.</Muted><View style={st.two}><View style={{flex:1}}><Btn title="📷 APARAT" tone="secondary" onPress={()=>pickImage(true)}/></View><View style={{flex:1}}><Btn title="🖼️ GALERIA" tone="secondary" onPress={()=>pickImage(false)}/></View></View>{images.length?<><ScrollView horizontal contentContainerStyle={{gap:8}}>{images.map((img:any,i)=><View key={`${img.uri}-${i}`} style={{gap:4}}><Image source={{uri:img.uri}} style={st.thumb}/><Pressable onPress={()=>setImages(a=>a.filter((_,j)=>j!==i))}><Text style={st.red}>Usuń</Text></Pressable></View>)}</ScrollView><Btn title={saving?'ODCZYTUJĘ…':'🔎 ODCZYTAJ ZDJĘCIA'} disabled={saving} onPress={scan}/></>:null}
+  {events?<><Text style={st.smallLabel}>ODCZYTANE ZDARZENIA — popraw, jeśli coś się nie zgadza</Text>{events.map((e:any,i)=><View key={`${e.event_order||i}-${i}`} style={st.eventEditCard}><View style={st.row}><Pill text={`#${i+1} • ${SCAN_EVENT_LABELS[String(e.event_type)]||'❓ inne'}`} tone="blue"/><Pressable onPress={()=>setEvents(a=>(a||[]).filter((_:any,j:number)=>j!==i))}><Text style={st.red}>USUŃ ×</Text></Pressable></View><Text style={st.smallLabel}>TYP WYDARZENIA</Text><HScroll>{SCAN_EVENT_TYPES.map(typ=><Chip key={typ} label={SCAN_EVENT_LABELS[typ]||typ} active={e.event_type===typ} onPress={()=>editEvent(i,{event_type:typ})}/>)}</HScroll><Text style={st.smallLabel}>GRACZ FIFA NIGHT</Text><HScroll><Chip label={`${m.home_name||'HOME'} • ${m.home_team||''}`} active={String(e.actor_player_id||'')===String(m.home_player_id||'')} onPress={()=>editEvent(i,{actor_player_id:m.home_player_id||''})}/><Chip label={`${m.away_name||'AWAY'} • ${m.away_team||''}`} active={String(e.actor_player_id||'')===String(m.away_player_id||'')} onPress={()=>editEvent(i,{actor_player_id:m.away_player_id||''})}/></HScroll><View style={st.two}><Input style={{flex:2}} value={String(e.footballer_name||'')} onChangeText={(v:string)=>editEvent(i,{footballer_name:v})} placeholder={e.event_type==='substitution'?'Piłkarz wchodzący':'Piłkarz'}/><Input style={{flex:1}} value={minuteText(e)} keyboardType="default" autoCapitalize="none" onChangeText={(v:string)=>editEvent(i,minutePatch(v))} placeholder="np. 90+2"/></View>{e.event_type==='substitution'?<Input value={String(e.related_footballer_name||'')} onChangeText={(v:string)=>editEvent(i,{related_footballer_name:v})} placeholder="Piłkarz schodzący"/>:null}{e.event_type==='own_goal'?<Muted>Samobój liczy się dla przeciwnika wskazanego gracza FIFA Night i nie trafia do klasyfikacji strzelców.</Muted>:null}</View>)}<Btn title="➕ DODAJ WYDARZENIE RĘCZNIE" tone="secondary" onPress={addManualEvent}/>{check?<><Pill text={check.complete?'✅ GOLE ZGADZAJĄ SIĘ Z WYNIKIEM':'⚠️ ODCZYT WYMAGA KOREKTY'} tone={check.complete?'green':'amber'}/><Muted>Wydarzenia bramkowe: {check.homeGoals}:{check.awayGoals} • wynik meczu: {hs}:{as}{check.missingNames?` • brakuje nazwiska przy ${check.missingNames} golu/golach`:''}{check.badActors?` • ${check.badActors} wydarzeń bez gracza`:''}{check.badMinutes?` • ${check.badMinutes} nieprawidłowych minut`:''}</Muted></>:null}<Btn title="↩️ WRÓĆ DO RĘCZNYCH STRZELCÓW" tone="secondary" onPress={()=>{setEvents(null);setScanInfo(null)}}/></>:scanInfo?<Pill text="⚠️ SPRAWDŹ ODCZYT" tone="amber"/>:null}</Card>:null}
+  {!events?<><ScorerSide side="home" title={`⚽ ${m.home_team}`} rows={home} options={opts.home?.options}/><ScorerSide side="away" title={`⚽ ${m.away_team}`} rows={away} options={opts.away?.options}/></>:null}
+  {err?<ErrorBox message={err}/>:null}<Btn title={saving?'ZAPISUJĘ…':'✅ ZAPISZ WYNIK'} disabled={saving||Boolean(events&&check&&!check.complete)} onPress={save}/>
+ </ScrollView></View></Modal>
+}
+function Stepper({value,set,min=0}:{value:number;set:(v:number)=>void;min?:number}){return <View style={st.stepper}><Pressable style={st.step} onPress={()=>set(Math.max(min,value-1))}><Text style={st.stepText}>−</Text></Pressable><Text style={st.bigScore}>{value}</Text><Pressable style={st.step} onPress={()=>set(value+1)}><Text style={st.stepText}>+</Text></Pressable></View>}
+
+function DangerControls({t,controller,refresh}:{t:LiveTournament;controller:boolean;refresh:()=>Promise<void>}){const canPublic=t.is_test||t.format_key==='duel1v1';const reset=()=>Alert.alert('Usunąć bieżącą rozgrywkę?','Reset usuwa również rozegrane w niej wyniki.',[{text:'Anuluj'},{text:'Usuń',style:'destructive',onPress:async()=>{try{await api.reset(t.id);await refresh()}catch(e:any){Alert.alert('Błąd',e.message)}}}]);return <Card><Text style={st.cardTitle}>⚙️ Rozgrywka</Text>{t.is_test&&controller?<Btn title="🏆 ZMIEŃ TESTOWY NA OFICJALNY" tone="secondary" onPress={()=>Alert.alert('Zmienić na oficjalny?','Wszystkie dotychczasowe mecze zaczną liczyć się jako oficjalne.',[{text:'Nie'},{text:'Tak',onPress:async()=>{try{await api.setMode(t.id,false);await refresh()}catch(e:any){Alert.alert('Błąd',e.message)}}}])}/>:null}{!t.is_test&&t.format_key!=='duel1v1'&&controller&&t.status==='active'&&t.phase==='active'?<Btn title="⏹️ ZAKOŃCZ JAKO NIEDOKOŃCZONY" tone="danger" onPress={()=>Alert.alert('Zakończyć turniej?','Rozegrane mecze zostaną w oficjalnych statystykach, ale turniej nie będzie miał mistrza ani rozliczenia.',[{text:'Anuluj'},{text:'Zakończ',style:'destructive',onPress:async()=>{try{await api.abandon(t.id);await refresh()}catch(e:any){Alert.alert('Błąd',e.message)}}}])}/>:null}{(canPublic||controller)&&t.status==='active'?<Btn title="🗑️ RESETUJ BIEŻĄCĄ ROZGRYWKĘ" tone="danger" onPress={reset}/>:null}</Card>}
+
+const MATCH_BANTER=[
+ 'Dwa pady, jedna prawda. Boisko zaraz zweryfikuje.',
+ 'Forma formą — jeden mecz potrafi wywrócić cały wieczór.',
+ 'Tu nie ma VAR-u. Jest za to pamięć bazy.',
+ 'Kto przegrywa, ten pierwszy sprawdza, z kim gra dalej.',
+ 'Statystyki patrzą. Presja zupełnie przypadkowa.',
+ 'Spokojnie, to tylko mecz. Chyba że to finał.',
+ 'Każdy ma plan, dopóki nie straci gola w trzeciej minucie.',
+ 'Taktyka jest prosta: strzelić więcej niż rywal. Reszta to szczegóły.',
+ 'Pady naładowane. Wymówki też?',
+ 'Mecz jeszcze się nie zaczął, a narracja już gotowa.',
+ 'Kto pierwszy powie „lag”, ten automatycznie trafia pod obserwację.',
+ 'Jedna bramka i nagle każdy zna się na zarządzaniu wynikiem.',
+ 'Oby forma była lepsza niż pamięć o ostatniej porażce.',
+ 'Powtórki można skipować. Wyniku już nie.',
+];
+function matchBanter(m:Match){return MATCH_BANTER[Math.max(0,(Number(m.match_no||1)-1)%MATCH_BANTER.length)]}
+
+function ActiveTournament({t,controller,refresh}:{t:LiveTournament;controller:boolean;refresh:()=>Promise<void>}){const [view,setView]=useState<'live'|'list'|'tree'>('live');const [scoreMatchNo,setScoreMatchNo]=useState<number|null>(null);const canEdit=controller||t.is_test||t.format_key==='duel1v1';const doAct=async(kind:'undo'|'defer'|'skip')=>{try{if(kind==='undo')await api.undo(t.id);if(kind==='defer'&&t.current_match)await api.defer(t.id,t.current_match.match_no);if(kind==='skip'&&t.current_match)await api.skip(t.id,t.current_match.match_no);await refresh()}catch(e:any){Alert.alert('Błąd',e.message)}};
+ return <><ScrollView contentContainerStyle={st.pad}><Card style={st.hero}><View style={st.row}><Pill text={t.is_test?'🧪 TEST':'🏆 OFICJALNY'} tone={t.is_test?'amber':'green'}/><Pill text={t.format_key==='duel1v1'?'1 VS 1':`${t.player_count} GRACZY`} tone="blue"/></View><Text style={st.heroTitle}>{t.format_label}</Text><Muted>{t.format_matches}</Muted>{Number(t.stake_per_player||0)>0?<Text style={st.amber}>💰 {Number(t.stake_per_player).toFixed(2)} zł/os. • gra za kasę: {(t.cash_player_names||[]).join(', ')||'—'}{Number(t.jackpot_cents||0)>0?` • jackpot ${(Number(t.jackpot_cents)/100).toFixed(2)} zł`:''}</Text>:null}</Card><HScroll><Chip label="🏠 LIVE" active={view==='live'} onPress={()=>setView('live')}/><Chip label="📋 LISTA" active={view==='list'} onPress={()=>setView('list')}/>{t.format_key.startsWith('double')?<Chip label="🌳 DRZEWKO" active={view==='tree'} onPress={()=>setView('tree')}/>:null}</HScroll>
+  <SpecialDraw t={t} canEdit={canEdit} refresh={refresh}/>
+  {view==='live'?<>{t.current_match?<><Text style={st.kicker}>▶ TERAZ</Text><StageSpotlight m={t.current_match} formatKey={t.format_key}/><MatchCard m={t.current_match} current/><Text style={st.banter}>{matchBanter(t.current_match)}</Text><MatchAbsences m={t.current_match} absences={t.active_absences||[]}/><Card><View style={st.two}><View style={{flex:1}}><Btn title="⚽ WPISZ WYNIK" disabled={!canEdit||!!t.special_draw} onPress={()=>setScoreMatchNo(t.current_match!.match_no)}/></View><View style={{flex:1}}><Btn title="↩️ COFNIJ OSTATNI" tone="secondary" disabled={!canEdit} onPress={()=>doAct('undo')}/></View></View>{t.defer?.allowed?<Btn title="🕒 PRZESUŃ MECZ NA PÓŹNIEJ" tone="secondary" disabled={!canEdit} onPress={()=>doAct('defer')}/>:null}{t.skip?.allowed?<Btn title="⏭️ POMIŃ — MECZ NIE ZMIENI FINALISTÓW" tone="secondary" disabled={!canEdit} onPress={()=>Alert.alert('Pominąć mecz?',t.skip?.reason||'',[{text:'Nie'},{text:'Tak',onPress:()=>doAct('skip')}])}/>:null}</Card>{t.current_context?<Card><Text style={st.cardTitle}>⚔️ Przed meczem</Text><Muted>H2H: {t.current_context?.home_wins??0} — {t.current_context?.draws??0} — {t.current_context?.away_wins??0} • {t.current_context?.meetings??0} meczów</Muted><Muted>Forma: {(Array.isArray(t.current_context?.home_form)?t.current_context.home_form.join(''):t.current_context?.home_form)||'—'} / {(Array.isArray(t.current_context?.away_form)?t.current_context.away_form.join(''):t.current_context?.away_form)||'—'}</Muted>{t.current_context?.rivalry?<Text style={st.banter}>🔥 Rywalizacja ma już swoją historię.</Text>:null}{t.current_context?.derby?<Text style={st.banter}>⚔️ Derby. Tu tabela schodzi na drugi plan.</Text>:null}</Card>:null}</>:<Card><Muted>Czekamy na kolejny grywalny mecz.</Muted></Card>}{t.next_match?<><Text style={st.kicker}>NASTĘPNY</Text><MatchCard m={t.next_match}/><MatchAbsences m={t.next_match} absences={t.active_absences||[]}/></>:null}<Standings data={t.standings}/>{t.live_scorers?.length?<Card><Text style={st.cardTitle}>⚽ Strzelcy turnieju</Text>{t.live_scorers.map((x:any,i)=><Text style={st.line} key={`${x.name}-${i}`}>{i+1}. {x.name} — <Text style={st.green}>{x.goals}</Text></Text>)}</Card>:null}<DangerControls t={t} controller={controller} refresh={refresh}/></>:view==='list'?<View style={{gap:9}}>{t.schedule.map(m=><MatchCard key={m.match_no} m={m} current={t.current_match?.match_no===m.match_no}/>)}</View>:<Bracket t={t} matches={t.schedule}/>}</ScrollView><ScoreModal t={t} matchNo={scoreMatchNo} onClose={()=>setScoreMatchNo(null)} refresh={refresh} canEdit={canEdit}/></>}
+
+function Completed({t,controller,refresh}:{t:LiveTournament;controller:boolean;refresh:()=>Promise<void>}){
+ const q=t.summary||{};const duel=t.format_key==='duel1v1';
+ const png=async(mode:'save'|'share')=>{try{await getPng(`/api/v1/exports/tournament/${t.id}/summary.png`,`fifa-night-${t.id}.png`,mode)}catch(e:any){Alert.alert('Błąd',e.message)}};
+ return <ScrollView contentContainerStyle={st.pad}><ChampionCelebration name={q.champion||q.winner||'—'} duel={duel}/>{!duel?<Card style={st.podiumCard}>{q.runner_up?<Text style={st.podiumLine}>🥈 {q.runner_up}</Text>:null}{q.third_place?.name?<Text style={st.podiumLine}>🥉 {q.third_place.name}</Text>:null}</Card>:null}<Card><Text style={st.cardTitle}>📌 Wieczór w skrócie</Text>{q.top_goals?.name?<Text style={st.line}>🔥 Najwięcej goli: <Text style={st.green}>{q.top_goals.name} — {q.top_goals.value}</Text></Text>:null}{q.real_top_scorer?.name?<Text style={st.line}>⚽ Król strzelców EA FC: <Text style={st.green}>{q.real_top_scorer.name} — {q.real_top_scorer.goals}</Text></Text>:null}{q.best_defense?.name?<Text style={st.line}>🧱 Najszczelniejszy: {q.best_defense.name}</Text>:null}{q.biggest?<Text style={st.line}>💥 Najwyższe zwycięstwo: {q.biggest.home} {q.biggest.score} {q.biggest.away}</Text>:null}{q.match_of_tournament?<Text style={st.line}>🎬 Mecz wieczoru: {q.match_of_tournament.home} {q.match_of_tournament.score} {q.match_of_tournament.away}</Text>:null}{(q.new_records||[]).map((x:string,i:number)=><Text key={i} style={st.amber}>💎 {x}</Text>)}</Card><Card><Text style={st.cardTitle}>🖼️ Podsumowanie</Text><View style={st.two}><View style={{flex:1}}><Btn title="💾 ZAPISZ PNG" tone="secondary" onPress={()=>png('save')}/></View><View style={{flex:1}}><Btn title="📤 UDOSTĘPNIJ" tone="secondary" onPress={()=>png('share')}/></View></View></Card><Btn title="➕ NOWA ROZGRYWKA" onPress={async()=>{try{await api.startNew(t.id);await refresh()}catch(e:any){Alert.alert('Błąd',e.message)}}}/></ScrollView>;
+}
+
+export default function FifaScreen({live,options,controller,refresh,setBusy}:Props){const t=live?.tournament||null;if(!t)return <StartWizard options={options} controller={controller} refresh={refresh} setBusy={setBusy}/>;if(['draft_order','team_draft','team_draw','structure_draw'].includes(t.phase))return <SetupStage t={t} controller={controller} refresh={refresh} setBusy={setBusy}/>;if(t.status==='completed')return <Completed t={t} controller={controller} refresh={refresh}/>;return <ActiveTournament t={t} controller={controller} refresh={refresh}/>}
+
+const st=StyleSheet.create({pad:{padding:15,paddingBottom:45,gap:11},hero:{backgroundColor:'#0b2233',borderColor:'#17445b'},heroTitle:{color:colors.text,fontSize:23,fontWeight:'900',lineHeight:28},row:{flexDirection:'row',justifyContent:'space-between',alignItems:'center',gap:8},two:{flexDirection:'row',gap:8,alignItems:'center'},option:{padding:14,borderRadius:16,borderWidth:1,borderColor:colors.border,backgroundColor:colors.panel},optionActive:{borderColor:'#2d9a74',backgroundColor:'#0e2d2a'},optionTitle:{color:colors.text,fontWeight:'900',fontSize:14},optionSub:{color:colors.muted,fontSize:11,marginTop:3},smallLabel:{color:colors.muted,fontSize:10,fontWeight:'900',letterSpacing:1.1},cardTitle:{color:colors.text,fontWeight:'900',fontSize:16},line:{color:colors.text,fontSize:13,lineHeight:20},green:{color:colors.green,fontWeight:'900'},amber:{color:colors.amber,fontSize:11,lineHeight:16},red:{color:colors.red,fontWeight:'900'},bigName:{color:colors.text,fontSize:18,fontWeight:'900',marginVertical:5},muted:{color:colors.muted},matchCard:{backgroundColor:colors.panel,borderWidth:1,borderColor:colors.border,borderRadius:18,padding:13,gap:8},current:{borderColor:'#2d9a74',backgroundColor:'#0d2928'},played:{opacity:.86},score:{color:colors.text,fontWeight:'900',fontSize:15},matchNames:{flexDirection:'row',alignItems:'center',gap:8},name:{color:colors.text,fontWeight:'900',fontSize:14,textAlign:'center'},team:{color:colors.muted,fontSize:10,textAlign:'center',marginTop:2},vs:{color:'#536b82',fontWeight:'900'},kicker:{color:colors.green,fontWeight:'900',fontSize:11,letterSpacing:1.5},tableRow:{flexDirection:'row',alignItems:'center',gap:7,paddingVertical:7,borderTopWidth:1,borderTopColor:'#17283a'},tablePos:{color:colors.muted,fontSize:11,fontWeight:'800'},special:{borderColor:'#7b6415',backgroundColor:'#2b260f'},bracketRow:{flexDirection:'row',gap:10,paddingVertical:5},bracketCol:{width:270,gap:8},roundTitle:{color:colors.muted,fontSize:10,fontWeight:'900',letterSpacing:1},modal:{flex:1,backgroundColor:colors.bg,paddingTop:38},modalHead:{paddingHorizontal:15,paddingBottom:8,flexDirection:'row',justifyContent:'space-between',alignItems:'center'},modalTitle:{color:colors.text,fontSize:19,fontWeight:'900',maxWidth:300},close:{color:colors.text,fontSize:30,fontWeight:'300'},scoreRow:{flexDirection:'row',alignItems:'center',justifyContent:'center',gap:14},scoreColon:{color:colors.muted,fontSize:32,fontWeight:'900'},stepper:{flexDirection:'row',alignItems:'center',gap:9},step:{width:40,height:40,borderRadius:12,backgroundColor:'#18304a',borderWidth:1,borderColor:'#2b4a67',alignItems:'center',justifyContent:'center'},stepText:{color:colors.text,fontSize:22,fontWeight:'900'},bigScore:{color:colors.text,fontSize:40,fontWeight:'900',minWidth:45,textAlign:'center'},scorerRow:{flexDirection:'row',gap:6,alignItems:'center'},mini:{width:30,height:36,borderRadius:9,backgroundColor:'#193049',alignItems:'center',justifyContent:'center'},miniText:{color:colors.text,fontWeight:'900',fontSize:18},thumb:{width:100,height:140,borderRadius:10,backgroundColor:'#111'},eventRow:{flexDirection:'row',gap:8,alignItems:'center',paddingVertical:7,borderTopWidth:1,borderTopColor:'#1b2d40'},eventEditCard:{backgroundColor:'#091827',borderWidth:1,borderColor:'#203a53',borderRadius:14,padding:10,gap:7},champ:{alignItems:'center',backgroundColor:'#2c2409',borderColor:'#6c5913',paddingVertical:28},champion:{color:colors.text,fontSize:29,fontWeight:'900'},rosterAdd:{flexDirection:'row',gap:7,alignItems:'center',marginTop:2},rosterBtn:{height:46,paddingHorizontal:10,borderRadius:12,backgroundColor:'#17334a',borderWidth:1,borderColor:'#31536f',alignItems:'center',justifyContent:'center'},rosterBtnText:{color:colors.green,fontSize:10,fontWeight:'900'},hint:{color:'#6f8499',fontSize:9,lineHeight:13},banter:{color:'#b8c7d8',fontSize:11,fontStyle:'italic',lineHeight:16,textAlign:'center'},drawRow:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#0b1e2e',borderWidth:1,borderColor:'#24435c',borderRadius:14,padding:12},drawNo:{width:34,height:34,borderRadius:17,textAlign:'center',textAlignVertical:'center',backgroundColor:'#173a51',color:colors.green,fontWeight:'900',fontSize:16},structureRow:{backgroundColor:'#0b1e2e',borderWidth:1,borderColor:'#24435c',borderRadius:14,padding:12},wheelReveal:{alignItems:'center',gap:8,paddingVertical:6},wheelShell:{width:236,height:236,alignItems:'center',justifyContent:'center',marginVertical:8},wheelRing:{width:214,height:214,borderRadius:107,borderWidth:8,borderColor:'#31d59a',backgroundColor:'#10283b',alignItems:'center',justifyContent:'center',shadowColor:'#31d59a',shadowOpacity:.35,shadowRadius:14,elevation:8},wheelPointer:{position:'absolute',top:0,zIndex:5,width:0,height:0,borderLeftWidth:12,borderRightWidth:12,borderBottomWidth:24,borderLeftColor:'transparent',borderRightColor:'transparent',borderBottomColor:'#f4c95d',transform:[{rotate:'180deg'}]},wheelLabelWrap:{position:'absolute',left:57,top:99,width:100,alignItems:'center'},wheelLabel:{color:'#dce9f5',fontSize:9,fontWeight:'900',textAlign:'center'},wheelHub:{width:58,height:58,borderRadius:29,backgroundColor:'#06121e',borderWidth:3,borderColor:'#f4c95d',alignItems:'center',justifyContent:'center'},wheelHubText:{color:'#f4c95d',fontSize:18,fontWeight:'900'},wheelResult:{color:colors.green,fontSize:23,fontWeight:'900',textAlign:'center'},stageSpotlight:{alignItems:'center',backgroundColor:'#101d2d',borderWidth:1,borderColor:'#36506b',borderRadius:20,padding:18,gap:5},finalSpotlight:{backgroundColor:'#302607',borderColor:'#92731a'},stageIcon:{fontSize:48,textAlign:'center'},stageKicker:{color:'#f4c95d',fontWeight:'900',fontSize:11,letterSpacing:2,textAlign:'center'},stageTitle:{color:colors.text,fontSize:22,fontWeight:'900',textAlign:'center'},stageSub:{color:'#aebed0',fontSize:12,lineHeight:18,textAlign:'center'},celebration:{minHeight:300,alignItems:'center',justifyContent:'center',overflow:'hidden',backgroundColor:'#302607',borderWidth:1,borderColor:'#92731a',borderRadius:22,padding:22,gap:6},confetti:{position:'absolute',top:0,fontSize:20},championBig:{color:colors.text,fontSize:32,fontWeight:'900',textAlign:'center'},podiumCard:{alignItems:'center',gap:8},podiumLine:{color:colors.text,fontSize:17,fontWeight:'800'},specialPair:{backgroundColor:'#161f28',borderWidth:1,borderColor:'#755e16',borderRadius:14,padding:12,gap:3},specialPairText:{color:colors.text,fontSize:16,fontWeight:'900',textAlign:'center'},luckyReveal:{flexDirection:'row',alignItems:'center',gap:12,backgroundColor:'#18351f',borderWidth:1,borderColor:'#3e8b50',borderRadius:16,padding:14},drawWaiting:{alignItems:'center',justifyContent:'center',paddingVertical:16,gap:8},});
