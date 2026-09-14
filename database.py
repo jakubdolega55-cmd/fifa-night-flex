@@ -31,6 +31,41 @@ CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
 LAST_STAKE_KEY = "flex_last_stake_pln"
 
+# One canonical Awards order shared by Streamlit and mobile clients.
+# Keep selection flow and public display in the same order so the gala reads
+# exactly like the organizer's decision process.
+AWARD_PRIORITY_GROUPS = [
+    (
+        "🥇 ETAP 1/4 — Główne nagrody",
+        "Najpierw najważniejsze sportowe wyróżnienia. Wyniki są tu najmocniejszą podpowiedzią.",
+        ["player_year", "offensive", "defense", "player_scorers", "clutch"],
+    ),
+    (
+        "🥈 ETAP 2/4 — Charakter i styl gry",
+        "Nagrody za sposób wygrywania i charakter sezonu: powroty, końcówki, fair play i styl gry.",
+        ["comeback_king", "late_king", "fair_play", "spectacle", "universal"],
+    ),
+    (
+        "🥉 ETAP 3/4 — Rozwój i wyróżnienia sezonu",
+        "Tu patrzymy na wejście do FIFA Night, rozwój w trakcie roku i mocny sezon poza ścisłą dominacją.",
+        ["debut", "progress", "outsider"],
+    ),
+    (
+        "🎖️ ETAP 4/4 — Nagrody specjalne i finał gali",
+        "Na koniec kategorie specjalne, zespołowe i wydarzenia sezonu.",
+        ["finance", "rivalry", "team_best", "superscorer", "match_year"],
+    ),
+]
+AWARD_DISPLAY_ORDER = [key for _, _, keys in AWARD_PRIORITY_GROUPS for key in keys]
+CLASSIFICATION_DISPLAY_ORDER = [
+    "sharpest", "simulator", "penaldo", "first_goals", "own_goals", "penalty_misses",
+    "duel", "wildcards", "regular", "minimalist", "unlucky",
+]
+DIRECT_PLAYER_AWARD_KEYS = {
+    "player_year", "offensive", "defense", "clutch", "comeback_king", "late_king",
+    "fair_play", "spectacle", "universal", "debut", "progress", "outsider", "finance",
+}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -4692,10 +4727,7 @@ class Database:
         # Summary of participant nominations across individual award categories.
         # Count a category at most once per player. Team/match/rivalry/EA-player
         # categories are intentionally excluded because the nominee is not one FIFA Night participant.
-        direct_player_awards={
-            "player_year","offensive","defense","clutch","late_king","comeback_king","fair_play",
-            "spectacle","debut","outsider","universal","finance"
-        }
+        direct_player_awards=DIRECT_PLAYER_AWARD_KEYS
         nomination_sets=defaultdict(lambda:{"top2":set(),"top3":set(),"top5":set(),"first":set()})
         nomination_titles_top2=defaultdict(set)
         for cat in cats:
@@ -4734,6 +4766,15 @@ class Database:
         overview={"tournaments":len(tournament_ids),"duels":len(duel_ids),"matches":len(matches),"goals":sum(int(m["home_score"])+int(m["away_score"]) for m in matches),
                   "players":len({str(r["player_id"]) for r in tps}),"titles":len(completed_tournament_ids),"top_player":(cats[0]["candidates"][0]["name"] if cats and cats[0]["candidates"] else None),
                   "top_team":(next((c for c in cats if c["key"]=="team_best"),{}).get("candidates") or [{}])[0].get("name") if teamitems else None}
+        award_order={key:i for i,key in enumerate(AWARD_DISPLAY_ORDER)}
+        classification_order={key:i for i,key in enumerate(CLASSIFICATION_DISPLAY_ORDER)}
+        cats.sort(
+            key=lambda c:(
+                0 if c.get("award") else 1,
+                (award_order if c.get("award") else classification_order).get(str(c.get("key") or ""), 999),
+                str(c.get("title") or ""),
+            )
+        )
         return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year),"nomination_summary":nomination_summary}
 
     def all_time_stats(self) -> list[dict]:

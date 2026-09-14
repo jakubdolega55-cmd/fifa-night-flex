@@ -11,7 +11,9 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from database import Database
+from database import (
+    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS,
+)
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
@@ -2626,11 +2628,7 @@ def render_awards(readonly:bool=False):
     view_cats=[c for c in cats if not c.get("award")]
 
     if section=="🎯 Klasyfikacje":
-        ranking_priority_keys=[
-            "sharpest","simulator","penaldo","first_goals","own_goals","penalty_misses",
-            "duel","wildcards","regular","minimalist","unlucky",
-        ]
-        ranking_priority_index={key:i for i,key in enumerate(ranking_priority_keys)}
+        ranking_priority_index={key:i for i,key in enumerate(CLASSIFICATION_DISPLAY_ORDER)}
         view_cats=sorted(
             view_cats,
             key=lambda c:(ranking_priority_index.get(str(c.get("key")),len(ranking_priority_keys)), str(c.get("title") or "")),
@@ -2656,12 +2654,7 @@ def render_awards(readonly:bool=False):
     # W zwykłym widoku AWARDS pokazujemy dokładnie tę samą kolejność kategorii,
     # w której organizator później wybiera laureatów. Tutaj lista pozostaje płaska:
     # bez etapów, nagłówków grup i dodatkowych opisów kolejności.
-    award_priority_keys=[
-        "player_year","offensive","defense","player_scorers","clutch",
-        "comeback_king","late_king","fair_play","progress","spectacle","universal",
-        "debut","outsider","finance","rivalry","team_best","superscorer","match_year",
-    ]
-    award_priority_index={key:i for i,key in enumerate(award_priority_keys)}
+    award_priority_index={key:i for i,key in enumerate(AWARD_DISPLAY_ORDER)}
     award_cats=sorted(
         award_cats,
         key=lambda c:(award_priority_index.get(str(c.get("key")),len(award_priority_keys)), str(c.get("title") or "")),
@@ -2731,10 +2724,7 @@ def render_awards(readonly:bool=False):
         # Budujemy nazwy kategorii TOP 2 bezpośrednio z aktualnie wyświetlanych
         # rankingów. Dzięki temu kolumna nie zależy od pomocniczego pola zwracanego
         # przez backend i nie może zostać pusta przy poprawnie policzonym TOP 2.
-        direct_player_nomination_keys={
-            "player_year","offensive","defense","clutch","wildcards",
-            "spectacle","debut","outsider","universal","finance","duel"
-        }
+        direct_player_nomination_keys=DIRECT_PLAYER_AWARD_KEYS
         top2_titles_by_player={}
         for cat in award_cats:
             key=str(cat.get("key") or "")
@@ -2781,10 +2771,7 @@ def render_awards(readonly:bool=False):
         # Kategorie są wybierane w kolejności od najbardziej prestiżowych do bardziej
         # specjalistycznych i zabawowych. Nie blokujemy organizatora: ranking jest
         # podpowiedzią, a licznik nagród pomaga świadomie rozłożyć wyróżnienia.
-        direct_player_awards={
-            "player_year","offensive","defense","clutch","wildcards",
-            "spectacle","debut","outsider","universal","finance","duel"
-        }
+        direct_player_awards=DIRECT_PLAYER_AWARD_KEYS
 
         def award_owner_name(cat_key,candidate_id,candidate_name):
             cat_key=str(cat_key or ""); candidate_name=str(candidate_name or "")
@@ -2812,17 +2799,7 @@ def render_awards(readonly:bool=False):
 
         st.caption("Kolejność poniżej jest celowa: najpierw wybierz główne nagrody. Przy kolejnych kategoriach zobaczysz, kto już coś dostał, więc przy zbliżonych kandydaturach możesz świadomie rozłożyć wyróżnienia szerzej. Nic nie jest wymuszane — organizator nadal może wybrać dowolną osobę z TOP 3.")
 
-        award_priority_groups=[
-            ("🥇 ETAP 1/3 — Główne nagrody",
-             "Najpierw najważniejsze sportowe wyróżnienia. Wyniki są tu najmocniejszą podpowiedzią.",
-             ["player_year","offensive","defense","player_scorers","clutch"]),
-            ("🥈 ETAP 2/3 — Nagrody specjalistyczne",
-             "Tu nadal mocno liczą się wyniki, ale warto też zerkać na rozkład nagród i TOP 3 kandydatów.",
-             ["spectacle","duel","universal","wildcards","debut","outsider"]),
-            ("🥉 ETAP 3/3 — Nagrody specjalne i finał gali",
-             "Najbardziej elastyczny etap. Dobry moment, żeby przy zbliżonych wynikach docenić kogoś, kto jeszcze nic nie dostał.",
-             ["finance","rivalry","team_best","superscorer","match_year"]),
-        ]
+        award_priority_groups=AWARD_PRIORITY_GROUPS
         cat_by_key={str(c.get("key")):c for c in award_cats}
         pick_no=0
         for group_title,group_desc,keys in award_priority_groups:
