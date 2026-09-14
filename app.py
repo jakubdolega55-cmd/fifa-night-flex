@@ -2627,8 +2627,8 @@ def render_awards(readonly:bool=False):
 
     if section=="🎯 Klasyfikacje":
         ranking_priority_keys=[
-            "simulator","penaldo","first_goals","own_goals","penalty_misses",
-            "duel","wildcards","regular","progress","minimalist","unlucky",
+            "sharpest","simulator","penaldo","first_goals","own_goals","penalty_misses",
+            "duel","wildcards","regular","minimalist","unlucky",
         ]
         ranking_priority_index={key:i for i,key in enumerate(ranking_priority_keys)}
         view_cats=sorted(
@@ -2658,7 +2658,7 @@ def render_awards(readonly:bool=False):
     # bez etapów, nagłówków grup i dodatkowych opisów kolejności.
     award_priority_keys=[
         "player_year","offensive","defense","player_scorers","clutch",
-        "comeback_king","late_king","sharpest","fair_play","spectacle","universal",
+        "comeback_king","late_king","fair_play","progress","spectacle","universal",
         "debut","outsider","finance","rivalry","team_best","superscorer","match_year",
     ]
     award_priority_index={key:i for i,key in enumerate(award_priority_keys)}
