@@ -41,9 +41,9 @@ AWARD_PRIORITY_GROUPS = [
         ["player_year", "offensive", "defense", "player_scorers", "clutch"],
     ),
     (
-        "🥈 ETAP 2/4 — Charakter i styl gry",
-        "Nagrody za sposób wygrywania i charakter sezonu: powroty, końcówki, fair play i styl gry.",
-        ["comeback_king", "late_king", "fair_play", "spectacle", "universal"],
+        "🥈 ETAP 2/4 — Charakter, styl i mecz sezonu",
+        "Nagrody za sposób wygrywania i charakter sezonu: powroty, końcówki, fair play, styl gry oraz Mecz Roku.",
+        ["comeback_king", "late_king", "fair_play", "spectacle", "universal", "match_year"],
     ),
     (
         "🥉 ETAP 3/4 — Rozwój i wyróżnienia sezonu",
@@ -51,9 +51,9 @@ AWARD_PRIORITY_GROUPS = [
         ["debut", "progress", "outsider"],
     ),
     (
-        "🎖️ ETAP 4/4 — Nagrody specjalne i finał gali",
-        "Na koniec kategorie specjalne, zespołowe i wydarzenia sezonu.",
-        ["finance", "rivalry", "team_best", "superscorer", "match_year"],
+        "🎖️ ETAP 4/4 — Nagrody specjalne",
+        "Na koniec kategorie specjalne i zespołowe.",
+        ["finance", "rivalry", "team_best", "superscorer"],
     ),
 ]
 AWARD_DISPLAY_ORDER = [key for _, _, keys in AWARD_PRIORITY_GROUPS for key in keys]

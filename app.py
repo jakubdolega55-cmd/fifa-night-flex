@@ -2631,7 +2631,7 @@ def render_awards(readonly:bool=False):
         ranking_priority_index={key:i for i,key in enumerate(CLASSIFICATION_DISPLAY_ORDER)}
         view_cats=sorted(
             view_cats,
-            key=lambda c:(ranking_priority_index.get(str(c.get("key")),len(ranking_priority_keys)), str(c.get("title") or "")),
+            key=lambda c:(ranking_priority_index.get(str(c.get("key")),len(CLASSIFICATION_DISPLAY_ORDER)), str(c.get("title") or "")),
         )
         st.markdown("### 🎯 Klasyfikacje sezonu — TOP 5")
         if not view_cats:
@@ -2657,7 +2657,7 @@ def render_awards(readonly:bool=False):
     award_priority_index={key:i for i,key in enumerate(AWARD_DISPLAY_ORDER)}
     award_cats=sorted(
         award_cats,
-        key=lambda c:(award_priority_index.get(str(c.get("key")),len(award_priority_keys)), str(c.get("title") or "")),
+        key=lambda c:(award_priority_index.get(str(c.get("key")),len(AWARD_DISPLAY_ORDER)), str(c.get("title") or "")),
     )
 
     st.markdown("### 🏅 Kandydaci LIVE — TOP 5")
