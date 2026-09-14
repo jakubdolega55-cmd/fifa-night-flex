@@ -65,6 +65,14 @@ DIRECT_PLAYER_AWARD_KEYS = {
     "player_year", "offensive", "defense", "clutch", "comeback_king", "late_king",
     "fair_play", "spectacle", "universal", "debut", "progress", "outsider", "finance",
 }
+# Categories that have a physical trophy and therefore count in the
+# "Najczęściej nominowani" summary. Match of the Year is special: both
+# participants of a nominated match receive the nomination credit.
+TROPHY_NOMINATION_KEYS = {
+    "player_year", "offensive", "defense", "player_scorers", "clutch",
+    "comeback_king", "late_king", "fair_play", "spectacle", "universal",
+    "debut", "outsider", "finance", "match_year", "progress",
+}
 
 
 def now_iso() -> str:
@@ -4288,6 +4296,7 @@ class Database:
                 "name":f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}",
                 "score":round(match_score,6),
                 "reason":" • ".join(reason_parts),
+                "participant_ids":[h,a],
             })
         # tournament champion clubs
         for e in events:
@@ -4467,22 +4476,22 @@ class Database:
         # 1 player of year
         items=[]
         for pid,v in ps.items():
-            if v["m"]<2:continue
+            if v["m"]<5:continue
             wp=pc(pid,v);cl=(v["clutch_w"]/v["clutch_m"]*100 if v["clutch_m"] else 0);gdpm=(v["gf"]-v["ga"])/v["m"]
             score=v["titles"]*27+v["finals"]*14+wp*.28+cl*.11+gdpm*4+len(participant_tournaments[pid])
             items.append(cand(pid,score,f"{v['titles']} tytuł(y), {v['finals']} finał(y), W% {wp}, bilans {v['gf']}:{v['ga']}"))
-        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, wyniki i najważniejsze mecze. 1 VS 1 gra tu we własnej lidze.",items)
-        items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=2]
-        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Gole, gole i jeszcze raz gole.",items)
+        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, wyniki i najważniejsze mecze. 1 VS 1 gra tu we własnej lidze. Minimum 5 oficjalnych meczów turniejowych.",items)
+        items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=5]
+        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Gole, gole i jeszcze raz gole. Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[]
         for pid,v in ps.items():
-            if v["m"]<3:continue
+            if v["m"]<5:continue
             ga_pm=v["ga"]/v["m"];cs_rate=v["clean_sheets"]/v["m"]*100
             score=110-ga_pm*25+min(v["m"],20)+cs_rate*.18+v["clean_sheets"]*1.5
             items.append(cand(pid,score,f"{ga_pm:.2f} gola straconego/mecz • {v['clean_sheets']} czystych kont • {v['ga']} straconych • {v['m']} meczów"))
-        add("defense","🧱 Beton Roku","Tu gole wpuszcza się niechętnie, a najlepiej wcale.",items)
-        items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=2]
-        add("clutch","🎯 Clutch Player Roku","Najważniejsze są mecze bez marginesu błędu. Przegrywasz — kończy się droga po tytuł. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi.",items)
+        add("defense","🧱 Beton Roku","Tu gole wpuszcza się niechętnie, a najlepiej wcale. Minimum 5 oficjalnych meczów turniejowych.",items)
+        items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=5]
+        add("clutch","🎯 Clutch Player Roku","Najważniejsze są mecze bez marginesu błędu. Przegrywasz — kończy się droga po tytuł. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi. Minimum 5 meczów clutch.",items)
         items=[cand(
             pid,
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
@@ -4492,11 +4501,11 @@ class Database:
         items=[]
         for pid,v in ps.items():
             seq=v["result_points"]
-            if len(seq)<6:continue
+            if len(seq)<5:continue
             mid=len(seq)//2;early=seq[:mid];late=seq[mid:]
             epts=sum(x[0] for x in early)/len(early);lpts=sum(x[0] for x in late)/len(late);egd=sum(x[1] for x in early)/len(early);lgd=sum(x[1] for x in late)/len(late)
             items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • bilans bramek/mecz {egd:+.2f} → {lgd:+.2f}"))
-        add("progress","📈 Największy Progres","Kto zaczął rok jednym graczem, a kończy go jak zupełnie inny zawodnik?",items)
+        add("progress","📈 Największy Progres","Kto zaczął rok jednym graczem, a kończy go jak zupełnie inny zawodnik? Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[]
         for pid,v in ps.items():
             vals=v["spectacle_scores"]
@@ -4548,14 +4557,14 @@ class Database:
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
-            if matches_n<3: continue
+            if matches_n<5: continue
             d=discipline[pid]; ppm=d["points"]/matches_n
             items.append({
                 "id":str(pid),"name":name_by.get(str(pid),"?"),
                 "score":round(100-ppm*20,4),"_sort":(-ppm,int(matches_n),-int(d["points"])),
                 "reason":f"{d['points']} pkt dyscypliny w {matches_n} meczach • {ppm:.2f} pkt/mecz • 🟨 {d['yellow']} • 🟥 {d['red']}"
             })
-        add("fair_play","😇 Fair Play","Da się wygrać bez koszenia wszystkiego, co się rusza. Minimum 3 mecze ze szczegółowym przebiegiem.",items)
+        add("fair_play","😇 Fair Play","Da się wygrać bez koszenia wszystkiego, co się rusza. Minimum 5 meczów ze szczegółowym przebiegiem.",items)
 
         # Additional live rankings based on detailed EA FC event timelines.
         # They are informational and do not create an official Award winner.
@@ -4629,8 +4638,8 @@ class Database:
             cats[-1]["debut_first5"]=top(debut5)
             cats[-1]["debut_first10"]=top(debut10)
             cats[-1]["debut_primary_window"]=10 if debut10 else 5
-        items=[cand(pid,pc(pid,v)+v["w"]*2+(v["gf"]-v["ga"])*.4,f"maks. 1 tytuł • W% {pc(pid,v)} • {v['w']} W") for pid,v in ps.items() if v["m"]>=3 and v["titles"]<=1]
-        add("outsider","🏅 Najlepszy spoza dominatorów","Dla tych, którzy jeszcze nie zapełnili półki pucharami, ale regularnie depczą liderom po piętach.",items)
+        items=[cand(pid,pc(pid,v)+v["w"]*2+(v["gf"]-v["ga"])*.4,f"maks. 1 tytuł • W% {pc(pid,v)} • {v['w']} W") for pid,v in ps.items() if v["m"]>=5 and v["titles"]<=1]
+        add("outsider","🏅 Najlepszy spoza dominatorów","Dla tych, którzy jeszcze nie zapełnili półki pucharami, ale regularnie depczą liderom po piętach. Minimum 5 oficjalnych meczów turniejowych.",items)
         successful_teams=defaultdict(set)
         for (tid,pid),stages in stages_by_player_tournament.items():
             fmt=str(event_by.get(tid,{}).get("format_key") or "")
@@ -4649,7 +4658,7 @@ class Database:
         for pid,v in ps.items():
             good=len(successful_teams.get(pid,set()))
             starts=len(participant_tournaments[pid])
-            if len(v["teams"])>=2:
+            if v["m"]>=5 and len(v["teams"])>=2:
                 items.append(cand(
                     pid,
                     good*12+len(v["teams"])*5+pc(pid,v)*.25,
@@ -4658,7 +4667,7 @@ class Database:
         add(
             "universal",
             "🔄 Najbardziej Uniwersalny Gracz",
-            "Liczy się gra różnymi drużynami i to, jak daleko gracz potrafił nimi dojść w turnieju.",
+            "Liczy się gra różnymi drużynami i to, jak daleko gracz potrafił nimi dojść w turnieju. Minimum 5 oficjalnych meczów turniejowych i co najmniej 2 różne drużyny.",
             items
         )
         items=[]
@@ -4673,12 +4682,14 @@ class Database:
             hattricks=scorer_pair_hattricks.get(pair_key,0)
             team_names=sorted(scorer_pair_team_display.get(pair_key,set()))
             team_txt=(team_names[0] if len(team_names)==1 else (" / ".join(team_names) if team_names else "drużyną strzelca"))
+            if goals<5:
+                continue
             items.append({
                 "id":f"{pid}|{sn}","name":f"{scorer} — {player}","score":goals,
                 "_sort":(goals,-team_matches,hattricks,str(scorer).casefold()),
                 "reason":f"{goals} goli • {team_matches} meczów {team_txt} • {hattricks} hat-trick(i) • gracz: {player}"
             })
-        add("player_scorers","👟 Król Strzelców FIFA Night","Kto znalazł swojego napastnika idealnego? Liczymy gole konkretnego piłkarza zdobyte dla konkretnego gracza FIFA Night.",items)
+        add("player_scorers","👟 Król Strzelców FIFA Night","Kto znalazł swojego napastnika idealnego? Liczymy gole konkretnego piłkarza zdobyte dla konkretnego gracza FIFA Night. Minimum 5 goli.",items)
         # finance for events completed this year
         finance=defaultdict(lambda:{"paid":0,"won":0})
         year_ids=set(tids)
@@ -4709,13 +4720,13 @@ class Database:
         add("rivalry","⚔️ Rywalizacja Roku","Są pary, które po prostu lubią na siebie wpadać. Minimum 3 bezpośrednie mecze w roku.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
-            if not v["m"]:continue
+            if v["m"]<5:continue
             raw=(v["w"]*3+v["d"])/(v["m"]*3);shrink=v["m"]/(v["m"]+6);gdpm=(v["gf"]-v["ga"])/v["m"]
             rating=50+(raw*100-50)*shrink*.8+max(-10,min(10,gdpm*3))*shrink+v["titles"]*3
             teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}"})
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
         worst_team=top(worst,1)[0] if worst else None
-        add("team_best","🏟️ Drużyny Roku","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje.",teamitems,secondary=worst_team)
+        add("team_best","🏟️ Drużyny Roku","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje. Minimum 5 oficjalnych meczów danej drużyny.",teamitems,secondary=worst_team)
         scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
         add("superscorer","⚡ Supersnajper Roku","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
         add("match_year","🎬 Mecz Roku","Taki mecz, o którym jeszcze długo ktoś będzie mówił: „pamiętasz to…?”.",match_candidates)
@@ -4724,34 +4735,40 @@ class Database:
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
         add("unlucky","🤕 Pechowiec Roku","Prawie się nie liczy. Statystyki i tak pamiętają każdą porażkę o włos.",items,award=False)
 
-        # Summary of participant nominations across individual award categories.
-        # Count a category at most once per player. Team/match/rivalry/EA-player
-        # categories are intentionally excluded because the nominee is not one FIFA Night participant.
-        direct_player_awards=DIRECT_PLAYER_AWARD_KEYS
+        # Summary of nominations only for categories that have a physical trophy.
+        # Each category counts at most once per FIFA Night participant. Match of the
+        # Year credits both players from the nominated match; Król Strzelców credits
+        # the FIFA Night participant for whom the real footballer scored.
         nomination_sets=defaultdict(lambda:{"top2":set(),"top3":set(),"top5":set(),"first":set()})
-        nomination_titles_top2=defaultdict(set)
+        nomination_title_by_key={}
         for cat in cats:
             if not cat.get("award"):continue
             key=str(cat.get("key") or "")
-            candidates=cat.get("candidates") or []
-            mapped=[]
-            if key in direct_player_awards:
-                mapped=[(str(x.get("id") or ""),x) for x in candidates]
-            elif key=="player_scorers":
-                # Candidate is footballer + participant; credit the nomination to the FIFA Night participant.
-                mapped=[(str(x.get("id") or "").split("|",1)[0],x) for x in candidates]
-            else:
+            if key not in TROPHY_NOMINATION_KEYS:
                 continue
-            for pos,(pid,x) in enumerate(mapped[:5],1):
-                if not pid or pid not in name_by:continue
-                nomination_sets[pid]["top5"].add(key)
-                if pos<=3:nomination_sets[pid]["top3"].add(key)
-                if pos<=2:
-                    nomination_sets[pid]["top2"].add(key)
-                    nomination_titles_top2[pid].add(str(cat.get("title") or key))
-                if pos==1:nomination_sets[pid]["first"].add(key)
+            nomination_title_by_key[key]=str(cat.get("title") or key)
+            candidates=cat.get("candidates") or []
+            for pos,x in enumerate(candidates[:5],1):
+                pids=[]
+                if key in DIRECT_PLAYER_AWARD_KEYS:
+                    pids=[str(x.get("id") or "")]
+                elif key=="player_scorers":
+                    pids=[str(x.get("id") or "").split("|",1)[0]]
+                elif key=="match_year":
+                    pids=[str(pid or "") for pid in (x.get("participant_ids") or [])]
+                for pid in dict.fromkeys(pids):
+                    if not pid or pid not in name_by:continue
+                    nomination_sets[pid]["top5"].add(key)
+                    if pos<=3:nomination_sets[pid]["top3"].add(key)
+                    if pos<=2:nomination_sets[pid]["top2"].add(key)
+                    if pos==1:nomination_sets[pid]["first"].add(key)
         nomination_summary=[]
         for pid,v in nomination_sets.items():
+            categories_top2=[
+                nomination_title_by_key.get(key,key)
+                for key in AWARD_DISPLAY_ORDER
+                if key in v["top2"] and key in TROPHY_NOMINATION_KEYS
+            ]
             nomination_summary.append({
                 "player_id":pid,
                 "name":name_by.get(pid,"?"),
@@ -4759,7 +4776,7 @@ class Database:
                 "top3":len(v["top3"]),
                 "top5":len(v["top5"]),
                 "first":len(v["first"]),
-                "categories_top2":sorted(nomination_titles_top2.get(pid,set())),
+                "categories_top2":categories_top2,
             })
         nomination_summary.sort(key=lambda x:(x["top3"],x["top5"],x["first"],x["name"]),reverse=True)
 

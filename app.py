@@ -12,7 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from database import (
-    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS,
+    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, TROPHY_NOMINATION_KEYS,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
@@ -2719,7 +2719,7 @@ def render_awards(readonly:bool=False):
 
     if nomination_summary:
         st.divider();st.markdown("### 🌟 Najczęściej nominowani")
-        st.caption("W ilu różnych indywidualnych kategoriach dany gracz mieści się w TOP 3 i TOP 5. Każda kategoria liczy się maksymalnie raz. Żeby tabela była czytelna, z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2. W Królu Strzelców nominacja jest przypisana graczowi, dla którego strzelał dany piłkarz; nie liczymy kategorii drużynowych, Meczu Roku, Rywalizacji Roku ani Supersnajpera.")
+        st.caption("Liczymy wyłącznie kategorie, za które jest fizyczny puchar. Każda kategoria liczy się maksymalnie raz na gracza. W Królu Strzelców nominacja trafia do gracza, dla którego strzelał dany piłkarz, a Mecz Roku liczy się obu uczestnikom nominowanego spotkania. Z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2.")
 
         # Budujemy nazwy kategorii TOP 2 bezpośrednio z aktualnie wyświetlanych
         # rankingów. Dzięki temu kolumna nie zależy od pomocniczego pola zwracanego
@@ -2728,7 +2728,9 @@ def render_awards(readonly:bool=False):
         top2_titles_by_player={}
         for cat in award_cats:
             key=str(cat.get("key") or "")
-            if key not in direct_player_nomination_keys and key!="player_scorers":
+            if key not in TROPHY_NOMINATION_KEYS or key=="match_year":
+                # Mecz Roku ma dwóch właścicieli nominacji; listę dla niego bierze
+                # bezpośrednio z nomination_summary policzonego w backendzie.
                 continue
             title=str(cat.get("title") or key)
             # Usuń wyłącznie emoji/pierwszy znacznik z tytułu, zachowując pełną nazwę nagrody.
@@ -2745,10 +2747,14 @@ def render_awards(readonly:bool=False):
         rows=[]
         for i,x in enumerate(nomination_summary[:10],1):
             pid=str(x.get("player_id") or "")
-            live_titles=top2_titles_by_player.get(pid,[])
-            # Fallback dla zgodności ze starszym backendem / zapisaną sesją.
-            if not live_titles:
-                live_titles=[str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or [])]
+            live_titles=list(top2_titles_by_player.get(pid,[]))
+            backend_titles=[str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or [])]
+            # Backend jest źródłem prawdy dla Meczu Roku, bo jedna nominacja należy
+            # jednocześnie do obu uczestników. Dla pozostałych kategorii scalamy listy,
+            # żeby zachować zgodność przy przejściowym cache/session state.
+            for title in backend_titles:
+                if title not in live_titles:
+                    live_titles.append(title)
             cats_txt=", ".join(live_titles)
             rows.append({"#":i,"Gracz":x.get("name"),"TOP 3":x.get("top3",0),"TOP 5":x.get("top5",0),"#1 w kategorii":x.get("first",0),"Kategorie TOP 2":cats_txt or "brak TOP 2"})
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
