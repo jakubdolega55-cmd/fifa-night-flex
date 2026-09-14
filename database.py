@@ -4137,6 +4137,7 @@ class Database:
 
         event_by={str(e["id"]):e for e in events}; tournament_ids={tid for tid,e in event_by.items() if str(e.get("format_key"))!='duel1v1'}
         completed_tournament_ids={tid for tid,e in event_by.items() if tid in tournament_ids and str(e.get("status") or "")=="completed"}
+        finance_by_tid={str(e.get("id")):e for e in finance_ledger}
         duel_ids=set(tids)-tournament_ids
         name_by={str(r["player_id"]):str(r["name"]) for r in tps}
         team_by={(str(r["tournament_id"]),str(r["player_id"])):str(r.get("team") or "") for r in tps}
@@ -4271,13 +4272,21 @@ class Database:
 
             # Mecz Roku: zgodnie z balansem ustalonym dla Awards. Nadal nie pokazujemy
             # punktów technicznych w UI — użytkownik widzi wyłącznie wynik i uzasadnienie.
+            # Pula turnieju ma tylko lekki wpływ: +0.01 do technicznego score za każde
+            # pełne 100 zł wpłat w danym FIFA Night, maksymalnie +0.04. Dzięki temu
+            # 120 zł daje +0.012, 210 zł +0.021, 250 zł +0.025. Nie uwzględniamy
+            # przeniesionego jackpotu — liczą się wyłącznie bieżące wpłaty uczestników.
             penalties_drama=1.0 if has_pens else 0.0
+            finance_event=finance_by_tid.get(tid) or {}
+            cash_pot_cents=max(0,int(finance_event.get("contribution_cents") or 0))
+            cash_bonus=min(cash_pot_cents/1_000_000.0,.04)
             match_score=(
                 closeness*.35
                 + goals_value*.22
                 + stakes*.18
                 + rank_value*.13
                 + penalties_drama*.12
+                + cash_bonus
             )
 
             # Najbardziej Widowiskowy Gracz bazuje na charakterze KAŻDEGO meczu, nie na
@@ -4289,6 +4298,10 @@ class Database:
                 ps[pid]["spectacle_pens"]+=int(has_pens)
 
             reason_parts=[stage_text,closeness_text,stakes_text,f"{hs+ass} goli"]
+            if cash_pot_cents>0:
+                cash_pot_pln=cash_pot_cents/100.0
+                cash_txt=f"{cash_pot_pln:.0f} zł" if cash_pot_pln.is_integer() else f"{cash_pot_pln:.2f} zł"
+                reason_parts.append(f"pula {cash_txt}")
             if has_pens:
                 reason_parts.append(f"karne {m.get('home_penalties')}:{m.get('away_penalties')}")
             match_candidates.append({
