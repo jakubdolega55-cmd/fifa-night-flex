@@ -671,7 +671,7 @@ class Database:
 
         # New/returning-after-a-break players waited longer than anyone who just played
         # the previous tournament. The value only ranks opening order; it is not shown.
-        newcomer_priority=len(played)+2
+        newcomer_priority=len(played)+4
         for item in newcomers:
             priority[str(item["player_id"])]=newcomer_priority
             item["wait_matches"]=newcomer_priority
@@ -711,27 +711,46 @@ class Database:
         streak never permanently brands a club as overpowered.
         """
         rows=self._fetchall(conn,"""
-            SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score
+            SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score,
+                   COALESCE(m.played_at,t.completed_at,t.created_at) AS rating_date
             FROM matches m JOIN tournaments t ON t.id=m.tournament_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
             WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
         """)
-        stats=defaultdict(lambda:{"m":0,"points":0.0,"gf":0,"ga":0})
+        # Mild recency weighting: recent games matter a little more, but older results
+        # never disappear. Every 90 days multiplies a match by 0.97, floored at 0.75.
+        # 1 VS 1 remains part of the rating on purpose: it is still evidence about a club.
+        now=datetime.now(timezone.utc)
+        def recency_weight(value) -> float:
+            try:
+                raw=str(value or "").strip()
+                if not raw:return 1.0
+                dt=datetime.fromisoformat(raw.replace("Z","+00:00"))
+                if dt.tzinfo is None:dt=dt.replace(tzinfo=timezone.utc)
+                age_days=max(0.0,(now-dt.astimezone(timezone.utc)).total_seconds()/86400.0)
+                return max(0.75,0.97 ** (age_days/90.0))
+            except Exception:
+                return 1.0
+
+        stats=defaultdict(lambda:{"m":0.0,"points":0.0,"gf":0.0,"ga":0.0})
         for r in rows:
             ht=str(r.get("home_team") or "").strip(); at=str(r.get("away_team") or "").strip()
             if not ht or not at: continue
-            hs=int(r.get("home_score") or 0); ass=int(r.get("away_score") or 0)
-            stats[ht]["m"]+=1;stats[at]["m"]+=1
-            stats[ht]["gf"]+=hs;stats[ht]["ga"]+=ass;stats[at]["gf"]+=ass;stats[at]["ga"]+=hs
-            if hs>ass: stats[ht]["points"]+=1.0
-            elif hs<ass: stats[at]["points"]+=1.0
-            else: stats[ht]["points"]+=0.5;stats[at]["points"]+=0.5
+            hs=int(r.get("home_score") or 0); ass=int(r.get("away_score") or 0); w=recency_weight(r.get("rating_date"))
+            stats[ht]["m"]+=w;stats[at]["m"]+=w
+            stats[ht]["gf"]+=hs*w;stats[ht]["ga"]+=ass*w;stats[at]["gf"]+=ass*w;stats[at]["ga"]+=hs*w
+            if hs>ass: stats[ht]["points"]+=1.0*w
+            elif hs<ass: stats[at]["points"]+=1.0*w
+            else: stats[ht]["points"]+=0.5*w;stats[at]["points"]+=0.5*w
         out={}
         for team,v in stats.items():
-            m=int(v["m"]); result=(float(v["points"])+4.0)/(m+8.0)
-            gdpm=((int(v["gf"])-int(v["ga"]))/m) if m else 0.0
-            gdpm=max(-2.0,min(2.0,gdpm))
+            m=float(v["m"]); result=(float(v["points"])+4.0)/(m+8.0)
+            raw_gdpm=((float(v["gf"])-float(v["ga"]))/m) if m else 0.0
+            raw_gdpm=max(-2.0,min(2.0,raw_gdpm))
+            # Goal difference gets the same small-sample protection as W/D/L.
+            # One or two blowouts can move the rating a little, not dominate it.
+            gdpm=raw_gdpm*(m/(m+8.0)) if m else 0.0
             rating=50.0+(result-0.5)*60.0+gdpm*5.0
             out[team]=round(max(20.0,min(80.0,rating)),2)
         return out
