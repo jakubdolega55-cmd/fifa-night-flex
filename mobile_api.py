@@ -22,11 +22,11 @@ from pydantic import BaseModel, Field
 from database import Database
 from logic import (
     FORMAT_LABELS, FORMAT_MATCH_COUNTS, FIXED_TEAMS, BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS,
-    WILDCARD_TEAM_SUGGESTIONS, allowed_teams,
+    WILDCARD_TEAM_SUGGESTIONS, GAME_VERSIONS, REAL_HELPER_TEAM, normalize_game_version, fixed_teams_for_version, wildcard_suggestions_for_version, allowed_teams,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "1.0.2"
+API_VERSION = "1.1.0"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {
@@ -194,8 +194,9 @@ class ResultPayload(BaseModel):
 
 class CreateTournamentPayload(BaseModel):
     player_names: list[str]
-    player_count: int = Field(ge=3, le=8)
+    player_count: int = Field(ge=3, le=10)
     format_key: str
+    game_version: str = "FC26"
     is_test: bool = True
     stake_per_player: float = Field(default=0.0, ge=0, le=100000)
     cash_flags: list[bool] = Field(default_factory=list)
@@ -204,6 +205,7 @@ class CreateTournamentPayload(BaseModel):
 class CreateDuelPayload(BaseModel):
     player_names: list[str]
     team_names: list[str]
+    game_version: str = "FC26"
     stake_per_player: float = Field(default=0.0, ge=0, le=100000)
     cash_flags: list[bool] = Field(default_factory=lambda:[True,True])
 
@@ -221,6 +223,10 @@ class DraftPickPayload(BaseModel):
 class WildcardPayload(BaseModel):
     player_id: str
     team_name: str
+
+
+class RealHelperPayload(BaseModel):
+    player_id: str
 
 
 class AddScorerPayload(BaseModel):
@@ -448,6 +454,27 @@ If no shoot-out tally is visible, return null for both.
 
 def _participant_by_slot(context: dict[str, Any], slot: str) -> dict[str, Any] | None:
     return next((p for p in (context.get("participants") or []) if p.get("slot") == slot), None)
+
+
+def _resolve_scan_footballer_names(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Resolve abbreviated EA names locally without guessing ambiguous cases."""
+    version=normalize_game_version(context.get("game_version"))
+    for event in result.get("events") or []:
+        if not isinstance(event,dict):continue
+        team=str(event.get("actor_team_name") or event.get("credited_team_name") or "").strip()
+        raw=str(event.get("footballer_name") or "").strip()
+        if raw and team:
+            resolution=db.resolve_footballer_name(version,team,raw)
+            event["footballer_resolution"]=resolution
+            if resolution.get("status") in {"remembered","exact","auto"}:
+                event["footballer_name"]=resolution.get("name") or raw
+        related_raw=str(event.get("related_footballer_name") or "").strip()
+        if related_raw and team:
+            related=db.resolve_footballer_name(version,team,related_raw)
+            event["related_footballer_resolution"]=related
+            if related.get("status") in {"remembered","exact","auto"}:
+                event["related_footballer_name"]=related.get("name") or related_raw
+    return result
 
 
 def _map_scan_to_fifa_context(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
@@ -1090,6 +1117,7 @@ async def match_scan_preview(
     except Exception as exc:
         raise HTTPException(502, "Odczyt zdjęć zwrócił niepełne dane. Spróbuj ponownie.") from exc
     result = _map_scan_to_fifa_context(result, context)
+    result = _resolve_scan_footballer_names(result, context)
     usage = payload.get("usage") or {}
     input_tokens = int(usage.get("input_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or 0)
@@ -1137,12 +1165,16 @@ def _special_event_payload(tid: str, fmt: str) -> dict[str, Any] | None:
             state = db.double5_draw_state(tid)
             if state and not state.get("ack"):
                 return {"kind": "double5_opponent", "selected": bool(state.get("selected")), **state}
-        if fmt in ("groups6", "groups6_full", "groups7", "groups7_sf", "groups8_sf", "groups8_barrage"):
+        if fmt in ("groups6", "groups6_full", "groups7", "groups7_sf", "groups8_sf", "groups8_barrage", "groups10_sf"):
             state = db.group_playoff_reveal_state(tid)
             if state:
                 # Pairings are already prepared by the scheduler; on mobile the user
                 # only acknowledges the reveal before play continues.
                 return {"kind": "group_playoffs", "selected": True, **state}
+        # Generic visible-draw queue works across formats. It is populated only when
+        # 2+ equally legal variants survived the format-specific hard constraints.
+        state=db.big_visible_draw_state(tid)
+        if state:return state
     except Exception:
         return None
     return None
@@ -1171,7 +1203,7 @@ def _setup_payload(tid: str) -> dict[str, Any]:
         wildcard_suggestions = list(WILDCARD_TEAM_SUGGESTIONS)
     tournament_payload = {
         "id": tid, "status": t.get("status"), "phase": t.get("phase"),
-        "is_test": bool(int(t.get("is_test") or 0)), "player_count": int(meta.get("player_count") or len(players)),
+        "is_test": bool(int(t.get("is_test") or 0)), "game_version": normalize_game_version(t.get("game_version")), "player_count": int(meta.get("player_count") or len(players)),
         "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt),
         "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
         "stake_per_player": float(extra.get("stake_per_player") or 0),
@@ -1215,7 +1247,7 @@ def live_payload() -> dict[str, Any]:
         setup=_setup_payload(tid)
         return {"server_time": utc_now(), "api_version": API_VERSION, "tournament": {
             "id":tid,"status":tournament.get("status"),"phase":phase,"is_test":bool(int(tournament.get("is_test") or 0)),
-            "player_count":setup["player_count"],"format_key":setup["format_key"],"format_label":setup["format_label"],
+            "game_version": normalize_game_version(tournament.get("game_version")), "player_count":setup["player_count"],"format_key":setup["format_key"],"format_label":setup["format_label"],
             "format_matches":setup["format_matches"],"created_at":tournament.get("created_at"),"completed_at":tournament.get("completed_at"),
             "players":setup["players"],"current_match":None,"current_context":None,"next_match":None,"schedule":[],"standings":{},
             "live_scorers":[],"summary":None,"setup":setup,"special_event":None,"special_draw":None,
@@ -1256,7 +1288,7 @@ def live_payload() -> dict[str, Any]:
         "server_time": utc_now(), "api_version": API_VERSION,
         "tournament": {
             "id": tid, "status": tournament.get("status"), "phase": tournament.get("phase"),
-            "is_test": bool(int(tournament.get("is_test") or 0)), "player_count": int(meta.get("player_count") or tournament.get("player_count") or 0),
+            "is_test": bool(int(tournament.get("is_test") or 0)), "game_version": normalize_game_version(tournament.get("game_version")), "player_count": int(meta.get("player_count") or tournament.get("player_count") or 0),
             "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt), "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
             "created_at": tournament.get("created_at"), "completed_at": tournament.get("completed_at"),
             "players": [{"player_id":p.get("player_id"),"name":p.get("name"),"team":p.get("team"),"group_name":p.get("group_name")} for p in (bundle.get("players") or [])],
@@ -1300,7 +1332,9 @@ def get_config() -> dict[str, Any]:
     format_keys = {
         3: ["league3_final"], 4: ["league4_final", "double4"], 5: ["double5", "league5_final"],
         6: ["groups6", "groups6_full", "double6"], 7: ["double7", "groups7", "groups7_sf"],
-        8: ["groups8_sf", "double8", "groups8_barrage"],
+        8: ["groups8_sf", "double8", "groups8_barrage", "swiss8"],
+        9: ["groups9_final4", "groups9_barrage_final3", "groups9_top8", "double9"],
+        10: ["groups10_sf", "swiss10", "double10"],
     }
     for count, keys in format_keys.items():
         formats[str(count)] = [{"key": k, "label": FORMAT_LABELS.get(k, k), "matches": FORMAT_MATCH_COUNTS.get(k, "")} for k in keys]
@@ -1310,11 +1344,15 @@ def get_config() -> dict[str, Any]:
         "players": official_names,
         "official_names": official_names,
         "last_player_count": db.last_player_count(),
-        "last_lineups": {str(n): db.last_lineup(n) for n in range(3, 9)},
+        "last_lineups": {str(n): db.last_lineup(n) for n in range(3, 11)},
         "last_stake": db.last_stake(),
         "jackpot_cents": db.current_jackpot_cents(),
+        "game_versions": list(GAME_VERSIONS),
         "fixed_teams": list(FIXED_TEAMS),
-        "wildcard_suggestions": db.wildcard_team_suggestions(),
+        "team_pools": {v:{str(n):allowed_teams(n,v) for n in range(3,11)} for v in GAME_VERSIONS},
+        "wildcard_suggestions_by_version": {v:db.wildcard_team_suggestions(v) for v in GAME_VERSIONS},
+        "wildcard_suggestions": db.wildcard_team_suggestions("FC26"),
+        "real_helper_team": REAL_HELPER_TEAM,
         "formats": formats,
         "format_labels": FORMAT_LABELS,
         "format_match_counts": FORMAT_MATCH_COUNTS,
@@ -1325,8 +1363,9 @@ def get_config() -> dict[str, Any]:
 def create_tournament(payload: CreateTournamentPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _ensure_can_start(bool(payload.is_test), authorization)
     try:
-        teams=allowed_teams(int(payload.player_count))
-        tid=db.create_tournament(payload.player_names,int(payload.player_count),payload.format_key,teams,bool(payload.is_test),float(payload.stake_per_player),payload.cash_flags or None)
+        game_version=normalize_game_version(payload.game_version)
+        teams=allowed_teams(int(payload.player_count),game_version)
+        tid=db.create_tournament(payload.player_names,int(payload.player_count),payload.format_key,teams,bool(payload.is_test),float(payload.stake_per_player),payload.cash_flags or None,game_version)
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return {"id":tid,"live":live_payload()}
 
@@ -1336,7 +1375,7 @@ def create_duel(payload: CreateDuelPayload) -> dict[str, Any]:
     current=db.current_tournament()
     if current and str(current.get("status") or "") == "active": raise HTTPException(409,"Najpierw zakończ albo zresetuj bieżący FIFA Night.")
     if current: db.start_new()
-    try: tid=db.create_duel(payload.player_names,payload.team_names,False,float(payload.stake_per_player),payload.cash_flags or None)
+    try: tid=db.create_duel(payload.player_names,payload.team_names,False,float(payload.stake_per_player),payload.cash_flags or None,payload.game_version)
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return {"id":tid,"live":live_payload()}
 
@@ -1383,6 +1422,15 @@ def draft_confirm(tournament_id: str, authorization: str | None = Header(default
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return _setup_payload(tournament_id)
 
+
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/real-helper")
+def real_helper(tournament_id: str, payload: RealHelperPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _setup_action_control(tournament_id,authorization)
+    try: assigned=db.assign_real_helper(tournament_id,payload.player_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    return {"assigned":assigned,"live":live_payload()}
 
 @app.post("/api/v1/tournaments/{tournament_id}/draft/pick")
 def draft_pick(tournament_id: str, payload: DraftPickPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -1460,7 +1508,7 @@ def special_ack(tournament_id: str, kind: str, authorization: str | None = Heade
         elif kind=="double8_wb": db.ack_double_wb_draw(tournament_id)
         elif kind=="double5_opponent": db.ack_double5_draw(tournament_id)
         elif kind=="group_playoffs": db.ack_group_playoffs(tournament_id)
-        else: raise ValueError("Nieznany etap specjalny.")
+        else: db.ack_big_visible_draw(tournament_id,kind)
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return live_payload()
 
@@ -1689,6 +1737,21 @@ def save_match_result(tournament_id: str, match_no: int, payload: ResultPayload,
     try:
         db.save_result(tournament_id,int(match_no),int(payload.home_score),int(payload.away_score),payload.home_penalties,payload.away_penalties,scorers,events)
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    # If the scan returned an ambiguous abbreviation and the user corrected it,
+    # remember that choice for this game version + club. This happens only after
+    # the result was saved successfully, so cancelled previews never train aliases.
+    if payload.events is not None:
+        version=normalize_game_version(tournament.get("game_version"))
+        for raw in payload.events:
+            if not isinstance(raw,dict):continue
+            actor_pid=str(raw.get("actor_player_id") or "")
+            team=str(match.get("home_team") if actor_pid==str(match.get("home_player_id") or "") else match.get("away_team") if actor_pid==str(match.get("away_player_id") or "") else "")
+            if not team:continue
+            for name_key,res_key in (("footballer_name","footballer_resolution"),("related_footballer_name","related_footballer_resolution")):
+                res=raw.get(res_key) if isinstance(raw.get(res_key),dict) else {}
+                alias=str(res.get("raw") or "").strip(); canonical=str(raw.get(name_key) or "").strip()
+                if alias and canonical and db._norm_scorer_name(alias)!=db._norm_scorer_name(canonical):
+                    db.remember_footballer_alias(version,team,alias,canonical)
     return live_payload()
 
 

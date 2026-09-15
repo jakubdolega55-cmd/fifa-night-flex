@@ -15,7 +15,7 @@ from database import (
     Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, TROPHY_NOMINATION_KEYS,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
-from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS
+from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, allowed_teams, fixed_teams_for_version
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv)
 
@@ -415,7 +415,9 @@ def format_for(count:int)->str:
     if count==5:return st.session_state.get("format5","double5")
     if count==6:return st.session_state.get("format6","groups6")
     if count==7:return st.session_state.get("format7","double7")
-    return st.session_state.get("format8","groups8_sf")
+    if count==8:return st.session_state.get("format8","groups8_sf")
+    if count==9:return st.session_state.get("format9","groups9_final4")
+    return st.session_state.get("format10","groups10_sf")
 
 def start_defaults(count:int, official_names:list[str]):
     key=f"_lineup_init_{count}"
@@ -432,10 +434,10 @@ def start_defaults(count:int, official_names:list[str]):
     st.session_state[key]=True
 
 
-def render_duel_start(official_names:list[str]):
+def render_duel_start(official_names:list[str], game_version:str="FC26"):
     st.markdown("### ⚔️ Mecz 1 vs 1")
     st.caption("Ręczny wybór graczy i drużyn. 1v1 liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów ani statystyk turniejowych.")
-    team_options=list(dict.fromkeys(FIXED_TEAMS + wildcard_team_suggestions_cached()))
+    team_options=list(dict.fromkeys(fixed_teams_for_version(game_version) + db.wildcard_team_suggestions(game_version) + ["Real Madryt"]))
     with st.form("create_duel_form"):
         c1,c2=st.columns(2)
         with c1:
@@ -452,7 +454,7 @@ def render_duel_start(official_names:list[str]):
         go=st.form_submit_button("⚔️ UTWÓRZ MECZ 1 VS 1",type="primary",use_container_width=True)
     if go:
         try:
-            db.create_duel([p1,p2],[t1,t2],False,stake,[cash1,cash2])
+            db.create_duel([p1,p2],[t1,t2],False,stake,[cash1,cash2],game_version)
             st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
 
@@ -501,22 +503,30 @@ def render_pending_goal_milestones(compact:bool=False):
 
 def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
     if force_test:
-        st.info("🧪 Bez sterowania możesz uruchamiać turnieje testowe oraz oficjalne 1 vs 1. Aby rozpocząć oficjalny turniej FIFA Night dla 3–8 graczy, włącz sterowanie w Ustawieniach.")
+        st.info("🧪 Bez sterowania możesz uruchamiać turnieje testowe oraz oficjalne 1 vs 1. Aby rozpocząć oficjalny turniej FIFA Night dla 3–10 graczy, włącz sterowanie w Ustawieniach.")
 
-    # 1 vs 1 jest zwykłym wariantem FIFA Night, obok turniejów 3–8 osobowych.
+    # 1 vs 1 jest zwykłym wariantem FIFA Night, obok turniejów 3–10 osobowych.
     # Nie dokładamy osobnej warstwy nawigacji tylko po to, żeby wybrać liczbę graczy.
+    game_version=st.segmented_control("Wersja gry",list(GAME_VERSIONS),default="FC26",key=f"game_version_{int(force_test)}") or "FC26"
+    game_version=normalize_game_version(game_version)
     default_count=db.last_player_count()
-    if default_count not in (3,4,5,6,7,8):default_count=6
+    if default_count not in (3,4,5,6,7,8,9,10):default_count=6
     variant_key=f"fifa_variant_{int(force_test)}"
     variant_default=str(default_count)
+    main_variants=["1 vs 1","3","4","5","6","7"]
+    more=st.toggle("Więcej zawodników",value=str(st.session_state.get(variant_key) or variant_default) in ("8","9","10"),key=f"more_players_{int(force_test)}")
+    if not more and str(st.session_state.get(variant_key) or "") in ("8","9","10"):
+        # Do not leave a hidden 8/9/10 selection in a segmented control that now
+        # exposes only 1v1 + 3..7; Streamlit rejects values outside current options.
+        st.session_state[variant_key]="7"
     variant=st.segmented_control(
         "Wariant",
-        ["1 vs 1","3","4","5","6","7","8"],
+        main_variants + (["8","9","10"] if more else []),
         default=None if variant_key in st.session_state else variant_default,
         key=variant_key,
     ) or str(st.session_state.get(variant_key) or variant_default)
     if variant=="1 vs 1":
-        render_duel_start(official_names)
+        render_duel_start(official_names,game_version)
         return
 
     if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud podłącz DATABASE_URL z Neon.")
@@ -531,7 +541,11 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
     elif count==7:
         st.session_state.format7=st.radio("Format dla 7 graczy",["double7","groups7","groups7_sf"],format_func=format_option,horizontal=False,key="format7_radio")
     elif count==8:
-        st.session_state.format8=st.radio("Format dla 8 graczy",["groups8_sf","double8","groups8_barrage"],format_func=format_option,horizontal=False,key="format8_radio")
+        st.session_state.format8=st.radio("Format dla 8 graczy",["groups8_sf","double8","groups8_barrage","swiss8"],format_func=format_option,horizontal=False,key="format8_radio")
+    elif count==9:
+        st.session_state.format9=st.radio("Format dla 9 graczy",["groups9_final4","groups9_barrage_final3","groups9_top8","double9"],format_func=format_option,horizontal=False,key="format9_radio")
+    elif count==10:
+        st.session_state.format10=st.radio("Format dla 10 graczy",["groups10_sf","swiss10","double10"],format_func=format_option,horizontal=False,key="format10_radio")
     fmt=format_for(count)
     st.markdown(f"**Format:** {FORMAT_LABELS[fmt]}  \n**Łącznie:** {FORMAT_MATCH_COUNTS[fmt]}")
     if "stake_per_player" not in st.session_state:st.session_state.stake_per_player=float(db.last_stake())
@@ -544,20 +558,14 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
                 names.append(st.selectbox(f"Gracz {i+1}",official_names,index=None,key=f"p_{count}_{i}",placeholder="Wpisz nick lub wybierz z listy",accept_new_options=True))
             with c_cash:
                 cash_flags.append(st.checkbox("💰 Gra za kasę",value=True,key=f"cash_{count}_{i}"))
+        teams=allowed_teams(count,game_version)
+        fixed=fixed_teams_for_version(game_version)
         if count in (3,4):
-            teams=BASE_TEAMS.copy()
-            st.markdown("**Wybór drużyn:** losujemy kolejność, potem każdy wybiera klub z puli stałej albo dostępny Wild Card.")
-            st.caption("Stałe: Bayern • Barcelona • PSG • Liverpool. Wild Card może być użyty kilka razy, ale konkretny klub tylko raz.")
-        elif count==5:
-            teams=BASE_TEAMS.copy()
-            st.markdown("**Koło fortuny drużyn:** 4 stałe drużyny + 1 Wild Card.")
-            st.caption("Pula: Bayern • Barcelona • PSG • Liverpool + 1 slot Wild Card. Jeśli wypadnie Wild Card, wybierasz konkretny klub; Real Madryt jest banned.")
-        elif count==6:
-            teams=SIX_TEAMS.copy();st.caption("Pula: Bayern • Barcelona • PSG • Liverpool + 2 sloty Wild Card. Man City jest Wild Cardem.")
-        elif count==7:
-            teams=SEVEN_TEAMS.copy();st.caption("Pula: 4 kluby stałe + 3 sloty Wild Card. Real Madryt banned.")
+            st.markdown("**Wybór drużyn:** losujemy kolejność, potem każdy wybiera klub z puli normalnej albo dostępny Wild Card.")
         else:
-            teams=EIGHT_TEAMS.copy();st.caption("Pula: 4 kluby stałe + 4 sloty Wild Card. Real Madryt banned.")
+            wc=max(0,count-len(fixed))
+            st.markdown(f"**Koło fortuny drużyn:** {len(fixed)} normalnych drużyn" + (f" + {wc} Wild Card" if wc else " • bez Wild Cardów"))
+        st.caption(f"{game_version}: normalne drużyny: " + " • ".join(fixed) + ". Real Madryt nie jest częścią koła/Wild Cardu; może być pomocą wyłącznie dla osoby grającej bez kasy.")
         stake=st.number_input("💰 Stawka na osobę (zł)",min_value=0.0,step=5.0,format="%.2f",key="stake_per_player")
         jackpot=db.current_jackpot_cents()
         if jackpot>0:st.warning(f"🎰 Aktualny jackpot do przejęcia przez kolejnego uprawnionego mistrza: **{pln_cents(jackpot)} zł**")
@@ -570,7 +578,7 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
         go=st.form_submit_button("🎮 UTWÓRZ TURNIEJ",type="primary",use_container_width=True)
     if go:
         try:
-            db.create_tournament(names,count,fmt,teams,test,stake,cash_flags)
+            db.create_tournament(names,count,fmt,teams,test,stake,cash_flags,game_version)
             st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
 
@@ -690,6 +698,11 @@ def team_draft(tid:str):
         wildcard=st.selectbox("Wild Card — wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
                               placeholder="np. Arsenal",accept_new_options=True,key=f"wild_{tid}_{current['player_id']}")
         ok=st.form_submit_button("✅ WYBIERAM",type="primary",use_container_width=True)
+    cash_ids=set(str(x) for x in ((b["meta"].get("extra") or {}).get("cash_player_ids") or []))
+    if str(current["player_id"]) not in cash_ids:
+        if st.button("🤍 REAL MADRYT — POMOC",use_container_width=True,key=f"real_draft_{tid}_{current['player_id']}"):
+            try: db.assign_real_helper(tid,current["player_id"]);rf()
+            except ValueError as e: st.error(str(e))
     if ok:
         try:
             finished=db.draft_pick(tid,current["player_id"],slot,wildcard)
@@ -795,6 +808,9 @@ def team_draw(tid:str):
         title_slot=st.empty();title_slot.subheader(f"🎡 Następny: {nxt['name']}")
         action_slot=st.empty()
         with action_slot.container():
+            cash_ids=set(str(x) for x in ((meta.get("extra") or {}).get("cash_player_ids") or []))
+            if str(nxt["player_id"]) not in cash_ids and st.button("🤍 REAL MADRYT — POMOC",use_container_width=True,key=f"real_wheel_{tid}_{nxt['player_id']}"):
+                db.assign_real_helper(tid,nxt["player_id"]);rf()
             spin=st.button("🎰 ZAKRĘĆ KOŁEM",type="primary",use_container_width=True,key=f"spin_{nxt['player_id']}")
         if spin:
             action_slot.empty()
@@ -851,7 +867,7 @@ def structure_draw(tid:str):
 
 
 def render_structure(t):
-    title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup"}[t["format_key"]]
+    title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup","swiss8":"losowanie 1. rundy Swiss","groups9_final4":"losowanie grup","groups9_barrage_final3":"losowanie grup","groups9_top8":"losowanie grup","double9":"losowanie drabinki i play-inu","groups10_sf":"losowanie grup","swiss10":"losowanie 1. rundy Swiss","double10":"losowanie drabinki i play-inów"}.get(t["format_key"],"losowanie struktury")
     step="Etap 3/3" if int(t["player_count"]) in (3,4) else "Etap 2/2"
     hero(f"{step} • {title}")
     if setup_tv_gate(t): return
@@ -862,9 +878,11 @@ def render_structure(t):
 def stage_name(m):
     s=m["stage"]
     if s=="GROUP":return f"GRUPA {m['group_name']}"
-    return {"DUEL":"1 VS 1","LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}.get(s,s)
+    return {"DUEL":"1 VS 1","LEAGUE":"LIGA","WB":"DRABINKA WYGRANYCH","WB_FINAL":"FINAŁ WINNERS","LB":"DRABINKA PRZEGRANYCH","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL","PLAY_IN":"PLAY-IN","SWISS_R1":"SWISS • RUNDA 1","SWISS_R2":"SWISS • RUNDA 2","SWISS_R3":"SWISS • RUNDA 3","FINAL3":"FINAL THREE","LB_BRIDGE":"LOSERS • BRIDGE"}.get(s,s)
 
-def max_matches(fmt):return {"duel1v1":1,"league3_final":4,"league4_final":7,"double4":6,"double5":8,"league5_final":11,"groups6":9,"groups6_full":11,"double6":10,"double7":12,"groups7":14,"groups7_sf":12,"groups8_sf":15,"double8":14,"groups8_barrage":17}[fmt]
+def max_matches(fmt):
+    value=str(FORMAT_MATCH_COUNTS.get(fmt) or "0").strip().split()[0]
+    return int(value) if value.isdigit() else 0
 
 def _match_stake_text(fmt:str,m:dict) -> str:
     """Legacy plain-text stake description used outside the TV hero when needed."""
@@ -965,6 +983,8 @@ def source_placeholder(fmt,no):
       "groups7_sf":{10:"1A — 2B / 1B — 2A",11:"Drugi półfinał",12:"Zwycięzca SF1 — Zwycięzca SF2"},
       "groups8_sf":{13:"1A — 2B / 1B — 2A",14:"Drugi półfinał",15:"Zwycięzca SF1 — Zwycięzca SF2"},
       "double8":{5:"Losowanie par Winners po pierwszej rundzie",6:"Drugi wylosowany półfinał Winners",7:"L1 — L2",8:"L3 — L4",9:"Zwycięzca LB M7 — przegrany WB M6",10:"Zwycięzca LB M8 — przegrany WB M5",11:"Finał winners",12:"Zwycięzcy M9 — M10",13:"Finał losers",14:"Mistrz winners (start 1:0) — Mistrz losers"},
+      "double9":{5:"Wolny slot Winners — zwycięzca play-in",6:"Zwycięzcy QF Winners",7:"Zwycięzcy QF Winners",8:"Finał Winners",9:"Losers — losowanie par + BYE",10:"Losers — druga para",11:"Losers — losowanie par + BYE",12:"Losers — druga para",13:"Losers — Bridge + BYE",14:"Losers po finale Winners + BYE",15:"Finał Losers",16:"Mistrz Winners (start 1:0) — Mistrz Losers"},
+      "double10":{5:"Wolny slot Winners — zwycięzca play-in 1",6:"Wolny slot Winners — zwycięzca play-in 2",7:"Półfinał Winners",8:"Półfinał Winners",9:"Finał Winners",10:"Losers R1 — losowanie par",11:"Losers R1 — losowanie par",12:"Losers R1 — losowanie par",13:"Bridge — dwóch graczy bez LB BYE",14:"Losers — WB SF + zwycięzcy LB",15:"Druga para Losers",16:"Zwycięzcy M14 — M15",17:"Finał Losers",18:"Mistrz Winners (start 1:0) — Mistrz Losers"},
       "groups8_barrage":{13:"2B — 3A / 2A — 3B",14:"Drugi baraż",15:"Zwycięzca grupy — Zwycięzca barażu",16:"Zwycięzca grupy — Zwycięzca barażu",17:"Zwycięzca SF1 — Zwycięzca SF2"},
     }
     return maps.get(fmt,{}).get(no,"Do ustalenia")
@@ -1313,9 +1333,20 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
                 actor_pid=str(row.get("actor_player_id") or "")
                 options=[""]+participant_ids
                 actor_sel=st.selectbox("Gracz FIFA Night",options,index=options.index(actor_pid) if actor_pid in options else 0,format_func=lambda pid:"— wybierz —" if not pid else f"{participants[pid].get('player_name')} ({participants[pid].get('team')})",key=f"scan_actor_{tid}_{no}_{scan_id}_{uid}",label_visibility="collapsed")
+            resolution=row.get("footballer_resolution") if isinstance(row.get("footballer_resolution"),dict) else {}
+            if resolution.get("status")=="ambiguous" and resolution.get("candidates"):
+                candidates=list(dict.fromkeys([str(footballer)]+[str(x) for x in resolution.get("candidates") or [] if str(x)]))
+                footballer=st.selectbox(
+                    f"Rozpoznano skrót „{resolution.get('raw') or footballer}” — wybierz zawodnika",candidates,
+                    index=0,key=f"scan_resolve_{tid}_{no}_{scan_id}_{uid}"
+                )
             related=str(row.get("related_footballer_name") or "")
             if event_type=="substitution":
                 related=st.text_input("Schodzi z boiska",value=related,key=f"scan_related_{tid}_{no}_{scan_id}_{uid}",placeholder="Piłkarz schodzący")
+                related_resolution=row.get("related_footballer_resolution") if isinstance(row.get("related_footballer_resolution"),dict) else {}
+                if related_resolution.get("status")=="ambiguous" and related_resolution.get("candidates"):
+                    related_candidates=list(dict.fromkeys([str(related)]+[str(x) for x in related_resolution.get("candidates") or [] if str(x)]))
+                    related=st.selectbox(f"Skrót „{related_resolution.get('raw') or related}” — kto schodzi?",related_candidates,index=0,key=f"scan_related_resolve_{tid}_{no}_{scan_id}_{uid}")
                 st.caption("🔁 Dla zmiany: pole „Wchodzi” = zmiennik, a „Schodzi z boiska” = zawodnik zastępowany. Ta informacja służy m.in. do odznaki Joker.")
             rendered.append({**row,"include":include,"minute_label":minute_label,"event_type":event_type,"footballer_name":footballer,"related_footballer_name":related,"actor_player_id":actor_sel})
             st.divider()
@@ -1358,6 +1389,16 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
                 return
         try:
             db.save_result(tid,no,int(hs),int(ass),int(hp) if use_pens and hp is not None else None,int(ap) if use_pens and ap is not None else None,events=final_events)
+            version=normalize_game_version((data.get("context") or {}).get("game_version"))
+            for row in edit.get("events") or []:
+                actor=participants.get(str(row.get("actor_player_id") or "")) or {}
+                team=str(actor.get("team") or "")
+                if not team:continue
+                for name_key,res_key in (("footballer_name","footballer_resolution"),("related_footballer_name","related_footballer_resolution")):
+                    res=row.get(res_key) if isinstance(row.get(res_key),dict) else {}
+                    alias=str(res.get("raw") or "").strip();canonical=str(row.get(name_key) or "").strip()
+                    if alias and canonical and db._norm_scorer_name(alias)!=db._norm_scorer_name(canonical):
+                        db.remember_footballer_alias(version,team,alias,canonical)
         except ValueError as exc:
             st.error(str(exc));return
         st.session_state.pop(f"match_scan_preview_{tid}_{no}",None);st.session_state.pop(edit_key,None)
@@ -1536,7 +1577,7 @@ def score_form(tid,m,fmt):
                 except ValueError as e:st.error(str(e))
         if st.button("↩️ Zmień wynik przed karnymi",use_container_width=True,key=f"change_{tid}_{no}"):st.session_state.pop("pending_ko",None);rf()
         return
-    wb_bonus = fmt in ("double4","double5","double6","double7","double8") and m.get("stage")=="FINAL"
+    wb_bonus = fmt in ("double4","double5","double6","double7","double8","double9","double10") and m.get("stage")=="FINAL"
     start_home = 1 if wb_bonus else 0
     if wb_bonus and st.session_state.get(f"hs_{tid}_{no}",1) < 1:st.session_state[f"hs_{tid}_{no}"]=1
     render_match_vision_scan(tid,m,fmt)
@@ -1621,13 +1662,28 @@ def render_special_event(tid:str, b:dict) -> bool:
                 if st.button("➡️ GRAMY DALEJ",type="primary",use_container_width=True,key=f"d5_mid_ack_{tid}"):
                     db.ack_double5_draw(tid);rf()
             return True
-    if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
+    if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"):
         state=db.group_playoff_reveal_state(tid)
         if state:
             render_playoff_reveal(fmt,state.get("pairs",[]),state.get("direct",[]))
             if st.button("🔥 ZACZYNAMY FAZĘ PUCHAROWĄ",type="primary",use_container_width=True,key=f"po_ack_{tid}"):
                 db.ack_group_playoffs(tid);rf()
             return True
+    state=db.big_visible_draw_state(tid)
+    if state:
+        st.markdown("### 🎲 Losowanie w trakcie turnieju")
+        st.caption("Pokazujemy tylko prawdziwe losowanie — ten etap miał co najmniej dwa równorzędne legalne warianty.")
+        bye_pid=state.get("bye_player_id")
+        if bye_pid:
+            candidate=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
+            st.success(f"🍀 **Szczęśliwy Los / BYE:** {esc(candidate.get('name') or '?')}")
+            if state.get("bye_candidates"):
+                st.caption("Kandydaci: "+" • ".join(str(x.get("name") or "?") for x in state.get("bye_candidates") or []))
+        for pair in state.get("pairs",[]):
+            st.markdown(f"**{esc(pair.get('home_name') or '?')}**  vs  **{esc(pair.get('away_name') or '?')}**")
+        if st.button("✅ ZATWIERDŹ LOSOWANIE",type="primary",use_container_width=True,key=f"big_draw_ack_{tid}_{state.get('kind')}"):
+            db.ack_big_visible_draw(tid,state.get("kind"));rf()
+        return True
     return False
 
 
@@ -1729,7 +1785,7 @@ def live(tid:str):
     if not int(t.get("is_test") or 0):
         render_live_milestone_alerts(tid,compact=False)
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
-    if fmt in ("double4","double5","double6","double7","double8") and cur.get("stage")=="FINAL":
+    if fmt in DE_FORMATS and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_banter(cur)
@@ -1771,7 +1827,7 @@ def live(tid:str):
 
 
 
-DE_FORMATS={"double4","double5","double6","double7","double8"}
+DE_FORMATS={"double4","double5","double6","double7","double8","double9","double10"}
 
 
 def _de_bracket_layout(fmt:str) -> dict:
@@ -1782,6 +1838,8 @@ def _de_bracket_layout(fmt:str) -> dict:
         "double6": {"wb":[[1,2],[3,4],[7]], "lb":[[5],[6],[8],[9]], "final":[10]},
         "double7": {"wb":[[1,2,3],[4,5],[9]], "lb":[[6],[7,8],[10],[11]], "final":[12]},
         "double8": {"wb":[[1,2,3,4],[5,6],[11]], "lb":[[7,8],[9,10],[12],[13]], "final":[14]},
+        "double9": {"wb":[[1],[2,3,4,5],[6,7],[8]], "lb":[[9,10],[11,12],[13],[14],[15]], "final":[16]},
+        "double10": {"wb":[[1,2],[3,4,5,6],[7,8],[9]], "lb":[[10,11,12],[13],[14,15],[16],[17]], "final":[18]},
     }.get(fmt,{"wb":[],"lb":[],"final":[]})
 
 
@@ -1814,6 +1872,21 @@ def _de_path_labels(fmt:str) -> dict[int,str]:
             5:"W → M11  •  P → M10", 6:"W → M11  •  P → M9", 7:"W → M9  •  P → odpada",
             8:"W → M10  •  P → odpada", 9:"W → M12  •  P → odpada", 10:"W → M12  •  P → odpada",
             11:"W → FINAŁ M14  •  P → M13", 12:"W → M13  •  P → odpada", 13:"W → FINAŁ M14  •  P → odpada", 14:"🏆 Mistrz",
+        },
+        "double9": {
+            1:"W → M5  •  P → Losers", 2:"W → M6/M7  •  P → Losers", 3:"W → M6/M7  •  P → Losers",
+            4:"W → M6/M7  •  P → Losers", 5:"W → M6/M7  •  P → Losers", 6:"W → M8  •  P → Losers",
+            7:"W → M8  •  P → Losers", 8:"W → FINAŁ M16  •  P → Losers",
+            9:"W → dalszy LB  •  P → odpada",10:"W → dalszy LB  •  P → odpada",11:"W → dalszy LB  •  P → odpada",
+            12:"W → dalszy LB  •  P → odpada",13:"W → dalszy LB  •  P → odpada",14:"W → M15  •  P → odpada",
+            15:"W → FINAŁ M16  •  P → odpada",16:"🏆 Mistrz",
+        },
+        "double10": {
+            1:"W → M5  •  P → Losers",2:"W → M6  •  P → Losers",3:"W → M7/M8  •  P → Losers",4:"W → M7/M8  •  P → Losers",
+            5:"W → M7/M8  •  P → Losers",6:"W → M7/M8  •  P → Losers",7:"W → M9  •  P → Losers",8:"W → M9  •  P → Losers",
+            9:"W → FINAŁ M18  •  P → M17",10:"W → M13/BYE  •  P → odpada",11:"W → M13/BYE  •  P → odpada",12:"W → M13/BYE  •  P → odpada",
+            13:"W → M14/M15  •  P → odpada",14:"W → M16  •  P → odpada",15:"W → M16  •  P → odpada",16:"W → M17  •  P → odpada",
+            17:"W → FINAŁ M18  •  P → odpada",18:"🏆 Mistrz",
         },
     }.get(fmt,{})
 
@@ -1952,7 +2025,7 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     # the exact same left-to-right map and simply scroll horizontally.
     col_w=174; gap=12; final_w=188
     width=max(690,max_rounds*col_w+(max_rounds-1)*gap+final_w+72)
-    height={"double4":650,"double5":720,"double6":790,"double7":860,"double8":930}.get(fmt,800)
+    height={"double4":650,"double5":720,"double6":790,"double7":860,"double8":930,"double9":1040,"double10":1080}.get(fmt,800)
     html_doc=f"""
     <!doctype html><html><head><meta charset='utf-8'><style>
     *{{box-sizing:border-box}} html,body{{margin:0;padding:0;background:transparent;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#202532}}
@@ -2123,7 +2196,7 @@ def render_schedule(t):
             else:result="—";icon="⏳";live_tag=" • GOTOWY" if ready else ""
         else:
             names=source_placeholder(fmt,no);result=("NIE ROZEGRANO" if abandoned else "—");icon=("⚪" if abandoned else "🔒");live_tag=("" if abandoned else " • CZEKA NA ROZSTRZYGNIĘCIE")
-        bonus=" • START 1:0 DLA WINNERS" if fmt in ("double4","double5","double6","double7","double8") and m["stage"]=="FINAL" else ""
+        bonus=" • START 1:0 DLA WINNERS" if fmt in DE_FORMATS and m["stage"]=="FINAL" else ""
         tags=milestone_by_match.get(no,[])
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
         st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {no} • {stage_name(m)}{esc(live_tag)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
@@ -2224,11 +2297,16 @@ def render_stats(t=None,readonly:bool=False):
             c4.metric("🔥 Najwięcej wygranych",most_wins["team"],most_wins["w"])
             df=pd.DataFrame([{"Drużyna":x["team"],"Tytuły":x["titles"],"M":x["matches"],"W":x["w"],"R":x["d"],"P":x["l"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}","G/mecz":x["goals_per_match"],"Gracze":x["players"],"Najlepszy gracz":x["best_player"]} for x in team_stats])
             st.dataframe(df,hide_index=True,use_container_width=True)
-            ratings=db.live_team_ratings()
+            st.markdown("#### 📡 Live Team Rating")
+            rating_version=st.segmented_control("Wersja gry",list(GAME_VERSIONS),default="FC26",key="team_rating_game_version")
+            rating_version=normalize_game_version(rating_version)
+            ratings=db.live_team_ratings(rating_version)
             if ratings:
-                st.markdown("#### 📡 Live Team Rating")
-                st.caption("Rating aktualizuje się z wynikami; mała próbka jest przyciągana do neutralnych 50 pkt, a nowsze mecze ważą trochę więcej.")
-                st.dataframe(pd.DataFrame([{"Drużyna":x["team"],"Rating":x["rating"],"M":x["matches"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}"} for x in ratings]),hide_index=True,use_container_width=True)
+                prior_note=" FC27 korzysta z płynnego prioru FC26 do 5. meczu danej drużyny." if rating_version=="FC27" else ""
+                st.caption("Rating aktualizuje się z wynikami danej wersji gry; mała próbka jest przyciągana do neutralnych 50 pkt, a nowsze mecze ważą trochę więcej."+prior_note)
+                st.dataframe(pd.DataFrame([{"Drużyna":x["team"],"Rating":round(float(x["rating"]),2),"M":x["matches"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}"} for x in ratings]),hide_index=True,use_container_width=True)
+            else:
+                st.info(f"Brak rozegranych oficjalnych meczów dla {rating_version}.")
     with tab_players:
         st.markdown("### 👤 Profil i historia gracza")
         opts={p["name"]:p["player_id"] for p in stats};names=list(opts)
@@ -2983,11 +3061,20 @@ def render_tv_special_event(tid:str,b:dict) -> bool:
                 st.markdown("### 🎱 Losowanie przeciwnika")
                 st.info("📱 Telefon steruje losowaniem. Czekam na wynik…")
             return True
-    if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
+    if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"):
         state=db.group_playoff_reveal_state(tid)
         if state:
             render_playoff_reveal(fmt,state.get("pairs",[]),state.get("direct",[]))
             return True
+    state=db.big_visible_draw_state(tid)
+    if state:
+        st.markdown("### 🎲 LOSOWANIE W TRAKCIE")
+        bye_pid=state.get("bye_player_id")
+        if bye_pid:
+            candidate=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
+            st.markdown(f"## 🍀 SZCZĘŚLIWY LOS: {esc(candidate.get('name') or '?')}")
+        for pair in state.get("pairs",[]):st.markdown(f"## {esc(pair.get('home_name') or '?')}  —  {esc(pair.get('away_name') or '?')}")
+        return True
     return False
 
 

@@ -5,48 +5,52 @@ import random
 from typing import Iterable
 
 WILDCARD_TEAM_SUGGESTIONS = [
-    "Manchester City",
-    "Inter",
-    "Atletico",
-    "BVB",
-    "Man United",
-    "Arsenal",
-    "Chelsea",
-    "Bayer Leverkusen",
-    "Tottenham",
-    "AC Milan",
-    "Napoli",
+    "Manchester City", "Inter", "Atletico", "BVB", "Man United", "Arsenal", "Chelsea",
+    "Bayer Leverkusen", "Tottenham", "AC Milan", "Napoli",
 ]
 
-FIXED_TEAMS = [
-    "Bayern Monachium",
-    "FC Barcelona",
-    "PSG",
-    "Liverpool",
+GAME_VERSIONS = ("FC26", "FC27")
+REAL_HELPER_TEAM = "Real Madryt"
+
+FC26_FIXED_TEAMS = ["Bayern Monachium", "FC Barcelona", "PSG", "Liverpool"]
+FC26_WILDCARD_SUGGESTIONS = WILDCARD_TEAM_SUGGESTIONS.copy()
+FC27_FIXED_TEAMS = ["PSG", "Bayern Monachium", "FC Barcelona", "Arsenal", "Manchester City"]
+FC27_WILDCARD_SUGGESTIONS = [
+    "Liverpool", "Atletico", "Juventus", "Man United", "Chelsea", "Napoli", "BVB", "Roma", "Tottenham", "Aston Villa",
 ]
 
-# 3–4 players: manual draft from fixed clubs plus a reusable Wild Card choice.
-# 5 players: the same 5-slot pool is used by the team wheel (4 fixed + 1 Wild Card).
-# In manual drafts the Wild Card option may be used by more than one player as long
-# as the concrete clubs are different.
+# Backwards-compatible aliases used by existing screens. FC26 remains legacy/default.
+FIXED_TEAMS = FC26_FIXED_TEAMS
 BASE_TEAMS = FIXED_TEAMS + ["Dowolna drużyna (Real Madryt banned)"]
+SIX_TEAMS = FIXED_TEAMS + ["Dowolna drużyna #1 (Real Madryt banned)", "Dowolna drużyna #2 (Real Madryt banned)"]
+SEVEN_TEAMS = FIXED_TEAMS + ["Dowolna drużyna #1 (Real Madryt banned)", "Dowolna drużyna #2 (Real Madryt banned)", "Dowolna drużyna #3 (Real Madryt banned)"]
+EIGHT_TEAMS = FIXED_TEAMS + ["Dowolna drużyna #1 (Real Madryt banned)", "Dowolna drużyna #2 (Real Madryt banned)", "Dowolna drużyna #3 (Real Madryt banned)", "Dowolna drużyna #4 (Real Madryt banned)"]
 
-# 6+ wheel: four fixed clubs and enough Wild Card slots to fill the field.
-SIX_TEAMS = FIXED_TEAMS + [
-    "Dowolna drużyna #1 (Real Madryt banned)",
-    "Dowolna drużyna #2 (Real Madryt banned)",
-]
-SEVEN_TEAMS = FIXED_TEAMS + [
-    "Dowolna drużyna #1 (Real Madryt banned)",
-    "Dowolna drużyna #2 (Real Madryt banned)",
-    "Dowolna drużyna #3 (Real Madryt banned)",
-]
-EIGHT_TEAMS = FIXED_TEAMS + [
-    "Dowolna drużyna #1 (Real Madryt banned)",
-    "Dowolna drużyna #2 (Real Madryt banned)",
-    "Dowolna drużyna #3 (Real Madryt banned)",
-    "Dowolna drużyna #4 (Real Madryt banned)",
-]
+
+def normalize_game_version(value: str | None) -> str:
+    raw=str(value or "FC26").strip().upper().replace("EA SPORTS ","").replace("EA FC ","FC")
+    return raw if raw in GAME_VERSIONS else "FC26"
+
+
+def fixed_teams_for_version(game_version: str) -> list[str]:
+    return (FC27_FIXED_TEAMS if normalize_game_version(game_version)=="FC27" else FC26_FIXED_TEAMS).copy()
+
+
+def wildcard_suggestions_for_version(game_version: str) -> list[str]:
+    return (FC27_WILDCARD_SUGGESTIONS if normalize_game_version(game_version)=="FC27" else FC26_WILDCARD_SUGGESTIONS).copy()
+
+
+def allowed_teams(player_count: int, game_version: str = "FC26") -> list[str]:
+    fixed=fixed_teams_for_version(game_version)
+    # FC27: exactly five normal teams; every extra seat is a real weakening Wild Card.
+    normal_count=5 if normalize_game_version(game_version)=="FC27" else 4
+    fixed=fixed[:normal_count]
+    if player_count <= len(fixed):
+        # 3–4 stay manual draft; 5 uses the full normal FC27 pool without WC.
+        return fixed + (["Dowolna drużyna (Real Madryt banned)"] if normalize_game_version(game_version)=="FC26" else [])
+    wc_count=max(0,player_count-len(fixed))
+    return fixed + [f"Dowolna drużyna #{i+1} (Real Madryt banned)" for i in range(wc_count)]
+
 
 FORMAT_LABELS = {
     "duel1v1": "Mecz 1 vs 1",
@@ -64,6 +68,14 @@ FORMAT_LABELS = {
     "groups8_sf": "Grupy 4+4 + półfinały + finał",
     "double8": "Double elimination",
     "groups8_barrage": "Grupy 4+4 + baraże + półfinały + finał",
+    "swiss8": "Swiss 3 rundy + TOP4",
+    "groups9_final4": "3 grupy po 3 + Final Four",
+    "groups9_barrage_final3": "3 grupy po 3 + baraże + Final Three",
+    "groups9_top8": "3 grupy po 3 + TOP8",
+    "double9": "Double elimination (1 play-in)",
+    "groups10_sf": "2 grupy po 5 + półfinały",
+    "swiss10": "Swiss 3 rundy + TOP4",
+    "double10": "Double elimination (2 play-iny)",
 }
 
 FORMAT_MATCH_COUNTS = {
@@ -82,14 +94,15 @@ FORMAT_MATCH_COUNTS = {
     "groups8_sf": "15 meczów",
     "double8": "14 meczów",
     "groups8_barrage": "17 meczów",
+    "swiss8": "15 meczów",
+    "groups9_final4": "12 meczów",
+    "groups9_barrage_final3": "15 meczów",
+    "groups9_top8": "16 meczów",
+    "double9": "16 meczów",
+    "groups10_sf": "23 mecze",
+    "swiss10": "18 meczów",
+    "double10": "18 meczów",
 }
-
-
-def allowed_teams(player_count: int) -> list[str]:
-    if player_count == 8: return EIGHT_TEAMS.copy()
-    if player_count == 7: return SEVEN_TEAMS.copy()
-    if player_count == 6: return SIX_TEAMS.copy()
-    return BASE_TEAMS.copy()
 
 
 def shuffled_assignments(player_ids: list[str], teams: list[str], rng: random.Random) -> dict[str, str]:
@@ -261,6 +274,18 @@ def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> di
     if format_key in ("groups8_sf", "groups8_barrage"):
         seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4", "B4"]
         return {"slots": dict(zip(seq, ids, strict=True))}
+    if format_key == "swiss8":
+        return {"slots": dict(zip(list("ABCDEFGH"), ids, strict=True))}
+    if format_key in ("groups9_final4","groups9_barrage_final3","groups9_top8"):
+        seq=["A1","B1","C1","A2","B2","C2","A3","B3","C3"]
+        return {"slots":dict(zip(seq,ids,strict=True))}
+    if format_key == "double9":
+        return {"slots":dict(zip(list("ABCDEFGHI"),ids,strict=True))}
+    if format_key == "groups10_sf":
+        seq=["A1","B1","A2","B2","A3","B3","A4","B4","A5","B5"]
+        return {"slots":dict(zip(seq,ids,strict=True))}
+    if format_key in ("swiss10","double10"):
+        return {"slots":dict(zip(list("ABCDEFGHIJ"),ids,strict=True))}
     raise ValueError(f"Nieznany format: {format_key}")
 
 def draw_signature(draw: dict) -> tuple:
@@ -467,9 +492,9 @@ def schedule_double8(draw: dict, extra: dict) -> list[dict]:
         {"match_no":6,"stage":"WB","group_name":None,"home":"D8W:M6H","away":"D8W:M6A"},
         {"match_no":7,"stage":"LB","group_name":None,"home":"L:1","away":"L:2"},
         {"match_no":8,"stage":"LB","group_name":None,"home":"L:3","away":"L:4"},
-        # Skrzyżowanie połówek ogranicza szybkie rewanże za pierwszy mecz.
-        {"match_no":9,"stage":"LB","group_name":None,"home":"W:7","away":"L:6"},
-        {"match_no":10,"stage":"LB","group_name":None,"home":"W:8","away":"L:5"},
+        # LB cross is chosen dynamically: only immediate rematches are avoided; otherwise it is random.
+        {"match_no":9,"stage":"LB","group_name":None,"home":"W:7","away":"D8:PAIR7"},
+        {"match_no":10,"stage":"LB","group_name":None,"home":"W:8","away":"D8:PAIR8"},
         {"match_no":11,"stage":"WB_FINAL","group_name":None,"home":"W:5","away":"W:6"},
         {"match_no":12,"stage":"LB","group_name":None,"home":"W:9","away":"W:10"},
         {"match_no":13,"stage":"LB_FINAL","group_name":None,"home":"W:12","away":"L:11"},
@@ -504,9 +529,11 @@ def schedule_double6(draw: dict, extra: dict) -> list[dict]:
         {"match_no":3,"stage":"WB","group_name":None,"home":"W:1","away":f"P:{s['E']}"},
         {"match_no":4,"stage":"WB","group_name":None,"home":"W:2","away":f"P:{s['F']}"},
         {"match_no":5,"stage":"LB","group_name":None,"home":"L:1","away":"L:2"},
-        {"match_no":6,"stage":"LB","group_name":None,"home":"W:5","away":"L:3"},
+        # LB cross is a real draw once both WB semifinals are known.  The routes are
+        # stored symbolically so the draw can happen before M5 is necessarily played.
+        {"match_no":6,"stage":"LB","group_name":None,"home":"D6:M6H","away":"D6:M6A"},
         {"match_no":7,"stage":"WB_FINAL","group_name":None,"home":"W:3","away":"W:4"},
-        {"match_no":8,"stage":"LB","group_name":None,"home":"W:6","away":"L:4"},
+        {"match_no":8,"stage":"LB","group_name":None,"home":"D6:M8H","away":"D6:M8A"},
         {"match_no":9,"stage":"LB_FINAL","group_name":None,"home":"W:8","away":"L:7"},
         {"match_no":10,"stage":"FINAL","group_name":None,"home":"W:7","away":"W:9"},
     ]
@@ -531,6 +558,121 @@ def schedule_double7(draw: dict, extra: dict) -> list[dict]:
     ]
 
 
+def _orient(pair: tuple[str,str], rng: random.Random) -> tuple[str,str]:
+    a,b=pair
+    return (b,a) if rng.choice([True,False]) else (a,b)
+
+def schedule_swiss(draw: dict, player_count: int, rng: random.Random) -> list[dict]:
+    ids=list(draw["slots"].values())
+    rng.shuffle(ids)
+    out=[]; no=1
+    # R1 is a real randomized complete matching. R2/R3 are generated dynamically from standings.
+    for i in range(0,player_count,2):
+        h,a=_orient((ids[i],ids[i+1]),rng); out.append({"match_no":no,"stage":"SWISS_R1","group_name":"S","home":f"P:{h}","away":f"P:{a}"}); no+=1
+    per=player_count//2
+    for rnd in (2,3):
+        for slot in range(per):
+            out.append({"match_no":no,"stage":f"SWISS_R{rnd}","group_name":"S","home":f"SWISS:R{rnd}:{slot}:H","away":f"SWISS:R{rnd}:{slot}:A"}); no+=1
+    out += [
+        {"match_no":no,"stage":"SF","group_name":None,"home":"SWISS:SF:1:H","away":"SWISS:SF:1:A"},
+        {"match_no":no+1,"stage":"SF","group_name":None,"home":"SWISS:SF:2:H","away":"SWISS:SF:2:A"},
+        {"match_no":no+2,"stage":"FINAL","group_name":None,"home":f"W:{no}","away":f"W:{no+1}"},
+    ]
+    return out
+
+def _schedule_groups9_phase(draw: dict, rng: random.Random) -> list[dict]:
+    pairs={g:_three_player_group_schedule(group_members(draw,g),rng) for g in ("A","B","C")}; idx={g:0 for g in pairs}; out=[]
+    for no,g in enumerate(["A","B","C"]*3,1):
+        h,a=_orient(pairs[g][idx[g]],rng); idx[g]+=1
+        out.append({"match_no":no,"stage":"GROUP","group_name":g,"home":f"P:{h}","away":f"P:{a}"})
+    return out
+
+def schedule_groups9_final4(draw: dict, rng: random.Random) -> list[dict]:
+    out=_schedule_groups9_phase(draw,rng)
+    out += [
+        {"match_no":10,"stage":"SF","group_name":None,"home":"G9F4:SF10H","away":"G9F4:SF10A"},
+        {"match_no":11,"stage":"SF","group_name":None,"home":"G9F4:SF11H","away":"G9F4:SF11A"},
+        {"match_no":12,"stage":"FINAL","group_name":None,"home":"W:10","away":"W:11"},
+    ]; return out
+
+def schedule_groups9_barrage_final3(draw: dict, rng: random.Random) -> list[dict]:
+    out=_schedule_groups9_phase(draw,rng)
+    out += [
+        {"match_no":10,"stage":"BARRAGE","group_name":None,"home":"G9B:B10H","away":"G9B:B10A"},
+        {"match_no":11,"stage":"BARRAGE","group_name":None,"home":"G9B:B11H","away":"G9B:B11A"},
+        {"match_no":12,"stage":"BARRAGE","group_name":None,"home":"G9B:B12H","away":"G9B:B12A"},
+        {"match_no":13,"stage":"FINAL3","group_name":"F3","home":"G9B:F13H","away":"G9B:F13A"},
+        {"match_no":14,"stage":"FINAL3","group_name":"F3","home":"L:13","away":"G9B:F14THIRD"},
+        {"match_no":15,"stage":"FINAL3","group_name":"F3","home":"W:13","away":"G9B:F14THIRD"},
+    ]; return out
+
+def schedule_groups9_top8(draw: dict, rng: random.Random) -> list[dict]:
+    out=_schedule_groups9_phase(draw,rng)
+    for no in range(10,14): out.append({"match_no":no,"stage":"QF","group_name":None,"home":f"G9T:Q{no}H","away":f"G9T:Q{no}A"})
+    out += [
+        {"match_no":14,"stage":"SF","group_name":None,"home":"W:10","away":"W:11"},
+        {"match_no":15,"stage":"SF","group_name":None,"home":"W:12","away":"W:13"},
+        {"match_no":16,"stage":"FINAL","group_name":None,"home":"W:14","away":"W:15"},
+    ]; return out
+
+def schedule_groups10_sf(draw: dict, rng: random.Random) -> list[dict]:
+    a=group_members(draw,"A"); b=group_members(draw,"B")
+    ar=_round_robin_pairs(a); br=_round_robin_pairs(b); out=[]; no=1
+    # Alternate groups by rounds; each 5-player round has two disjoint games and one bye.
+    for r in range(5):
+        for g,pairs in (("A",ar[r]),("B",br[r])):
+            for pair in pairs:
+                h,aw=_orient(pair,rng); out.append({"match_no":no,"stage":"GROUP","group_name":g,"home":f"P:{h}","away":f"P:{aw}"}); no+=1
+    out += [
+        {"match_no":21,"stage":"SF","group_name":None,"home":"POS:A:1","away":"POS:B:2"},
+        {"match_no":22,"stage":"SF","group_name":None,"home":"POS:B:1","away":"POS:A:2"},
+        {"match_no":23,"stage":"FINAL","group_name":None,"home":"W:21","away":"W:22"},
+    ]; return out
+
+def schedule_double9(draw: dict, extra: dict) -> list[dict]:
+    s=draw["slots"]
+    return [
+        {"match_no":1,"stage":"PLAY_IN","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"},
+        {"match_no":2,"stage":"WB","group_name":None,"home":f"P:{s['C']}","away":f"P:{s['D']}"},
+        {"match_no":3,"stage":"WB","group_name":None,"home":f"P:{s['E']}","away":f"P:{s['F']}"},
+        {"match_no":4,"stage":"WB","group_name":None,"home":f"P:{s['G']}","away":f"P:{s['H']}"},
+        {"match_no":5,"stage":"WB","group_name":None,"home":f"P:{s['I']}","away":"W:1"},
+        {"match_no":6,"stage":"WB","group_name":None,"home":"W:2","away":"W:3"},
+        {"match_no":7,"stage":"WB","group_name":None,"home":"W:4","away":"W:5"},
+        {"match_no":8,"stage":"WB_FINAL","group_name":None,"home":"W:6","away":"W:7"},
+        {"match_no":9,"stage":"LB","group_name":None,"home":"D9:L9H","away":"D9:L9A"},
+        {"match_no":10,"stage":"LB","group_name":None,"home":"D9:L10H","away":"D9:L10A"},
+        {"match_no":11,"stage":"LB","group_name":None,"home":"D9:L11H","away":"D9:L11A"},
+        {"match_no":12,"stage":"LB","group_name":None,"home":"D9:L12H","away":"D9:L12A"},
+        {"match_no":13,"stage":"LB","group_name":None,"home":"D9:L13H","away":"D9:L13A"},
+        {"match_no":14,"stage":"LB","group_name":None,"home":"D9:L14H","away":"D9:L14A"},
+        {"match_no":15,"stage":"LB_FINAL","group_name":None,"home":"D9:L15H","away":"D9:L15A"},
+        {"match_no":16,"stage":"FINAL","group_name":None,"home":"W:8","away":"W:15"},
+    ]
+
+def schedule_double10(draw: dict, extra: dict) -> list[dict]:
+    s=draw["slots"]
+    return [
+        {"match_no":1,"stage":"PLAY_IN","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"},
+        {"match_no":2,"stage":"PLAY_IN","group_name":None,"home":f"P:{s['C']}","away":f"P:{s['D']}"},
+        {"match_no":3,"stage":"WB","group_name":None,"home":f"P:{s['E']}","away":f"P:{s['F']}"},
+        {"match_no":4,"stage":"WB","group_name":None,"home":f"P:{s['G']}","away":f"P:{s['H']}"},
+        {"match_no":5,"stage":"WB","group_name":None,"home":f"P:{s['I']}","away":"W:1"},
+        {"match_no":6,"stage":"WB","group_name":None,"home":f"P:{s['J']}","away":"W:2"},
+        {"match_no":7,"stage":"WB","group_name":None,"home":"W:3","away":"W:4"},
+        {"match_no":8,"stage":"WB","group_name":None,"home":"W:5","away":"W:6"},
+        {"match_no":9,"stage":"WB_FINAL","group_name":None,"home":"W:7","away":"W:8"},
+        {"match_no":10,"stage":"LB","group_name":None,"home":"D10:L10H","away":"D10:L10A"},
+        {"match_no":11,"stage":"LB","group_name":None,"home":"D10:L11H","away":"D10:L11A"},
+        {"match_no":12,"stage":"LB","group_name":None,"home":"D10:L12H","away":"D10:L12A"},
+        {"match_no":13,"stage":"LB_BRIDGE","group_name":None,"home":"D10:L13H","away":"D10:L13A"},
+        {"match_no":14,"stage":"LB","group_name":None,"home":"D10:L14H","away":"D10:L14A"},
+        {"match_no":15,"stage":"LB","group_name":None,"home":"D10:L15H","away":"D10:L15A"},
+        {"match_no":16,"stage":"LB","group_name":None,"home":"W:14","away":"W:15"},
+        {"match_no":17,"stage":"LB_FINAL","group_name":None,"home":"W:16","away":"L:9"},
+        {"match_no":18,"stage":"FINAL","group_name":None,"home":"W:9","away":"W:17"},
+    ]
+
 def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Random) -> list[dict]:
     if format_key=="duel1v1":
         s=draw["slots"]; return [{"match_no":1,"stage":"DUEL","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"}]
@@ -548,6 +690,14 @@ def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Ra
     if format_key=="groups8_sf": return schedule_groups8_sf(draw,rng)
     if format_key=="double8": return schedule_double8(draw,extra)
     if format_key=="groups8_barrage": return schedule_groups8_barrage(draw,rng)
+    if format_key=="swiss8": return schedule_swiss(draw,8,rng)
+    if format_key=="groups9_final4": return schedule_groups9_final4(draw,rng)
+    if format_key=="groups9_barrage_final3": return schedule_groups9_barrage_final3(draw,rng)
+    if format_key=="groups9_top8": return schedule_groups9_top8(draw,rng)
+    if format_key=="double9": return schedule_double9(draw,extra)
+    if format_key=="groups10_sf": return schedule_groups10_sf(draw,rng)
+    if format_key=="swiss10": return schedule_swiss(draw,10,rng)
+    if format_key=="double10": return schedule_double10(draw,extra)
     raise ValueError(format_key)
 
 def group_table(group_player_ids: Iterable[str], matches: list[dict], tie_orders: dict[str,int]) -> list[dict]:
@@ -738,6 +888,42 @@ def weighted_bye_choice(candidates: list[str], start_priority: dict[str, int] | 
         if pick <= acc:
             return pid
     return vals[-1]
+
+def apply_de_playin_priority(draw: dict, format_key: str, placement_by_player_id: dict[str,int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> dict:
+    """Weighted DE9/DE10 play-in draw from the previous tournament.
+
+    Champion/finalist are more exposed, newcomers less exposed. In DE9 they can never
+    meet in the single play-in; in DE10 both may be selected but never face each other.
+    """
+    if format_key not in ("double9","double10"):
+        return draw
+    import itertools
+    slots=dict(draw.get("slots") or {}); pids=list(slots.values())
+    place={str(k):int(v) for k,v in (placement_by_player_id or {}).items() if v}; newcomers={str(x) for x in (new_player_ids or [])}
+    base={1:1.45,2:1.35,3:1.10}
+    weights={pid:(0.75 if str(pid) in newcomers else base.get(place.get(str(pid)),1.0)) for pid in pids}
+    champ=next((pid for pid in pids if place.get(str(pid))==1),None); runner=next((pid for pid in pids if place.get(str(pid))==2),None)
+    if format_key=="double9":
+        opts=[]
+        for a,b in itertools.combinations(pids,2):
+            if champ and runner and {str(a),str(b)}=={str(champ),str(runner)}: continue
+            opts.append(((a,b),weights[a]*weights[b]))
+        pair=_weighted_choice_pairs(opts,rng)
+        for target,pid in zip(("A","B"),pair):
+            if slots[target]==pid:continue
+            src=next(k for k,v in slots.items() if v==pid);slots[target],slots[src]=slots[src],slots[target]
+        return {**draw,"slots":slots}
+    opts=[]
+    for perm in itertools.permutations(pids,4):
+        if champ and runner and ({str(perm[0]),str(perm[1])}=={str(champ),str(runner)} or {str(perm[2]),str(perm[3])}=={str(champ),str(runner)}):continue
+        w=1.0
+        for pid in perm:w*=weights[pid]
+        opts.append((perm,w))
+    chosen=_weighted_choice_pairs(opts,rng)
+    for target,pid in zip(("A","B","C","D"),chosen):
+        if slots[target]==pid:continue
+        src=next(k for k,v in slots.items() if v==pid);slots[target],slots[src]=slots[src],slots[target]
+    return {**draw,"slots":slots}
 
 def apply_cross_tournament_bye_priority(draw: dict, format_key: str, start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> dict:
     """Softly weight initial Winners lucky passes while keeping pairings random."""

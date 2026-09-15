@@ -4,6 +4,9 @@
 # według liczby zapisanych goli.
 
 SCORER_SEEDS = {
+    "Real Madryt": [
+        "Kylian Mbappé", "Vinícius Júnior", "Jude Bellingham", "Rodrygo", "Federico Valverde",
+    ],
     "Bayern Monachium": [
         "Harry Kane", "Jamal Musiala", "Michael Olise", "Luis Díaz", "Serge Gnabry",
     ],
