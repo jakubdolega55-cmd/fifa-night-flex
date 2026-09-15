@@ -54,11 +54,16 @@ def req(method,path,*,json_data=None,headers=None,expect=200):
 
 # health/config/auth
 try:
-    d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.0.2'; ok('health')
-    d,_=req('GET','/api/v1/config'); assert all(str(n) in d['formats'] for n in range(3,9)); ok('config formats 3-8')
+    d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.1.0'; ok('health')
+    d,_=req('GET','/api/v1/config'); assert all(str(n) in d['formats'] for n in range(3,11)); assert d['team_pools']['FC27']['5']==['PSG','Bayern Monachium','FC Barcelona','Arsenal','Manchester City']; ok('config formats 3-10 + version team pools')
     _,_=req('POST','/api/v1/tournaments',json_data={'player_names':['A','B','C'],'player_count':3,'format_key':'league3_final','is_test':False},expect=401); ok('official create requires controller')
     d,_=req('POST','/api/v1/auth/controller',json_data={'password':'test-admin'}); token=d['token']; AUTH={'Authorization':f'Bearer {token}'}; ok('controller login')
     d,_=req('GET','/api/v1/auth/me',headers=AUTH); assert d.get('controller') is True; ok('controller me')
+    d,_=req('POST','/api/v1/tournaments',json_data={'player_names':[f'N{i}' for i in range(1,10)],'player_count':9,'format_key':'groups9_final4','game_version':'FC27','is_test':True}); nine_tid=d['id']
+    setup,_=req('GET',f'/api/v1/tournaments/{nine_tid}/setup'); assert setup.get('game_version')=='FC27'
+    live,_=req('GET','/api/v1/live'); assert (live.get('tournament') or {}).get('game_version')=='FC27'
+    ok('mobile API accepts 9-player FC27 tournament and exposes version')
+    req('POST',f'/api/v1/tournaments/{nine_tid}/reset')
 except Exception as e:
     fail('bootstrap',repr(e)); raise
 
