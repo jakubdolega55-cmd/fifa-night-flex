@@ -26,7 +26,7 @@ from logic import (
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "1.1.0"
+API_VERSION = "1.1.1"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {
@@ -262,6 +262,10 @@ def clean_match(match: dict[str, Any]) -> dict[str, Any]:
         "away_name": match.get("away_name"),
         "home_team": match.get("home_team"),
         "away_team": match.get("away_team"),
+        "home_source": match.get("home_source"),
+        "away_source": match.get("away_source"),
+        "home_source_display": match.get("home_source_display"),
+        "away_source_display": match.get("away_source_display"),
         "home_score": match.get("home_score"),
         "away_score": match.get("away_score"),
         "home_penalties": match.get("home_penalties"),
@@ -1226,6 +1230,7 @@ def _setup_payload(tid: str) -> dict[str, Any]:
         "tournament": tournament_payload, "meta": meta_payload, "players": player_rows,
         "draft_available": available, "wildcard_suggestions": wildcard_suggestions,
         "pending_wildcard": extra.get("pending_wildcard"),
+        "structure_preview": b.get("structure_preview") or [],
         **tournament_payload,
         "team_pool": meta_payload["team_pool"], "draw": meta_payload["draw"],
         "draw_revealed": meta_payload["draw_revealed"], "redraw_count": meta_payload["redraw_count"],

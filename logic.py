@@ -288,6 +288,40 @@ def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> di
         return {"slots":dict(zip(list("ABCDEFGHIJ"),ids,strict=True))}
     raise ValueError(f"Nieznany format: {format_key}")
 
+def structure_match_preview(format_key: str, draw: dict) -> list[dict]:
+    """Human-facing initial pairing preview for match-based formats.
+
+    This is intentionally symbolic: players come from draw slots, while future
+    dependencies stay as labels such as "Zwycięzca M1".  The same preview is
+    used by Streamlit, PWA and TV so the official draw always tells the same story.
+    """
+    s=draw.get("slots") or {}
+    def P(slot: str) -> dict:
+        return {"kind":"player","slot":slot,"player_id":str(s.get(slot) or ""),"reveal_order":ord(slot[0])-ord('A') if slot and slot[0].isalpha() else 99}
+    def R(label: str) -> dict:
+        return {"kind":"ref","label":label,"reveal_order":None}
+    def M(no: int|None, stage: str, label: str, home: dict, away: dict|None=None) -> dict:
+        return {"match_no":no,"stage":stage,"stage_label":label,"home":home,"away":away}
+    if format_key=="double4":
+        return [M(1,"WB","WB • RUNDA 1",P("A"),P("B")),M(2,"WB","WB • RUNDA 1",P("C"),P("D"))]
+    if format_key=="double5":
+        return [M(1,"WB","WB • RUNDA 1",P("A"),P("B")),M(2,"WB","WB • RUNDA 1",P("C"),P("D")),M(None,"WB_BYE","WB • WOLNY LOS",P("E"),None)]
+    if format_key=="double6":
+        return [M(1,"WB","WB • RUNDA 1",P("A"),P("B")),M(2,"WB","WB • RUNDA 1",P("C"),P("D")),M(3,"WB","WB • RUNDA 2",R("Zwycięzca M1"),P("E")),M(4,"WB","WB • RUNDA 2",R("Zwycięzca M2"),P("F"))]
+    if format_key=="double7":
+        return [M(1,"WB","WB • RUNDA 1",P("A"),P("B")),M(2,"WB","WB • RUNDA 1",P("C"),P("D")),M(3,"WB","WB • RUNDA 1",P("E"),P("F")),M(None,"WB_BYE","WB • WOLNY LOS",P("G"),None)]
+    if format_key=="double8":
+        return [M(1,"WB","WB • QF",P("A"),P("B")),M(2,"WB","WB • QF",P("C"),P("D")),M(3,"WB","WB • QF",P("E"),P("F")),M(4,"WB","WB • QF",P("G"),P("H"))]
+    if format_key=="double9":
+        return [M(1,"PLAY_IN","PLAY-IN",P("A"),P("B")),M(2,"WB","WB • QF",P("C"),P("D")),M(3,"WB","WB • QF",P("E"),P("F")),M(4,"WB","WB • QF",P("G"),P("H")),M(5,"WB","WB • QF",P("I"),R("Zwycięzca M1"))]
+    if format_key=="double10":
+        return [M(1,"PLAY_IN","PLAY-IN",P("A"),P("B")),M(2,"PLAY_IN","PLAY-IN",P("C"),P("D")),M(3,"WB","WB • QF",P("E"),P("F")),M(4,"WB","WB • QF",P("G"),P("H")),M(5,"WB","WB • QF",P("I"),R("Zwycięzca M1")),M(6,"WB","WB • QF",P("J"),R("Zwycięzca M2"))]
+    if format_key in ("swiss8","swiss10"):
+        letters=list("ABCDEFGH" if format_key=="swiss8" else "ABCDEFGHIJ")
+        return [M(i//2+1,"SWISS_R1","SWISS • RUNDA 1",P(letters[i]),P(letters[i+1])) for i in range(0,len(letters),2)]
+    return []
+
+
 def draw_signature(draw: dict) -> tuple:
     slots = draw.get("slots", {})
     return tuple((k, slots[k]) for k in sorted(slots))
@@ -563,10 +597,12 @@ def _orient(pair: tuple[str,str], rng: random.Random) -> tuple[str,str]:
     return (b,a) if rng.choice([True,False]) else (a,b)
 
 def schedule_swiss(draw: dict, player_count: int, rng: random.Random) -> list[dict]:
+    # build_draw() already created a randomized A..H/J order.  R1 must use that exact
+    # visible draw; do not secretly reshuffle here after the user has seen the pairs.
     ids=list(draw["slots"].values())
-    rng.shuffle(ids)
     out=[]; no=1
-    # R1 is a real randomized complete matching. R2/R3 are generated dynamically from standings.
+    # R2/R3 are generated dynamically from standings. Home/away orientation may vary,
+    # but the R1 opponents are exactly the pairs revealed before the tournament.
     for i in range(0,player_count,2):
         h,a=_orient((ids[i],ids[i+1]),rng); out.append({"match_no":no,"stage":"SWISS_R1","group_name":"S","home":f"P:{h}","away":f"P:{a}"}); no+=1
     per=player_count//2

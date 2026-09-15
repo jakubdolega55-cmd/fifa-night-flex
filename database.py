@@ -23,7 +23,7 @@ import streamlit as st
 from logic import (
     BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FIXED_TEAMS, WILDCARD_TEAM_SUGGESTIONS,
     GAME_VERSIONS, REAL_HELPER_TEAM, normalize_game_version, fixed_teams_for_version, wildcard_suggestions_for_version, allowed_teams,
-    build_draw, draw_signature, group_members, group_table,
+    build_draw, draw_signature, structure_match_preview, group_members, group_table,
     schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_draft_order, reveal_order_with_previous_finalists, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, apply_de_playin_priority, weighted_bye_choice,
 )
 from scorer_seeds import SCORER_SEEDS
@@ -717,6 +717,15 @@ class Database:
             add(loser(13)); add(loser(12))
             for pid in rank_group([loser(9),loser(10)]): add(pid)
             for pid in rank_group([loser(7),loser(8)]): add(pid)
+        elif fmt=="double9":
+            add(loser(15)); add(loser(14)); add(loser(13))
+            for pid in rank_group([loser(11),loser(12)]): add(pid)
+            for pid in rank_group([loser(9),loser(10)]): add(pid)
+        elif fmt=="double10":
+            add(loser(17)); add(loser(16))
+            for pid in rank_group([loser(14),loser(15)]): add(pid)
+            add(loser(13))
+            for pid in rank_group([loser(10),loser(11),loser(12)]): add(pid)
         elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
             sf_losers=[self._loser_of(m) for m in matches if m.get("stage")=="SF"]
             for pid in rank_group(sf_losers): add(pid)
@@ -1240,13 +1249,30 @@ class Database:
         with self.connect() as conn:
             return self._publish_live_event_conn(conn,tid,kind,payload)
 
+    def _hydrate_structure_preview(self, format_key: str, draw: dict, names: dict[str,str]) -> list[dict]:
+        out=[]
+        for row in structure_match_preview(format_key,draw):
+            item={k:v for k,v in row.items() if k not in ("home","away")}
+            for side in ("home","away"):
+                src=row.get(side)
+                if not src:
+                    item[side]=None; continue
+                if src.get("kind")=="player":
+                    pid=str(src.get("player_id") or "")
+                    item[side]={**src,"name":names.get(pid,"?")}
+                else:
+                    item[side]={**src,"name":str(src.get("label") or "?")}
+            out.append(item)
+        return out
+
     def _structure_live_payload_conn(self, conn, tid: str, format_key: str, draw: dict, redraw_count: int = 0) -> dict:
         rows=self._fetchall(conn,"""SELECT tp.player_id,p.name FROM tournament_players tp
             JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?""",(tid,))
         names={str(r.get("player_id")):str(r.get("name") or "?") for r in rows}
         slots=draw.get("slots") or {}
         items=[{"slot":str(slot),"player_id":str(pid),"name":names.get(str(pid),"?")} for slot,pid in slots.items()]
-        return {"format_key":str(format_key),"items":items,"redraw_count":int(redraw_count or 0)}
+        preview=self._hydrate_structure_preview(format_key,draw,names)
+        return {"format_key":str(format_key),"items":items,"preview":preview,"redraw_count":int(redraw_count or 0)}
 
     def tv_feed(self, tid: str, limit: int = 40) -> dict:
         """Lightweight feed used by the browser-side TV synchronizer."""
@@ -1324,11 +1350,33 @@ class Database:
     def _norm_team_name(value: str) -> str:
         return " ".join(str(value or "").strip().casefold().replace("ł","l").split())
 
-    def available_wildcard_suggestions(self, tid: str) -> list[str]:
-        """Unused concrete Wild Card clubs for this tournament, ordered by global popularity."""
-        suggestions=self.wildcard_team_suggestions()
+    def _remaining_wheel_pool_conn(self, conn, tid: str) -> list[str]:
+        """Technical wheel slots that are still in play, in reveal order.
+
+        The wheel is visualised from exactly this list, so every completed pick
+        disappears from the next spin and the pointer can only land on a slot
+        that the backend can actually reveal. Wild Card slots stay distinct
+        (WC #1, WC #2, ...) until their owner confirms a concrete club.
+        """
+        rows=self._fetchall(conn,"""SELECT team FROM tournament_players
+            WHERE tournament_id=? AND team_revealed=0
+            ORDER BY team_reveal_order""",(tid,))
+        return [str(r.get("team") or "") for r in rows if str(r.get("team") or "").strip()]
+
+    def remaining_wheel_pool(self, tid: str) -> list[str]:
         with self.connect() as conn:
+            return self._remaining_wheel_pool_conn(conn,tid)
+
+    def available_wildcard_suggestions(self, tid: str) -> list[str]:
+        """Unused Wild Card clubs for this tournament, in the strength order of its EA FC version."""
+        with self.connect() as conn:
+            t=self._fetchone(conn,"SELECT game_version FROM tournaments WHERE id=?",(tid,))
+            game_version=normalize_game_version((t or {}).get("game_version") if t else "FC26")
             picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team<>''",(tid,))
+        # Keep the curated version-specific strength ranking first (FC27 is based on
+        # the agreed top-100/top-200 player-strength review), then append historical
+        # clubs that are not already represented.
+        suggestions=self.wildcard_team_suggestions(game_version)
         used={self._norm_team_name(r.get("team") or "") for r in picked}
         return [x for x in suggestions if self._norm_team_name(x) not in used]
 
@@ -1384,21 +1432,23 @@ class Database:
                 ORDER BY tp.team_reveal_order LIMIT 1""",(tid,))
             if not row: return None
             extra=json.loads(row.get("extra_json") or "{}")
+            # Snapshot the wheel *before* this reveal. This is the exact set of
+            # sectors shown on phone + TV for this spin. After a confirmed pick
+            # the selected slot disappears from the next snapshot.
+            pool=self._remaining_wheel_pool_conn(conn,tid)
             pending=extra.get("pending_wildcard")
-            if pending: return {**pending,"wildcard":True}
+            if pending: return {**pending,"wheel_team":pending.get("team"),"pool":pool,"wildcard":True}
             if "Dowolna drużyna" in str(row.get("team") or ""):
                 pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
                 extra["pending_wildcard"]=pending
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
-                try: pool=json.loads(row.get("team_pool_json") or "[]")
-                except Exception: pool=[]
-                self._publish_live_event_conn(conn,tid,"team_wheel",{"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":"🃏 Wild Card","pool":pool,"wildcard":True})
-                return {**pending,"wildcard":True}
+                payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":"🃏 Wild Card","pool":pool,"wildcard":True}
+                self._publish_live_event_conn(conn,tid,"team_wheel",payload)
+                return {**pending,"wheel_team":row["team"],"pool":pool,"wildcard":True}
             conn.execute(self._sql("UPDATE tournament_players SET team_revealed=1 WHERE tournament_id=? AND player_id=?"),(tid,row["player_id"]))
-            try: pool=json.loads(row.get("team_pool_json") or "[]")
-            except Exception: pool=[]
-            self._publish_live_event_conn(conn,tid,"team_wheel",{"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":row["team"],"pool":pool,"wildcard":False})
-            return {"player_id":row["player_id"],"name":row["name"],"team":row["team"],"wildcard":False}
+            payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":row["team"],"pool":pool,"wildcard":False}
+            self._publish_live_event_conn(conn,tid,"team_wheel",payload)
+            return {"player_id":row["player_id"],"name":row["name"],"team":row["team"],"wheel_team":row["team"],"pool":pool,"wildcard":False}
 
     def pending_wildcard(self, tid: str) -> dict | None:
         with self.connect() as conn:
@@ -1513,11 +1563,22 @@ class Database:
             self._publish_live_event_conn(conn,tid,"tournament_start",{"format_key":meta["format_key"]})
 
     def _matches_conn(self, conn, tid: str) -> list[dict]:
-        return self._fetchall(conn, """SELECT m.*, hp.name home_name, ap.name away_name, htp.team home_team, atp.team away_team
+        rows=self._fetchall(conn, """SELECT m.*, hp.name home_name, ap.name away_name, htp.team home_team, atp.team away_team,
+                   fms.home_source, fms.away_source
             FROM matches m LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
+            LEFT JOIN flex_match_sources fms ON fms.tournament_id=m.tournament_id AND fms.match_no=m.match_no
             WHERE m.tournament_id=? ORDER BY m.match_no""", (tid,))
+        # Keep the *drawn* route visible even before a symbolic W/L source resolves.
+        # This is what makes the bracket match the phone/TV draw instead of falling
+        # back to a generic static description such as "czeka na rozstrzygnięcie".
+        for m in rows:
+            if not m.get("home_player_id"):
+                m["home_source_display"]=self._source_label_only_conn(conn,tid,str(m.get("home_source") or ""))
+            if not m.get("away_player_id"):
+                m["away_source_display"]=self._source_label_only_conn(conn,tid,str(m.get("away_source") or ""))
+        return rows
 
     def matches(self, tid: str) -> list[dict]:
         with self.connect() as conn: return self._matches_conn(conn,tid)
@@ -1528,9 +1589,12 @@ class Database:
             t = self._fetchone(conn, "SELECT * FROM tournaments WHERE id=?", (tid,))
             meta = self._fetchone(conn, "SELECT * FROM flex_tournament_meta WHERE tournament_id=?", (tid,))
             players = self._fetchall(conn, "SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order", (tid,))
+            preview=[]
             if meta:
                 meta["draw"] = json.loads(meta["draw_json"]); meta["extra"] = json.loads(meta["extra_json"]); meta["team_pool"] = json.loads(meta["team_pool_json"])
-            return {"tournament":t,"meta":meta,"players":players}
+                names={str(r.get("player_id")):str(r.get("name") or "?") for r in players}
+                preview=self._hydrate_structure_preview(str(meta.get("format_key") or ""),meta.get("draw") or {},names)
+            return {"tournament":t,"meta":meta,"players":players,"structure_preview":preview}
 
     def bundle(self, tid: str) -> dict:
         with self.connect() as conn:
@@ -1691,6 +1755,60 @@ class Database:
         for r in rows: r["name"]=names.get(r["player_id"],"?"); r["team"]=teams.get(r["player_id"],"")
         return rows
 
+    def _source_label_only_conn(self, conn, tid: str, source: str, depth: int = 0) -> str:
+        """Human label for an unresolved match source, including already-drawn routes.
+
+        Unlike ``_resolve_source_conn`` this helper never needs the source match to be
+        finished.  It follows saved draw mappings and returns labels such as
+        ``Przegrany M5`` / ``Zwycięzca M13`` or the concrete player selected by a BYE.
+        """
+        text=str(source or "")
+        if not text or depth>6: return "Czeka na rozstrzygnięcie"
+        parts=text.split(":"); kind=parts[0]
+        if kind=="P" and len(parts)>1:
+            row=self._fetchone(conn,"SELECT name FROM players WHERE id=?",(parts[1],))
+            return str((row or {}).get("name") or "Gracz")
+        if kind in ("W","L") and len(parts)>1 and str(parts[1]).isdigit():
+            return f"{'Zwycięzca' if kind=='W' else 'Przegrany'} M{parts[1]}"
+        if kind=="POS" and len(parts)>=3:
+            return f"{parts[2]}. miejsce grupy {parts[1]}"
+        try:
+            meta,extra=self._meta_extra_conn(conn,tid)
+        except Exception:
+            meta,extra={},{}
+        # BIG PATCH symbolic maps (Swiss, 9/10, DE6, etc.).
+        mapped=(extra.get("big_sources") or {}).get(text)
+        if mapped:
+            return self._source_label_only_conn(conn,tid,str(mapped),depth+1)
+        if kind=="D5":
+            chosen=extra.get("d5_opponent_match")
+            if chosen:
+                no=int(chosen) if len(parts)>1 and parts[1]=="E_OPP" else (2 if int(chosen)==1 else 1)
+                return self._source_label_only_conn(conn,tid,f"W:{no}",depth+1)
+        if kind in ("D7W","D8W"):
+            draw=extra.get("d7_wb_draw" if kind=="D7W" else "d8_wb_draw") or {}
+            mapped=draw.get(parts[1] if len(parts)>1 else "")
+            if mapped:return self._source_label_only_conn(conn,tid,str(mapped),depth+1)
+        if kind=="D8":
+            pairing=extra.get("d8_lb_cross") or {}; no=pairing.get(parts[1] if len(parts)>1 else "")
+            if no:return self._source_label_only_conn(conn,tid,f"L:{int(no)}",depth+1)
+        if kind=="D7":
+            bye=extra.get("d7_lb_bye_match")
+            if bye:
+                bye=int(bye); remaining=[x for x in (1,2,3) if x!=bye]; key=parts[1] if len(parts)>1 else ""
+                if key=="LB1A":return self._source_label_only_conn(conn,tid,f"L:{remaining[0]}",depth+1)
+                if key=="LB1B":return self._source_label_only_conn(conn,tid,f"L:{remaining[1]}",depth+1)
+                if key=="LB_BYE":return self._source_label_only_conn(conn,tid,f"L:{bye}",depth+1)
+                pairing=extra.get("d7_pairing") or {}
+                if key=="PAIR_BYE" and pairing.get("bye_vs_sf"):
+                    return self._source_label_only_conn(conn,tid,f"L:{int(pairing['bye_vs_sf'])}",depth+1)
+                if key=="PAIR_W6" and pairing.get("w6_vs_sf"):
+                    return self._source_label_only_conn(conn,tid,f"L:{int(pairing['w6_vs_sf'])}",depth+1)
+        if kind in ("G6","G6F","G7","G7S","G8S","G8B"):
+            mapped=(extra.get("playoff_sources") or {}).get(text)
+            if mapped:return self._source_label_only_conn(conn,tid,str(mapped),depth+1)
+        return "Czeka na rozstrzygnięcie"
+
     def _source_display_conn(self, conn, tid: str, source: str, mm: dict[int,dict] | None=None) -> dict:
         """Readable label for a concrete player or an unresolved bracket source.
 
@@ -1740,11 +1858,25 @@ class Database:
                     if ch.isdigit(): tail=ch+tail
                     elif tail: break
                 return int(tail) if tail else None
-            event["pairs"]=[{
-                "key":k,"match_no":_event_match_no(k),
-                "home_player_id":v.get("H",{}).get("player_id"),"home_name":v.get("H",{}).get("name"),"home_source":v.get("H",{}).get("source"),
-                "away_player_id":v.get("A",{}).get("player_id"),"away_name":v.get("A",{}).get("name"),"away_source":v.get("A",{}).get("source"),
-            } for k,v in pairmap.items() if v.get("H") and v.get("A")]
+            def _stage_label(no: int | None, key: str) -> tuple[str|None,str|None]:
+                if no and mm.get(no):
+                    stage=str(mm[no].get("stage") or "")
+                    labels={"PLAY_IN":"PLAY-IN","WB":"WINNERS BRACKET","WB_FINAL":"FINAŁ WINNERS","LB":"LOSERS BRACKET","LB_BRIDGE":"LOSERS • BRIDGE","LB_FINAL":"FINAŁ LOSERS","SF":"PÓŁFINAŁ","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","FINAL":"WIELKI FINAŁ"}
+                    return stage,labels.get(stage,stage)
+                text=str(key)
+                if text.startswith("SWISS:R2:"): return "SWISS_R2","SWISS • RUNDA 2"
+                if text.startswith("SWISS:R3:"): return "SWISS_R3","SWISS • RUNDA 3"
+                return None,None
+            pairs=[]
+            for k,v in pairmap.items():
+                if not (v.get("H") and v.get("A")): continue
+                no=_event_match_no(k); stage,stage_label=_stage_label(no,k)
+                pairs.append({
+                    "key":k,"match_no":no,"stage":stage,"stage_label":stage_label,
+                    "home_player_id":v.get("H",{}).get("player_id"),"home_name":v.get("H",{}).get("name"),"home_source":v.get("H",{}).get("source"),
+                    "away_player_id":v.get("A",{}).get("player_id"),"away_name":v.get("A",{}).get("name"),"away_source":v.get("A",{}).get("source"),
+                })
+            event["pairs"]=pairs
             extra.setdefault("visible_draws",[]).append(event)
             self._publish_live_event_conn(conn,tid,"special_draw",event)
         conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
@@ -1903,16 +2035,20 @@ class Database:
             if played(10,11,12) and "D10:L13H" not in src:
                 winners=[str(winner(i)) for i in (10,11,12)]; bye,cands=self._dynamic_lb_bye_choice(winners,mm); bridge=[x for x in winners if x!=bye]
                 extra["d10_lb_bye_player"]=bye
-                event_extra={"bye_player_id":bye,"bye_candidates":self._draw_candidate_rows_conn(conn,cands)}
-                self._save_big_sources_conn(conn,tid,extra,{"D10:L13H":P(bridge[0]),"D10:L13A":P(bridge[1])},"double10_lb_bye",len(cands),event_extra); src=extra["big_sources"]
-            # Once the LB BYE/Bridge reveal has been accepted we already know
-            # the four *sources* feeding M14/M15, even if M7/M8/M13 are not done.
-            # Draw that cross immediately with symbolic W/L placeholders. This lets
-            # the live scheduler unlock whichever cross match resolves first.
-            # There is no extra H2H/rest algorithm here: all 3 source pairings are
-            # legal and the route is a genuine random draw. Immediate rematches are
-            # structurally impossible at this junction because the four sources come
-            # from distinct concurrently-alive branches.
+                # One public draw instead of two consecutive screens: choose the LB BYE,
+                # show the Bridge (M13) and immediately draw the future M14/M15 routes
+                # with symbolic W13/L7/L8 sources. The scheduler therefore knows the
+                # path early, while the user confirms only one coherent reveal.
+                route_sources=[P(bye),"W:13","L:7","L:8"]
+                cross_candidates=self._perfect_matchings(route_sources)
+                cross_pairs=random.SystemRandom().choice(cross_candidates)
+                upd={"D10:L13H":P(bridge[0]),"D10:L13A":P(bridge[1])}
+                for no,(a,b) in zip((14,15),cross_pairs):
+                    upd[f"D10:L{no}H"]=a; upd[f"D10:L{no}A"]=b
+                event_extra={"bye_player_id":bye,"bye_candidates":self._draw_candidate_rows_conn(conn,cands),"combined_bye_cross":True}
+                self._save_big_sources_conn(conn,tid,extra,upd,"double10_lb_bye_cross",max(len(cands),len(cross_candidates)),event_extra); src=extra["big_sources"]
+            # Backward-compatible fallback for a tournament created by an older build
+            # where M13 was already drawn but M14/M15 were not yet routed.
             pending_draw=any(not e.get("ack") for e in (extra.get("visible_draws") or []))
             if extra.get("d10_lb_bye_player") and "D10:L13H" in src and "D10:L14H" not in src and not pending_draw:
                 bye=str(extra.get("d10_lb_bye_player") or "")
@@ -3252,6 +3388,10 @@ class Database:
             third_pid=self._loser_of(by_no.get(11)); fourth_pid=self._loser_of(by_no.get(10))
         elif fmt=="double8":
             third_pid=self._loser_of(by_no.get(13)); fourth_pid=self._loser_of(by_no.get(12))
+        elif fmt=="double9":
+            third_pid=self._loser_of(by_no.get(15)); fourth_pid=self._loser_of(by_no.get(14))
+        elif fmt=="double10":
+            third_pid=self._loser_of(by_no.get(17)); fourth_pid=self._loser_of(by_no.get(16))
 
         return {"champion":players.get(champ,{}).get("name"),"runner_up":players.get(runner,{}).get("name"),
                 "champion_record": ({"w":int(ps[champ]["w"]),"d":int(ps[champ]["d"]),"l":int(ps[champ]["l"]),"gf":int(ps[champ]["gf"]),"ga":int(ps[champ]["ga"])} if champ else {"w":0,"d":0,"l":0,"gf":0,"ga":0}),

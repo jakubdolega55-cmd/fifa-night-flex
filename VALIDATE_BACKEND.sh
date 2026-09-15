@@ -9,7 +9,8 @@ for t in \
   tests/smart_scheduler_smoke.py \
   tests/versioning_alias_smoke.py \
   tests/visible_draw_policy_smoke.py \
-  tests/de456_draw_smoke.py
+  tests/de456_draw_smoke.py \
+  tests/wheel_shrink_smoke.py
 do
   echo "=== $t ==="
   python "$t"

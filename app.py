@@ -17,7 +17,7 @@ from database import (
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, allowed_teams, fixed_teams_for_version
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
-                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv)
+                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw)
 
 
 
@@ -723,7 +723,11 @@ def render_team_draft(t):
 def team_draw(tid:str):
     # Setup screens don't need match rows. One lightweight state read is enough.
     bundle=db.setup_bundle(tid);players=bundle["players"];meta=bundle["meta"];pool=meta["team_pool"]
-    hidden=[p for p in players if not p["team_revealed"]];last=st.session_state.get("last_spin")
+    hidden=[p for p in players if not p["team_revealed"]]
+    # The visual wheel shrinks after every confirmed pick. Keep only technical
+    # slots that are still unrevealed; this mirrors the backend event snapshot.
+    remaining_pool=[str(p.get("team") or "") for p in sorted(hidden,key=lambda x:int(x.get("team_reveal_order") or 999)) if str(p.get("team") or "").strip()]
+    last=st.session_state.get("last_spin")
     pending=(meta.get("extra") or {}).get("pending_wildcard")
     if pending: pending={**pending,"wildcard":True}
     done=len(players)-len(hidden)
@@ -734,7 +738,8 @@ def team_draw(tid:str):
     def show_wheel(result:dict, display_result:str|None=None):
         wheel_slot.empty()
         with wheel_slot.container():
-            render_wheel(result.get("wheel_team",result.get("team")),result["name"],tid,pool,display_result=display_result or result.get("team"))
+            spin_pool=result.get("pool") or remaining_pool or pool
+            render_wheel(result.get("wheel_team",result.get("team")),result["name"],tid,spin_pool,display_result=display_result or result.get("team"))
 
     def next_after(result:dict, previous_hidden:list[dict], slot=None):
         remaining=[p for p in previous_hidden if str(p.get("player_id"))!=str(result.get("player_id"))]
@@ -758,7 +763,7 @@ def team_draw(tid:str):
 
     if pending:
         with wheel_slot.container():
-            render_wheel(pending["team"],pending["name"],tid,pool)
+            render_wheel(pending["team"],pending["name"],tid,remaining_pool or pool,display_result="🃏 Wild Card")
         st.markdown(f"### 🃏 Wild Card — {esc(pending['name'])}")
         with st.form(f"wildcard_draw_{tid}_{pending['player_id']}"):
             choice=st.selectbox("Wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
@@ -768,7 +773,7 @@ def team_draw(tid:str):
             try:
                 wheel_team=pending["team"]
                 team=db.confirm_wildcard_team(tid,pending["player_id"],choice)
-                result={"player_id":pending["player_id"],"name":pending["name"],"team":team,"wheel_team":wheel_team,"wildcard":False}
+                result={"player_id":pending["player_id"],"name":pending["name"],"team":team,"wheel_team":wheel_team,"pool":remaining_pool or pool,"wildcard":False}
                 st.session_state.last_spin=result
                 wildcard_team_suggestions_cached.clear()
                 show_wheel(result,display_result=team)
@@ -778,7 +783,7 @@ def team_draw(tid:str):
 
     if last:
         with wheel_slot.container():
-            render_wheel(last.get("wheel_team",last["team"]),last["name"],tid,pool,display_result=last["team"])
+            render_wheel(last.get("wheel_team",last["team"]),last["name"],tid,last.get("pool") or ([last.get("wheel_team",last.get("team"))]+remaining_pool),display_result=last["team"])
         if hidden:
             nxt=sorted(hidden,key=lambda x:x["team_reveal_order"])[0]
             action_slot=st.empty()
@@ -791,7 +796,7 @@ def team_draw(tid:str):
                 if result:
                     # Render the new wheel immediately in this very run: no fragment rerun
                     # and no second Neon read before the animation starts.
-                    show_wheel(result,display_result=result.get("team"))
+                    show_wheel(result,display_result=("🃏 Wild Card" if result.get("wildcard") else result.get("team")))
                     if result.get("wildcard"):
                         st.session_state.pop("last_spin",None)
                         show_pending_wildcard(result)
@@ -817,7 +822,7 @@ def team_draw(tid:str):
             result=db.reveal_next_team(tid)
             if result:
                 title_slot.empty()
-                show_wheel(result,display_result=result.get("team"))
+                show_wheel(result,display_result=("🃏 Wild Card" if result.get("wildcard") else result.get("team")))
                 if result.get("wildcard"):
                     show_pending_wildcard(result)
                 else:
@@ -1969,9 +1974,13 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_l
     if m.get("home_player_id") and m.get("away_player_id"):
         h=player_html("home"); a=player_html("away")
     else:
+        # Prefer the actual saved draw route. Static format copy is only a fallback
+        # for legacy rows that do not expose flex_match_sources.
         ph=source_placeholder(fmt,no); parts=[x.strip() for x in ph.split("—",1)]
-        h=f"<div class='de-player placeholder'><span class='de-name'>{esc(parts[0] if parts else ph)}</span></div>"
-        a=f"<div class='de-player placeholder'><span class='de-name'>{esc(parts[1] if len(parts)>1 else 'do ustalenia')}</span></div>"
+        h_label=m.get("home_source_display") or (parts[0] if parts else ph)
+        a_label=m.get("away_source_display") or (parts[1] if len(parts)>1 else "do ustalenia")
+        h=player_html("home") if m.get("home_player_id") else f"<div class='de-player placeholder'><span class='de-name'>{esc(h_label)}</span></div>"
+        a=player_html("away") if m.get("away_player_id") else f"<div class='de-player placeholder'><span class='de-name'>{esc(a_label)}</span></div>"
 
     bonus="<div class='de-bonus'>⭐ Winners Bracket zaczyna Wielki Finał od 1:0</div>" if m.get("stage")=="FINAL" else ""
     # Split the path into two visually distinct directions instead of one tiny line of text.
@@ -2195,7 +2204,10 @@ def render_schedule(t):
             elif no==next_no:result="—";icon="⏭️";live_tag=" • NASTĘPNY"
             else:result="—";icon="⏳";live_tag=" • GOTOWY" if ready else ""
         else:
-            names=source_placeholder(fmt,no);result=("NIE ROZEGRANO" if abandoned else "—");icon=("⚪" if abandoned else "🔒");live_tag=("" if abandoned else " • CZEKA NA ROZSTRZYGNIĘCIE")
+            left=m.get("home_source_display") or source_placeholder(fmt,no).split("—",1)[0].strip()
+            fallback=source_placeholder(fmt,no); right=(fallback.split("—",1)[1].strip() if "—" in fallback else "do ustalenia")
+            right=m.get("away_source_display") or right
+            names=f"{esc(left)} — {esc(right)}";result=("NIE ROZEGRANO" if abandoned else "—");icon=("⚪" if abandoned else "🔒");live_tag=("" if abandoned else " • CZEKA NA ROZSTRZYGNIĘCIE")
         bonus=" • START 1:0 DLA WINNERS" if fmt in DE_FORMATS and m["stage"]=="FINAL" else ""
         tags=milestone_by_match.get(no,[])
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
@@ -3068,17 +3080,31 @@ def render_tv_special_event(tid:str,b:dict) -> bool:
             return True
     state=db.big_visible_draw_state(tid)
     if state:
-        st.markdown("### 🎲 LOSOWANIE W TRAKCIE")
-        bye_pid=state.get("bye_player_id")
-        if bye_pid:
-            candidate=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
-            st.markdown(f"## 🍀 SZCZĘŚLIWY LOS: {esc(candidate.get('name') or '?')}")
-        for pair in state.get("pairs",[]):st.markdown(f"## {esc(pair.get('home_name') or '?')}  —  {esc(pair.get('away_name') or '?')}")
+        render_visible_pair_draw(state)
         return True
+    # Short replay buffer: a phone can acknowledge the draw immediately after its
+    # animation, but TV must still finish showing the exact same public result.
+    try:
+        feed=db.tv_feed(tid,limit=12)
+        for ev in reversed(feed.get("events") or []):
+            if ev.get("kind")!="special_draw": continue
+            p=ev.get("payload") or {}
+            if p.get("is_random_draw") is False or not p.get("pairs"): continue
+            raw=str(ev.get("created_at") or "").replace("Z","+00:00")
+            dt=datetime.fromisoformat(raw)
+            if dt.tzinfo is None: dt=dt.replace(tzinfo=timezone.utc)
+            age=(datetime.now(timezone.utc)-dt.astimezone(timezone.utc)).total_seconds()
+            ttl=max(9.0,5.0+4.5*len(p.get("pairs") or []))
+            if 0 <= age <= ttl:
+                render_visible_pair_draw(p,title="Losowanie drabinki")
+                return True
+            break
+    except Exception:
+        pass
     return False
 
 
-@st.fragment(run_every="2s")
+@st.fragment(run_every="1s")
 def render_tv_screen(tid:str):
     fresh=db.current_tournament()
     if not fresh or str(fresh.get("id"))!=str(tid):
