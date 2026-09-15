@@ -65,10 +65,18 @@ def play_de(n,fmt,expected):
 
     done=db.bundle(tid); assert done['tournament']['status']=='completed'
     assert sum(m.get('home_score') is not None for m in done['matches'])==expected
-    champ=db.tournament_summary(tid).get('champion')
+    summary=db.tournament_summary(tid); champ=summary.get('champion')
+    assert summary.get('third_place',{}).get('name'),(fmt,summary)
+    assert summary.get('fourth_place',{}).get('name'),(fmt,summary)
     champion_pid=next(p['player_id'] for p in done['players'] if p.get('name')==champ)
     assert losses[str(champion_pid)]<2
     assert sum(1 for pid,v in losses.items() if v>=2)==n-1,(fmt,dict(losses),champ)
+    with db.connect() as conn:
+        order=db._placement_order_conn(conn,tid)
+    assert len(order)==n and len(set(order))==n,(fmt,order)
+    top_names=[next(p['name'] for p in done['players'] if str(p['player_id'])==str(pid)) for pid in order[:4]]
+    assert top_names[0]==summary.get('champion') and top_names[1]==summary.get('runner_up'),(fmt,top_names,summary)
+    assert top_names[2]==summary.get('third_place',{}).get('name') and top_names[3]==summary.get('fourth_place',{}).get('name'),(fmt,top_names,summary)
 
     kinds=[str(x.get('kind')) for x in draw_events]
     if fmt=='double9':
@@ -77,11 +85,11 @@ def play_de(n,fmt,expected):
     else:
         # R1/cross are shown only when 2+ equally-good full pairings survive the
         # rematch/rest filter. The LB BYE always has 3 legal weighted candidates.
-        assert 'double10_lb_bye' in kinds,kinds
-        bye=next(x for x in draw_events if x.get('kind')=='double10_lb_bye')
+        assert 'double10_lb_bye_cross' in kinds,kinds
+        bye=next(x for x in draw_events if x.get('kind')=='double10_lb_bye_cross')
         assert len(bye.get('bye_candidates') or [])==3
         for x in draw_events:
-            if x.get('kind') in ('double10_lb_r1','double10_lb_cross'):
+            if x.get('kind') in ('double10_lb_r1','double10_lb_bye_cross','double10_lb_cross'):
                 assert int(x.get('candidate_count') or 0)>1
 
     print('PASS',fmt,expected,'matches',len(draw_events),'visible draws','two-loss elimination OK')
@@ -170,28 +178,29 @@ def test_de10_early_cross_route_draw():
         b=db.bundle(tid);m=next(x for x in b['matches'] if int(x['match_no'])==no)
         assert m.get('home_player_id') and m.get('away_player_id'),(no,m)
         db.save_result(tid,no,2,0)
-    ev=db.big_visible_draw_state(tid);assert ev and ev.get('kind')=='double10_lb_bye',ev
-    db.ack_big_visible_draw(tid,ev['kind'])
-
-    # Immediately after accepting the BYE/Bridge reveal, the M14/M15 cross is drawn
-    # even though M7, M8 and M13 have not been played yet.
-    b=db.bundle(tid);mm={int(x['match_no']):x for x in b['matches']}
-    assert mm[7].get('home_score') is None and mm[8].get('home_score') is None and mm[13].get('home_score') is None
-    ev=db.big_visible_draw_state(tid)
-    assert ev and ev.get('kind')=='double10_lb_cross',ev
-    assert int(ev.get('candidate_count') or 0)==3,ev
-    pairs=ev.get('pairs') or [];assert len(pairs)==2,pairs
+    ev=db.big_visible_draw_state(tid);assert ev and ev.get('kind')=='double10_lb_bye_cross',ev
+    # BYE + Bridge + future M14/M15 cross are one coherent public reveal.
+    assert len(ev.get('bye_candidates') or [])==3,ev
+    pairs=ev.get('pairs') or [];assert len(pairs)==3,pairs
+    by_no={int(x.get('match_no') or 0):x for x in pairs}
+    assert set(by_no)=={13,14,15},by_no
     entries=[]
-    for row in pairs:
+    for row in (by_no[14],by_no[15]):
         entries.extend([(row.get('home_player_id'),row.get('home_name'),row.get('home_source')),
                         (row.get('away_player_id'),row.get('away_name'),row.get('away_source'))])
     assert sum(1 for pid,_,_ in entries if pid)==1,entries
     placeholders=[name for pid,name,_ in entries if not pid]
     assert sorted(placeholders)==['Przegrany M7','Przegrany M8','Zwycięzca M13'],placeholders
     db.ack_big_visible_draw(tid,ev['kind'])
-    src=(db.bundle(tid)['meta'].get('extra') or {}).get('big_sources') or {}
+    # There must not be a second immediate draw screen for the same routing step.
+    assert db.big_visible_draw_state(tid) is None
+    bb=db.bundle(tid);src=(bb['meta'].get('extra') or {}).get('big_sources') or {}
     assert all(src.get(f'D10:L{no}{side}') for no in (14,15) for side in ('H','A')),src
-    print('PASS DE10 cross route drawn early with W13/L7/L8 placeholders')
+    mm2={int(x['match_no']):x for x in bb['matches']}
+    labels=[mm2[no].get(side+'_source_display') for no in (14,15) for side in ('home','away') if not mm2[no].get(side+'_player_id')]
+    assert labels and all(x!='Czeka na rozstrzygnięcie' for x in labels),labels
+    assert {'Zwycięzca M13','Przegrany M7','Przegrany M8'}.intersection(labels),labels
+    print('PASS DE10 combined BYE/cross draw + symbolic bracket labels')
 
 
 def test_de9_waits_for_real_bye_candidates():
