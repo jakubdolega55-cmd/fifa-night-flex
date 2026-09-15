@@ -45,6 +45,7 @@ export const api = {
       player_names: payload.players.map((p:any)=>String(p.name||'')),
       player_count: Number(payload.player_count),
       format_key: String(payload.format_key||''),
+      game_version: String(payload.game_version||'FC26'),
       is_test: Boolean(payload.is_test),
       stake_per_player: Number(payload.stake_per_player||0),
       cash_flags: payload.players.map((p:any)=>Boolean(p.cash)),
@@ -55,6 +56,7 @@ export const api = {
     body:JSON.stringify(payload?.player1 !== undefined ? {
       player_names:[String(payload.player1||''),String(payload.player2||'')],
       team_names:[String(payload.team1||''),String(payload.team2||'')],
+      game_version:String(payload.game_version||'FC26'),
       stake_per_player:Number(payload.stake_per_player||0),
       cash_flags:[Boolean(payload.cash1),Boolean(payload.cash2)],
     } : payload),
@@ -66,6 +68,7 @@ export const api = {
   draftPick:(tid:string,payload:any)=>jsonRequest<SetupResponse>(`/api/v1/tournaments/${tid}/draft/pick`,{method:'POST',body:JSON.stringify(payload)}),
   teamReveal:(tid:string)=>jsonRequest<any>(`/api/v1/tournaments/${tid}/teams/reveal`,{method:'POST'}),
   wildcard:(tid:string,payload:any)=>jsonRequest<any>(`/api/v1/tournaments/${tid}/wildcard/confirm`,{method:'POST',body:JSON.stringify(payload)}),
+  realHelper:(tid:string,player_id:string)=>jsonRequest<any>(`/api/v1/tournaments/${tid}/real-helper`,{method:'POST',body:JSON.stringify({player_id})}),
   structureStart:(tid:string)=>jsonRequest<SetupResponse>(`/api/v1/tournaments/${tid}/teams/finish`,{method:'POST'}),
   structureReveal:(tid:string)=>jsonRequest<SetupResponse>(`/api/v1/tournaments/${tid}/structure/reveal`,{method:'POST'}),
   structureReroll:(tid:string)=>jsonRequest<SetupResponse>(`/api/v1/tournaments/${tid}/structure/reroll`,{method:'POST'}),
