@@ -9,6 +9,10 @@ export type Match = {
   away_name?:string|null;
   home_team?:string|null;
   away_team?:string|null;
+  home_source?:string|null;
+  away_source?:string|null;
+  home_source_display?:string|null;
+  away_source_display?:string|null;
   home_score?:number|null;
   away_score?:number|null;
   home_penalties?:number|null;
@@ -67,6 +71,7 @@ export type SetupResponse = {
   draft_available:string[];
   wildcard_suggestions:string[];
   pending_wildcard?:any;
+  structure_preview?:any[];
   id?:string;
   status?:string;
   phase?:string;
