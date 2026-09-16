@@ -5101,6 +5101,20 @@ class Database:
 
         event_by={str(e["id"]):e for e in events}; tournament_ids={tid for tid,e in event_by.items() if str(e.get("format_key"))!='duel1v1'}
         completed_tournament_ids={tid for tid,e in event_by.items() if tid in tournament_ids and str(e.get("status") or "")=="completed"}
+
+        def _awards_real_score(m: dict) -> tuple[int,int]:
+            """Return goals actually scored on the pitch for Awards/statistics.
+
+            Double Elimination Grand Finals store the Winners Bracket advantage as
+            a technical +1 for the home player. That point decides the bracket but
+            is not a real goal and must not boost goals, margins or spectacle/MOTY.
+            """
+            hs=int(m.get("home_score") or 0); ass=int(m.get("away_score") or 0)
+            tid=str(m.get("tournament_id") or "")
+            fmt=str((event_by.get(tid) or {}).get("format_key") or "")
+            if fmt.startswith("double") and str(m.get("stage") or "")=="FINAL":
+                hs=max(0,hs-1)
+            return hs,ass
         finance_by_tid={str(e.get("id")):e for e in finance_ledger}
         duel_ids=set(tids)-tournament_ids
         name_by={str(r["player_id"]):str(r["name"]) for r in tps}
@@ -5150,7 +5164,7 @@ class Database:
         for m in matches:
             tid=str(m["tournament_id"]);h=str(m.get("home_player_id") or "");a=str(m.get("away_player_id") or "")
             if not h or not a:continue
-            hs,ass=int(m["home_score"]),int(m["away_score"]); stage=str(m.get("stage") or "")
+            raw_hs,raw_ass=int(m["home_score"]),int(m["away_score"]); hs,ass=_awards_real_score(m); stage=str(m.get("stage") or "")
             rh=self._result_for_player(m,h);ra=self._result_for_player(m,a)
             # Rivalry uses all official matches including duels.
             k=tuple(sorted((h,a)));rec=pair[k];rec["n"]+=1;rec["names"]=(name_by.get(k[0],m.get("home_name") or "?"),name_by.get(k[1],m.get("away_name") or "?"))
@@ -5264,6 +5278,8 @@ class Database:
                 ps[pid]["spectacle_pens"]+=int(has_pens)
 
             reason_parts=[stage_text,closeness_text,stakes_text,f"{hs+ass} goli"]
+            if raw_hs!=hs or raw_ass!=ass:
+                reason_parts.append("techniczne 1:0 pominięte")
             if cash_pot_cents>0:
                 cash_pot_pln=cash_pot_cents/100.0
                 cash_txt=f"{cash_pot_pln:.0f} zł" if cash_pot_pln.is_integer() else f"{cash_pot_pln:.2f} zł"
@@ -5272,7 +5288,7 @@ class Database:
                 reason_parts.append(f"karne {m.get('home_penalties')}:{m.get('away_penalties')}")
             match_candidates.append({
                 "id":f"{tid}:{m['match_no']}",
-                "name":f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}",
+                "name":f"{m.get('home_name')} {raw_hs}:{raw_ass} {m.get('away_name')}",
                 "score":round(match_score,6),
                 "reason":" • ".join(reason_parts),
                 "participant_ids":[h,a],
@@ -5421,10 +5437,12 @@ class Database:
             if not winner: continue
             h=str(m.get("home_player_id") or ""); a=str(m.get("away_player_id") or "")
             if winner not in (h,a): continue
-            hs=int(m.get("home_score") or 0); ass=int(m.get("away_score") or 0)
-            goals=[e for e in evs if str(e.get("event_type") or "") in goal_types and str(e.get("credited_player_id") or "")]
+            hs,ass=_awards_real_score(m)
+            goals=[e for e in evs if str(e.get("event_type") or "") in goal_types
+                   and not int(e.get("synthetic_de") or 0) and str(e.get("credited_player_id") or "")]
             # Do not infer missing goals. Comeback is calculated only when the
-            # detailed timeline accounts for the actual scoreboard.
+            # detailed REAL timeline accounts for the on-pitch score. The technical
+            # Winners Bracket +1 in a DE final is never a comeback goal.
             if len(goals)!=(hs+ass): continue
             goals=sorted(goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
             score={h:0,a:0}; max_deficit=0
@@ -5768,7 +5786,7 @@ class Database:
             })
         nomination_summary.sort(key=lambda x:(x["top3"],x["top5"],x["first"],x["name"]),reverse=True)
 
-        overview={"tournaments":len(tournament_ids),"duels":len(duel_ids),"matches":len(matches),"goals":sum(int(m["home_score"])+int(m["away_score"]) for m in matches),
+        overview={"tournaments":len(tournament_ids),"duels":len(duel_ids),"matches":len(matches),"goals":sum(sum(_awards_real_score(m)) for m in matches),
                   "players":len({str(r["player_id"]) for r in tps}),"titles":len(completed_tournament_ids),"top_player":(cats[0]["candidates"][0]["name"] if cats and cats[0]["candidates"] else None),
                   "top_team":(next((c for c in cats if c["key"]=="team_best"),{}).get("candidates") or [{}])[0].get("name") if teamitems else None}
         award_order={key:i for i,key in enumerate(AWARD_DISPLAY_ORDER)}
