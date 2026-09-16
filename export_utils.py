@@ -103,24 +103,34 @@ def _final(bundle):
     return finals[-1]
 
 
+def _real_score(bundle, m):
+    """Return on-pitch goals; DE Grand Final technical +1 is not a real goal."""
+    hs, aw = int(m.get("home_score") or 0), int(m.get("away_score") or 0)
+    fmt = str((bundle.get("meta") or {}).get("format_key") or "")
+    if fmt.startswith("double") and str(m.get("stage") or "") == "FINAL":
+        hs = max(0, hs - 1)
+    return hs, aw
+
+
 def _champion_record(bundle, champ):
     rec = {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0}
     for m in bundle.get("matches", []):
         if m.get("home_score") is None:
             continue
         h, a = m.get("home_name"), m.get("away_name")
-        hs, aw = int(m.get("home_score") or 0), int(m.get("away_score") or 0)
+        raw_hs, raw_aw = int(m.get("home_score") or 0), int(m.get("away_score") or 0)
+        stat_hs, stat_aw = _real_score(bundle, m)
         if champ not in (h, a):
             continue
         if champ == h:
-            gf, ga = hs, aw
+            gf, ga = stat_hs, stat_aw
             win = m.get("winner_player_id") == m.get("home_player_id")
         else:
-            gf, ga = aw, hs
+            gf, ga = stat_aw, stat_hs
             win = m.get("winner_player_id") == m.get("away_player_id")
         rec["gf"] += gf
         rec["ga"] += ga
-        if hs == aw and m.get("winner_player_id") is None:
+        if raw_hs == raw_aw and m.get("winner_player_id") is None:
             rec["d"] += 1
         elif win:
             rec["w"] += 1
@@ -256,7 +266,7 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     if fourth:y=_classification_line(draw,86,y,4,fourth.get("name"),fourth.get("team"),390)
 
     played = [m for m in bundle.get("matches", []) if m.get("home_score") is not None]
-    total_goals = sum(int(m.get("home_score") or 0) + int(m.get("away_score") or 0) for m in played)
+    total_goals = sum(sum(_real_score(bundle, m)) for m in played)
     avg = (total_goals / len(played)) if played else 0
     draw.text((573, 774), "TURNIEJ W LICZBACH", font=_font(25, True), fill=PURPLE)
     draw.text((573, 818), f"{len(played)} meczów  •  {total_goals} goli", font=_font(31, True), fill=TEXT)

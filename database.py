@@ -701,7 +701,7 @@ class Database:
         for m in matches:
             h,a=str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")
             if not h or not a: continue
-            hs,ass=int(m.get("home_score") or 0),int(m.get("away_score") or 0)
+            hs,ass=self._stats_score_pair(m,fmt)
             stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
             rh=self._result_for_player(m,h)
             if rh=="W": stats[h]["w"]+=1; stats[a]["l"]+=1
@@ -869,9 +869,10 @@ class Database:
         """
         game_version=normalize_game_version(game_version)
         rows=self._fetchall(conn,"""
-            SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score,
+            SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score,m.stage,fm.format_key,
                    COALESCE(m.played_at,t.completed_at,t.created_at) AS rating_date
             FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+            LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
             WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
@@ -896,7 +897,7 @@ class Database:
         for r in rows:
             ht=str(r.get("home_team") or "").strip(); at=str(r.get("away_team") or "").strip()
             if not ht or not at: continue
-            hs=int(r.get("home_score") or 0); ass=int(r.get("away_score") or 0); w=recency_weight(r.get("rating_date"))
+            hs,ass=self._stats_score_pair(r); w=recency_weight(r.get("rating_date"))
             real_norm=self._norm_team_name(REAL_HELPER_TEAM)
             if self._norm_team_name(ht)!=real_norm:
                 stats[ht]["m"]+=w; stats[ht]["gf"]+=hs*w; stats[ht]["ga"]+=ass*w
@@ -946,8 +947,9 @@ class Database:
             ratings=self._live_team_ratings_conn(conn,game_version)
             stats=self.team_stats() if False else None
             rows=self._fetchall(conn,"""
-                SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score
+                SELECT htp.team AS home_team,atp.team AS away_team,m.home_score,m.away_score,m.stage,fm.format_key
                 FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+                LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
                 LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
                 LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
                 WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
@@ -962,7 +964,7 @@ class Database:
                 # Real is a helper only: the opponent's result affects its internal rating,
                 # but Real itself never appears in the public team-rating table.
                 pass
-            hs=int(r.get("home_score") or 0);ass=int(r.get("away_score") or 0)
+            hs,ass=self._stats_score_pair(r)
             for team,gf,ga in ((ht,hs,ass),(at,ass,hs)):
                 if self._norm_team_name(team)==real_norm:continue
                 agg[team]["m"]+=1;agg[team]["gf"]+=gf;agg[team]["ga"]+=ga
@@ -3027,8 +3029,9 @@ class Database:
                  "teams":", ".join(x[0] for x in by[r["normalized_scorer"]])} for r in rows]
 
     def _official_matches_conn(self, conn, exclude_tid: str | None = None) -> list[dict]:
-        sql="""SELECT m.*,t.completed_at,t.created_at,t.game_version,hp.name home_name,ap.name away_name,htp.team home_team,atp.team away_team
+        sql="""SELECT m.*,t.completed_at,t.created_at,t.game_version,fm.format_key,hp.name home_name,ap.name away_name,htp.team home_team,atp.team away_team
             FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+            LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
             LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
@@ -3038,6 +3041,27 @@ class Database:
             sql += " AND m.tournament_id<>?"; params=(exclude_tid,)
         sql += " ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no"
         return self._fetchall(conn,sql,params)
+
+    @staticmethod
+    def _stats_score_pair(m: dict, format_key: str | None = None) -> tuple[int,int]:
+        """Goals actually scored on the pitch for statistics.
+
+        Double Elimination Grand Finals store the Winners Bracket advantage as a
+        technical +1 for the home player.  It decides the PLAYER match result and
+        the bracket, but it is not a football goal.  Goal-based statistics and all
+        TEAM W/D/L therefore use the on-pitch score with that +1 removed.
+        """
+        hs=int(m.get("home_score") or 0); ass=int(m.get("away_score") or 0)
+        fmt=str(format_key if format_key is not None else (m.get("format_key") or ""))
+        if fmt.startswith("double") and str(m.get("stage") or "")=="FINAL":
+            hs=max(0,hs-1)
+        return hs,ass
+
+    @staticmethod
+    def _team_result_from_score(hs: int, ass: int, home: bool) -> str:
+        if hs==ass:return "D"
+        home_wins=hs>ass
+        return "W" if (home_wins==bool(home)) else "L"
 
     @staticmethod
     def _result_for_player(m: dict, pid: str) -> str:
@@ -3085,8 +3109,9 @@ class Database:
         gf1=gf2=0
         recent=[]
         for m in pair:
-            if m["home_player_id"]==pid1: gf1+=int(m["home_score"]);gf2+=int(m["away_score"])
-            else: gf1+=int(m["away_score"]);gf2+=int(m["home_score"])
+            hs,ass=self._stats_score_pair(m)
+            if m["home_player_id"]==pid1: gf1+=hs;gf2+=ass
+            else: gf1+=ass;gf2+=hs
             recent.append({"home":m.get("home_name"),"away":m.get("away_name"),"score":f"{m['home_score']}:{m['away_score']}","played_at":m.get("played_at")})
         return {"name1":names.get(pid1,"?"),"name2":names.get(pid2,"?"),"meetings":len(pair),"wins1":w1,"wins2":w2,"draws":d,"gf1":gf1,"gf2":gf2,"recent":recent[-5:][::-1]}
 
@@ -3116,7 +3141,7 @@ class Database:
         for m in matches:
             h,a=m.get("home_player_id"),m.get("away_player_id");
             if not h or not a:continue
-            hs,ass=int(m["home_score"]),int(m["away_score"]); ps[h]["gf"]+=hs;ps[h]["ga"]+=ass;ps[a]["gf"]+=ass;ps[a]["ga"]+=hs
+            hs,ass=self._stats_score_pair(m); ps[h]["gf"]+=hs;ps[h]["ga"]+=ass;ps[a]["gf"]+=ass;ps[a]["ga"]+=hs
             per_t[m["tournament_id"]][h]+=hs;per_t[m["tournament_id"]][a]+=ass
             rh=self._result_for_player(m,h); ra=self._result_for_player(m,a); sequence[h].append(rh);sequence[a].append(ra)
             if rh=="W":ps[h]["w"]+=1;ps[a]["l"]+=1
@@ -3141,8 +3166,8 @@ class Database:
         win_streak=max(((longest(seq,{"W"}),pid) for pid,seq in sequence.items()),default=(0,None))
         unbeaten=max(((longest(seq,{"W","D"}),pid) for pid,seq in sequence.items()),default=(0,None))
         winless=max(((longest(seq,{"D","L"}),pid) for pid,seq in sequence.items()),default=(0,None))
-        biggest=max(matches,key=lambda m:abs(int(m["home_score"])-int(m["away_score"])))
-        goals_match=max(matches,key=lambda m:int(m["home_score"])+int(m["away_score"]))
+        biggest=max(matches,key=lambda m:abs(self._stats_score_pair(m)[0]-self._stats_score_pair(m)[1]))
+        goals_match=max(matches,key=lambda m:sum(self._stats_score_pair(m)))
         one_t=max(((g,pid,tid) for tid,d in per_t.items() for pid,g in d.items()),default=(0,None,None))
         # consecutive championship streak across chronological official tournaments
         title_best=(0,None); cur_pid=None;cur=0
@@ -3257,9 +3282,9 @@ class Database:
         if best_hat:
             best_hat.pop("to_value",None);detailed_records["fastest_hat_trick"]=best_hat
 
-        # Comeback / blown lead records need a complete goal timeline. All goals
-        # affecting the scoreboard count here (including own goals and the technical
-        # DE starting advantage), but only when their count matches the final score.
+        # Comeback / blown-lead records use only goals actually scored on the pitch.
+        # The technical +1 in a DE Grand Final is excluded completely here: it may
+        # decide the PLAYER W/L, but it cannot create a comeback, margin or goal record.
         score_goal_types={"normal_goal","penalty_goal","own_goal"}
         best_comeback=None;best_blown=None
         for mk,evs in by_match.items():
@@ -3267,14 +3292,13 @@ class Database:
             if not m:continue
             h=str(m.get("home_player_id") or "");a=str(m.get("away_player_id") or "")
             if not h or not a:continue
-            hs=int(m.get("home_score") or 0);ass=int(m.get("away_score") or 0)
-            winner=str(m.get("winner_player_id") or "")
-            if not winner:
-                if hs>ass:winner=h
-                elif ass>hs:winner=a
+            hs,ass=self._stats_score_pair(m)
+            winner=h if hs>ass else (a if ass>hs else "")
             if winner not in (h,a):continue
             loser=a if winner==h else h
-            goals=[e for e in evs if str(e.get("event_type") or "") in score_goal_types and str(e.get("credited_player_id") or "") in (h,a)]
+            goals=[e for e in evs if str(e.get("event_type") or "") in score_goal_types
+                   and not int(e.get("synthetic_de") or 0)
+                   and str(e.get("credited_player_id") or "") in (h,a)]
             if len(goals)!=(hs+ass):continue
             goals=sorted(goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
             score={h:0,a:0};max_winner_deficit=0;max_loser_lead=0
@@ -3306,8 +3330,8 @@ class Database:
             "win_streak":{"name":players.get(win_streak[1],"?"),"value":win_streak[0]},
             "unbeaten_streak":{"name":players.get(unbeaten[1],"?"),"value":unbeaten[0]},
             "winless_streak":{"name":players.get(winless[1],"?"),"value":winless[0]},
-            "biggest_win":{"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{biggest['home_score']}:{biggest['away_score']}","margin":abs(int(biggest["home_score"])-int(biggest["away_score"]))},
-            "highest_scoring":{"home":goals_match.get("home_name"),"away":goals_match.get("away_name"),"score":f"{goals_match['home_score']}:{goals_match['away_score']}","goals":int(goals_match["home_score"])+int(goals_match["away_score"])},
+            "biggest_win":{"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{self._stats_score_pair(biggest)[0]}:{self._stats_score_pair(biggest)[1]}","margin":abs(self._stats_score_pair(biggest)[0]-self._stats_score_pair(biggest)[1])},
+            "highest_scoring":{"home":goals_match.get("home_name"),"away":goals_match.get("away_name"),"score":f"{self._stats_score_pair(goals_match)[0]}:{self._stats_score_pair(goals_match)[1]}","goals":sum(self._stats_score_pair(goals_match))},
             "goals_one_tournament":{"name":players.get(one_t[1],"?"),"value":one_t[0]},
             "consecutive_titles":{"name":players.get(title_best[1],"?"),"value":title_best[0]},
             "most_frequent_h2h":pair_desc(frequent),"balanced_rivalry":pair_desc(balanced),"h2h_dominance":pair_desc(dominance),
@@ -3325,26 +3349,26 @@ class Database:
             scorer_rows=self._fetchall(conn,"SELECT scorer_name,SUM(goals) AS goals FROM match_scorers WHERE tournament_id=? GROUP BY scorer_name ORDER BY goals DESC,scorer_name",(tid,))
             previous=self._records_from_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else {}
             prior_matches=self._official_matches_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else []
+        fmt=(meta or {}).get("format_key")
         played=[m for m in matches if m.get("home_score") is not None]
         ps=defaultdict(lambda:{"w":0,"d":0,"l":0,"gf":0,"ga":0})
         for m in played:
-            h,a=m["home_player_id"],m["away_player_id"];hs,ass=int(m["home_score"]),int(m["away_score"])
+            h,a=m["home_player_id"],m["away_player_id"];hs,ass=self._stats_score_pair(m,fmt)
             ps[h]["gf"]+=hs;ps[h]["ga"]+=ass;ps[a]["gf"]+=ass;ps[a]["ga"]+=hs
             rh=self._result_for_player(m,h)
             if rh=="W":ps[h]["w"]+=1;ps[a]["l"]+=1
             elif rh=="L":ps[a]["w"]+=1;ps[h]["l"]+=1
             else:ps[h]["d"]+=1;ps[a]["d"]+=1
         champ=t.get("champion_player_id") if t else None
-        fmt=(meta or {}).get("format_key")
         finals=[m for m in played if m["stage"] in ("FINAL","RESET_FINAL")]
         last_final=finals[-1] if finals else None
         runner=None
         if last_final and champ: runner=last_final["away_player_id"] if last_final["home_player_id"]==champ else last_final["home_player_id"]
         top=max(ps.items(),key=lambda x:(x[1]["gf"],x[1]["w"]),default=(None,{})); defense=min(ps.items(),key=lambda x:(x[1]["ga"]/(sum(x[1][k] for k in ("w","d","l")) or 1),x[1]["ga"]),default=(None,{})); form=max(ps.items(),key=lambda x:(x[1]["w"],x[1]["gf"]-x[1]["ga"]),default=(None,{}))
-        biggest=max(played,key=lambda m:abs(int(m["home_score"])-int(m["away_score"])),default=None); high=max(played,key=lambda m:int(m["home_score"])+int(m["away_score"]),default=None)
+        biggest=max(played,key=lambda m:abs(self._stats_score_pair(m,fmt)[0]-self._stats_score_pair(m,fmt)[1]),default=None); high=max(played,key=lambda m:sum(self._stats_score_pair(m,fmt)),default=None)
         stage_weight={"FINAL":8,"RESET_FINAL":8,"SF":6,"WB_FINAL":6,"LB_FINAL":6,"QF":4,"BARRAGE":4,"WB":2,"LB":2,"LEAGUE":0,"GROUP":0}
         def match_fun_score(m):
-            hs,ass=int(m["home_score"]),int(m["away_score"]); total=hs+ass; margin=abs(hs-ass)
+            hs,ass=self._stats_score_pair(m,fmt); total=hs+ass; margin=abs(hs-ass)
             pens=8 if m.get("home_penalties") is not None and m.get("away_penalties") is not None else 0
             close=5 if margin<=1 else (2 if margin==2 else 0)
             return total*2+pens+close+stage_weight.get(m.get("stage"),1)
@@ -3369,7 +3393,8 @@ class Database:
         new_records=[]
         if not int(t.get("is_test") or 0) and previous:
             prev_margin=(previous.get("biggest_win") or {}).get("margin",-1)
-            if biggest and abs(int(biggest["home_score"])-int(biggest["away_score"]))>prev_margin:new_records.append(f"Największe zwycięstwo: {biggest['home_name']} {biggest['home_score']}:{biggest['away_score']} {biggest['away_name']}")
+            if biggest and abs(self._stats_score_pair(biggest,fmt)[0]-self._stats_score_pair(biggest,fmt)[1])>prev_margin:
+                bhs,bas=self._stats_score_pair(biggest,fmt);new_records.append(f"Największe zwycięstwo: {biggest['home_name']} {bhs}:{bas} {biggest['away_name']}")
             prev_goals=(previous.get("goals_one_tournament") or {}).get("value",-1)
             if top[0] and top[1].get("gf",0)>prev_goals:new_records.append(f"Gole jednego gracza w turnieju: {players[top[0]]['name']} — {top[1]['gf']}")
 
@@ -3419,8 +3444,8 @@ class Database:
                 "top_goals":{"name":players.get(top[0],{}).get("name"),"value":top[1].get("gf",0)},
                 "best_defense":{"name":players.get(defense[0],{}).get("name"),"value":defense[1].get("ga",0)},
                 "best_form":{"name":players.get(form[0],{}).get("name"),"wins":form[1].get("w",0)},
-                "biggest":({"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{biggest['home_score']}:{biggest['away_score']}"} if biggest else None),
-                "highest":({"home":high.get("home_name"),"away":high.get("away_name"),"score":f"{high['home_score']}:{high['away_score']}"} if high else None),
+                "biggest":({"home":biggest.get("home_name"),"away":biggest.get("away_name"),"score":f"{self._stats_score_pair(biggest,fmt)[0]}:{self._stats_score_pair(biggest,fmt)[1]}"} if biggest else None),
+                "highest":({"home":high.get("home_name"),"away":high.get("away_name"),"score":f"{self._stats_score_pair(high,fmt)[0]}:{self._stats_score_pair(high,fmt)[1]}"} if high else None),
                 "real_top_scorer":({"name":scorer_rows[0]["scorer_name"],"goals":int(scorer_rows[0]["goals"])} if scorer_rows else None),
                 "match_of_tournament":({"home":match_of_tournament.get("home_name"),"away":match_of_tournament.get("away_name"),
                     "score":f"{match_of_tournament['home_score']}:{match_of_tournament['away_score']}","stage":match_of_tournament.get("stage"),"group_name":match_of_tournament.get("group_name"),
@@ -4110,12 +4135,12 @@ class Database:
                 pid=m.get(f"{side}_player_id"); team=" ".join(str(m.get(f"{side}_team") or "").strip().split())
                 if not pid or not team: continue
                 nt=self._norm_team_name(team); rec=agg[nt]; rec["display"]=rec["display"] or team; rec["matches"]+=1; rec["players"].add(pid)
-                hs,ass=int(m["home_score"]),int(m["away_score"])
+                hs,ass=self._stats_score_pair(m)
                 gf,ga=(hs,ass) if side=="home" else (ass,hs)
                 rec["gf"]+=gf; rec["ga"]+=ga
-                result=self._result_for_player(m,pid)
-                rec[{"W":"w","D":"d","L":"l"}[result]]+=1
-                pr=by_player[(nt,pid)]; pr["display"]=pr["display"] or team; pr["player_name"]=m.get(f"{side}_name") or "?"; pr["matches"]+=1; pr["gf"]+=gf; pr["ga"]+=ga; pr[{"W":"w","D":"d","L":"l"}[result]]+=1
+                team_result=self._team_result_from_score(hs,ass,side=="home")
+                rec[{"W":"w","D":"d","L":"l"}[team_result]]+=1
+                pr=by_player[(nt,pid)]; pr["display"]=pr["display"] or team; pr["player_name"]=m.get(f"{side}_name") or "?"; pr["matches"]+=1; pr["gf"]+=gf; pr["ga"]+=ga; pr[{"W":"w","D":"d","L":"l"}[team_result]]+=1
         for c in champions:
             team=" ".join(str(c.get("team") or "").strip().split())
             if team:
@@ -4151,10 +4176,11 @@ class Database:
             team_raw=m.get("home_team") if home else m.get("away_team")
             team=" ".join(str(team_raw or "").strip().split())
             opp=m.get("away_player_id") if home else m.get("home_player_id"); opp_name=m.get("away_name") if home else m.get("home_name")
-            hs,ass=int(m["home_score"]),int(m["away_score"]); gf,ga=(hs,ass) if home else (ass,hs)
+            hs,ass=self._stats_score_pair(m); gf,ga=(hs,ass) if home else (ass,hs)
             result=self._result_for_player(m,pid)
+            team_result=self._team_result_from_score(hs,ass,home)
             if team:
-                nt=self._norm_team_name(team); tr=teams[nt];tr["display"]=tr["display"] or team;tr["matches"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[result]]+=1
+                nt=self._norm_team_name(team); tr=teams[nt];tr["display"]=tr["display"] or team;tr["matches"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[team_result]]+=1
             if opp:
                 orc=opponents[opp];orc["name"]=opp_name or "?";orc["meetings"]+=1;orc["gf"]+=gf;orc["ga"]+=ga;orc[{"W":"w","D":"d","L":"l"}[result]]+=1
             score=f"{m['home_score']}:{m['away_score']}"
@@ -5176,8 +5202,11 @@ class Database:
             if importance_weight:
                 rec["important_matches"]+=1
                 rec["importance_points"]+=importance_weight
-            # Team awards/rating also use all official matches.
-            for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,rh),(a,m.get("away_team"),ass,hs,ra)):
+            # Team awards/rating use the on-pitch score.  The technical +1 in a DE
+            # Grand Final decides the player's match but does not give the CLUB a win.
+            home_team_result=self._team_result_from_score(hs,ass,True)
+            away_team_result=self._team_result_from_score(hs,ass,False)
+            for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,home_team_result),(a,m.get("away_team"),ass,hs,away_team_result)):
                 team=" ".join(str(team or "").split())
                 if team:
                     nt=self._norm_team_name(team);tr=teamagg[nt];tr["display"]=tr["display"] or team;tr["m"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[r]]+=1
@@ -5812,7 +5841,9 @@ class Database:
             completed_tournament_ids={str(r["id"]) for r in events if str(r.get("format_key") or "")!='duel1v1' and str(r.get("status") or "")=="completed"}
             players={r["id"]:r["name"] for r in self._fetchall(conn,"SELECT id,name FROM players")}
             tps=self._fetchall(conn,"SELECT tournament_id,player_id FROM tournament_players")
-            matches=self._fetchall(conn,"SELECT * FROM matches WHERE home_score IS NOT NULL ORDER BY tournament_id,match_no")
+            matches=self._fetchall(conn,"""SELECT m.*,fm.format_key
+                FROM matches m LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=m.tournament_id
+                WHERE m.home_score IS NOT NULL ORDER BY m.tournament_id,m.match_no""")
         finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in completed_tournament_ids]
         stats=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"pen_wins":0,"duels":0,"duel_wins":0})
         for tp in tps:
@@ -5827,11 +5858,15 @@ class Database:
         for m in matches:
             tid=str(m["tournament_id"])
             if tid not in all_ids: continue
-            h,a=m["home_player_id"],m["away_player_id"]; hs,ass=int(m["home_score"]),int(m["away_score"])
+            h,a=m["home_player_id"],m["away_player_id"]
             if not h or not a: continue
-            stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
-            if hs>ass: stats[h]["w"]+=1; stats[a]["l"]+=1
-            elif ass>hs: stats[a]["w"]+=1; stats[h]["l"]+=1
+            stat_hs,stat_ass=self._stats_score_pair(m)
+            raw_hs,raw_ass=int(m["home_score"]),int(m["away_score"])
+            stats[h]["gf"]+=stat_hs; stats[h]["ga"]+=stat_ass; stats[a]["gf"]+=stat_ass; stats[a]["ga"]+=stat_hs
+            # Player W/D/L keeps the official match outcome.  In a DE Grand Final
+            # the technical +1 therefore still turns an on-pitch draw into W/L.
+            if raw_hs>raw_ass: stats[h]["w"]+=1; stats[a]["l"]+=1
+            elif raw_ass>raw_hs: stats[a]["w"]+=1; stats[h]["l"]+=1
             else:
                 stats[h]["d"]+=1; stats[a]["d"]+=1
                 if m.get("winner_player_id"): stats[m["winner_player_id"]]["pen_wins"]+=1
