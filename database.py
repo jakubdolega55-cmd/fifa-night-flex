@@ -77,6 +77,27 @@ TROPHY_NOMINATION_KEYS = {
     "debut", "outsider", "finance", "match_year", "progress",
 }
 
+# Physical trophy engraving labels. These are presentation metadata only: they do
+# not affect Award scoring, nominations or winner selection. Categories omitted
+# from this mapping have no engraving name in the current trophy table.
+AWARD_ENGRAVINGS = {
+    "player_year": "Player of the Year",
+    "offensive": "Best Offensive",
+    "defense": "Best Defensive",
+    "player_scorers": "Top Scorer",
+    "clutch": "Mr. Clutch",
+    "comeback_king": "Never Say Die",
+    "late_king": "Last Minute King",
+    "fair_play": "Fair Play",
+    "spectacle": "Showman of the Year",
+    "universal": "All-Rounder of the Year",
+    "debut": "Flying Start",
+    "outsider": "Best of the Rest",
+    "finance": "Financial Shark",
+    "match_year": "Match of the Year",
+    "progress": "Most Improved Player",
+}
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -5429,7 +5450,16 @@ class Database:
                 ranked=sorted(items,key=lambda x:(float(x.get("score") or 0),str(x.get("name") or "")),reverse=True)[:n]
             return [{k:v for k,v in x.items() if k!="_sort"} for x in ranked]
         cats=[]
-        def add(key,title,desc,items,award=True,secondary=None):cats.append({"key":key,"title":title,"description":desc,"award":award,"candidates":top(items),"secondary":secondary})
+        def add(key,title,desc,items,award=True,secondary=None):
+            cats.append({
+                "key":key,
+                "title":title,
+                "engraving":AWARD_ENGRAVINGS.get(str(key)),
+                "description":desc,
+                "award":award,
+                "candidates":top(items),
+                "secondary":secondary,
+            })
 
         # 1 player of year
         items=[]

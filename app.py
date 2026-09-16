@@ -2757,6 +2757,8 @@ def render_awards(readonly:bool=False):
         selected_note=f" • 🏅 wybrany laureat: **{selected.get('name')}**" if selected.get("name") else ""
         qualified_label=(" • TOP 5" if len(candidates)>=5 else f" • {len(candidates)} zakwalifikowanych")
         with st.expander(f"{cat['title']}{qualified_label}",expanded=cat.get("key") in ("player_year","offensive","defense")):
+            if cat.get("engraving"):
+                st.markdown(f"**🏷️ GRAWER:** `{cat['engraving']}`")
             st.caption(cat.get("description") or "")
             if AWARD_QUIPS.get(str(cat.get("key") or "")):
                 st.caption(f"💬 {AWARD_QUIPS[str(cat.get('key'))]}")
@@ -2929,7 +2931,8 @@ def render_awards(readonly:bool=False):
                     extra=f" • {current_owner} ma łącznie {counts.get(current_owner,0)} nagr." if current_owner else ""
                     st.caption(f"✅ Aktualnie wybrano: **{selected.get('name')}**{extra}")
                 with st.form(f"award_pick_{year}_{cat['key']}"):
-                    choice=st.selectbox(f"{pick_no}. {cat['title']}",options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
+                    engraving_note=f" — grawer: {cat['engraving']}" if cat.get("engraving") else ""
+                    choice=st.selectbox(f"{pick_no}. {cat['title']}{engraving_note}",options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
                     save=st.form_submit_button("🏅 ZAPISZ LAUREATA",use_container_width=True)
                 if save:
                     cand=next(x for x in candidates if str(x.get("id"))==str(choice))
