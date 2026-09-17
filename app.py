@@ -53,6 +53,30 @@ def pln_value(value:float)->str:
 def rr():st.rerun()
 def rf():st.rerun(scope="fragment")
 
+def render_standings_block(tables:dict) -> None:
+    """Render league/group/Swiss tables without assuming A/B keys."""
+    if not tables:
+        return
+    if "L" in tables:
+        st.markdown("#### 📊 Tabela ligowa")
+        st.dataframe(standings_df(tables["L"]),hide_index=True,use_container_width=True)
+        return
+    if "S" in tables:
+        st.markdown("#### 🇨🇭 Tabela Swiss")
+        st.dataframe(standings_df(tables["S"]),hide_index=True,use_container_width=True)
+        return
+    groups=[g for g in ("A","B","C") if g in tables]
+    if groups:
+        cols=st.columns(len(groups))
+        for col,g in zip(cols,groups):
+            with col:
+                st.markdown(f"#### Grupa {g}")
+                st.dataframe(standings_df(tables[g]),hide_index=True,use_container_width=True)
+    if "F3" in tables:
+        st.markdown("#### 🏁 Final Three")
+        st.dataframe(standings_df(tables["F3"]),hide_index=True,use_container_width=True)
+
+
 @st.cache_data(ttl=30,show_spinner=False)
 def official_player_names_cached():
     return db.official_player_names()
@@ -1676,8 +1700,15 @@ def render_special_event(tid:str, b:dict) -> bool:
             return True
     state=db.big_visible_draw_state(tid)
     if state:
-        st.markdown("### 🎲 Losowanie w trakcie turnieju")
-        st.caption("Pokazujemy tylko prawdziwe losowanie — ten etap miał co najmniej dwa równorzędne legalne warianty.")
+        random_draw=bool(state.get("is_random_draw",True))
+        swiss_draw=str(state.get("kind") or "").startswith("swiss")
+        if swiss_draw:
+            rnd=(str(state.get("kind") or "").rsplit("_",1)[-1] or "?")
+            st.markdown(f"### 🇨🇭 Pary — runda {rnd}")
+            st.caption("Pary następnej rundy Swiss zostają na ekranie do ręcznego zatwierdzenia.")
+        else:
+            st.markdown("### 🎲 Losowanie w trakcie turnieju" if random_draw else "### ✅ Pary ustalone")
+            st.caption("Prawdziwe losowanie spośród równorzędnych wariantów." if random_draw else "Układ wynika jednoznacznie z zasad — pokazujemy go do zatwierdzenia bez udawania losowania.")
         bye_pid=state.get("bye_player_id")
         if bye_pid:
             candidate=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
@@ -1686,7 +1717,8 @@ def render_special_event(tid:str, b:dict) -> bool:
                 st.caption("Kandydaci: "+" • ".join(str(x.get("name") or "?") for x in state.get("bye_candidates") or []))
         for pair in state.get("pairs",[]):
             st.markdown(f"**{esc(pair.get('home_name') or '?')}**  vs  **{esc(pair.get('away_name') or '?')}**")
-        if st.button("✅ ZATWIERDŹ LOSOWANIE",type="primary",use_container_width=True,key=f"big_draw_ack_{tid}_{state.get('kind')}"):
+        ack_label="✅ ZATWIERDŹ PARY / ROZPOCZNIJ RUNDĘ" if swiss_draw else ("✅ ZATWIERDŹ LOSOWANIE" if random_draw else "✅ ZATWIERDŹ PARY")
+        if st.button(ack_label,type="primary",use_container_width=True,key=f"big_draw_ack_{tid}_{state.get('kind')}"):
             db.ack_big_visible_draw(tid,state.get("kind"));rf()
         return True
     return False
@@ -1802,8 +1834,8 @@ def live(tid:str):
             check=db.can_skip_match(tid,int(cur["match_no"]))
             if check.get("allowed"):
                 finals=" i ".join(check.get("finalists") or [])
-                st.info(f"⏭️ Ten mecz nie może już zmienić pary finalistów{f': {finals}' if finals else ''}. Możesz go rozegrać albo pominąć.")
-                if st.button("⏭️ POMIŃ MECZ",use_container_width=True,key=f"skip_{tid}_{cur['match_no']}"):
+                st.info(f"🚫 Ten mecz nie może już zmienić pary finalistów{f': {finals}' if finals else ''}. Możesz go rozegrać albo oznaczyć jako nierozgrywany.")
+                if st.button("🚫 NIE ROZGRYWAJ MECZU",use_container_width=True,key=f"skip_{tid}_{cur['match_no']}"):
                     try:db.skip_match(tid,int(cur["match_no"]));rf()
                     except ValueError as e:st.error(str(e))
     defer_check=db.can_defer_match(tid,int(cur["match_no"]))
@@ -1814,21 +1846,30 @@ def live(tid:str):
             try:
                 db.defer_match(tid,int(cur["match_no"]));rf()
             except ValueError as e:st.error(str(e))
+    with st.expander("🏳️ Poddaj mecz"):
+        st.caption("Użyj, gdy jedna osoba nie może lub nie chce już zagrać. Wynik turniejowy to 3:0, ale mecz nie liczy się do statystyk historycznych, H2H, ratingów ani Awards.")
+        options=[str(cur.get("home_player_id") or ""),str(cur.get("away_player_id") or "")]
+        names={str(cur.get("home_player_id") or ""):str(cur.get("home_name") or "?"),str(cur.get("away_player_id") or ""):str(cur.get("away_name") or "?")}
+        with st.form(f"forfeit_{tid}_{cur['match_no']}"):
+            loser=st.radio("Kto poddaje mecz?",options=options,format_func=lambda pid:names.get(pid,"?"),horizontal=True)
+            confirm=st.checkbox("Potwierdzam poddanie i wynik turniejowy 3:0")
+            do_forfeit=st.form_submit_button("🏳️ ZAPISZ PODDANIE",use_container_width=True)
+        if do_forfeit:
+            if not confirm: st.error("Zaznacz potwierdzenie poddania.")
+            else:
+                try: db.forfeit_match(tid,int(cur["match_no"]),loser);rf()
+                except ValueError as e: st.error(str(e))
     score_form(tid,cur,fmt)
     nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
     if nxt:
         st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")
         render_match_absences(nxt,absence_targets,compact=True)
-    if st.button("↩️ Cofnij ostatni wynik / pominięcie",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
+    if st.button("↩️ Cofnij ostatni wynik / poddanie / nierozgrany mecz",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
         st.session_state.pop("pending_ko",None);db.undo_last_result(tid);rf()
     tables=db.standings(tid)
     if tables:
         st.divider()
-        if "L" in tables:st.subheader("Tabela ligowa");st.dataframe(standings_df(tables["L"]),hide_index=True,use_container_width=True)
-        else:
-            c1,c2=st.columns(2)
-            with c1:st.subheader("Grupa A");st.dataframe(standings_df(tables["A"]),hide_index=True,use_container_width=True)
-            with c2:st.subheader("Grupa B");st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
+        render_standings_block(tables)
 
 
 
@@ -2192,12 +2233,13 @@ def render_schedule(t):
             if x.get("match_no") is not None:
                 milestone_by_match.setdefault(int(x["match_no"]),[]).append(x)
     for m in matches:
-        no=int(m["match_no"]);skipped=str(m.get("match_status") or "pending")=="skipped"
+        no=int(m["match_no"]);status=str(m.get("match_status") or "pending");skipped=status=="skipped";forfeited=status=="forfeit"
         played=m.get("home_score") is not None
         ready=bool(m.get("home_player_id") and m.get("away_player_id")) and not played and not skipped
         if m.get("home_player_id"):
             names=f"{esc(m['home_name'])} — {esc(m['away_name'])}"
-            if skipped:result="POMINIĘTY";icon="⏭️";live_tag=" • POMINIĘTY"
+            if skipped:result="NIE ROZEGRANO";icon="🚫";live_tag=" • NIE ROZEGRANO"
+            elif forfeited:result=f"PODDANIE • {result_text(m)}";icon="🏳️";live_tag=" • PODDANIE"
             elif played:result=result_text(m);icon="✅";live_tag=""
             elif abandoned:result="NIE ROZEGRANO";icon="⚪";live_tag=""
             elif no==cur_no:result="—";icon="▶️";live_tag=" • TERAZ"
@@ -2212,7 +2254,8 @@ def render_schedule(t):
         tags=milestone_by_match.get(no,[])
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
         st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {no} • {stage_name(m)}{esc(live_tag)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
-        if skipped:st.caption("Pominięty mecz nie jest zapisany jako 0:0 i nie wchodzi do żadnych statystyk.")
+        if skipped:st.caption("Ten mecz świadomie nie został rozegrany i nie wchodzi do statystyk.")
+        elif forfeited:st.caption("Poddanie: 3:0 liczy się tylko do sytuacji w tym turnieju. Poza turniejem ten mecz nie istnieje statystycznie.")
         elif played:_render_match_scorer_details(t["id"],m,no)
 
 
@@ -2917,19 +2960,25 @@ def render_awards(readonly:bool=False):
                     cid=str(x.get("id")); cname=str(x.get("name") or "")
                     owner=award_owner_name(cat.get("key"),cid,cname)
                     rank=f"#{pos}"
+                    reason=str(x.get("reason") or "").strip()
+                    stat_note=f" • {reason}" if reason else ""
                     if owner:
                         won=counts.get(owner,0)
                         award_note="🆕 bez nagrody" if won==0 else f"🏅 ma już {won}"
                         if cat.get("key")=="player_scorers":
-                            label_by[cid]=f"{rank} {cname} • {owner}: {award_note}"
+                            label_by[cid]=f"{rank} {cname}{stat_note} • {owner}: {award_note}"
                         else:
-                            label_by[cid]=f"{rank} {cname} • {award_note}"
+                            label_by[cid]=f"{rank} {cname}{stat_note} • {award_note}"
                     else:
-                        label_by[cid]=f"{rank} {cname}"
+                        label_by[cid]=f"{rank} {cname}{stat_note}"
                 current_owner=award_owner_name(cat.get("key"),selected.get("id"),selected.get("name")) if selected else None
                 if selected.get("name"):
                     extra=f" • {current_owner} ma łącznie {counts.get(current_owner,0)} nagr." if current_owner else ""
                     st.caption(f"✅ Aktualnie wybrano: **{selected.get('name')}**{extra}")
+                    if st.button("🗑️ USUŃ LAUREATA / RESETUJ WYBÓR",use_container_width=True,key=f"award_reset_{year}_{cat['key']}"):
+                        db.clear_award_selection(year,cat["key"])
+                        st.success(f"Usunięto laureata: {cat['title']}. Możesz wybrać ponownie.")
+                        rr()
                 with st.form(f"award_pick_{year}_{cat['key']}"):
                     engraving_note=f" — grawer: {cat['engraving']}" if cat.get("engraving") else ""
                     choice=st.selectbox(f"{pick_no}. {cat['title']}{engraving_note}",options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
@@ -3166,17 +3215,7 @@ def render_tv_screen(tid:str):
         else:
             tables=db.standings(tid)
             if tables:
-                if "L" in tables:
-                    st.markdown("#### 📊 Tabela")
-                    st.dataframe(standings_df(tables["L"]),hide_index=True,use_container_width=True)
-                else:
-                    c1,c2=st.columns(2)
-                    with c1:
-                        st.markdown("#### Grupa A")
-                        st.dataframe(standings_df(tables["A"]),hide_index=True,use_container_width=True)
-                    with c2:
-                        st.markdown("#### Grupa B")
-                        st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
+                render_standings_block(tables)
             else:
                 st.info("Tabela pojawi się po rozegraniu pierwszych spotkań.")
         return
@@ -3190,7 +3229,7 @@ def render_tv_screen(tid:str):
                 st.markdown(
                     f'<div class="mini-card"><span class="match-no">MECZ {int(m.get("match_no") or 0)} • {esc(stage_name(m))}</span><br>'
                     f'<b>{esc(m.get("home_name"))} — {esc(m.get("away_name"))}</b>'
-                    f'<span style="float:right" class="scoreline">{esc(result_text(m))}</span></div>',
+                    f'<span style="float:right" class="scoreline">{esc(("PODDANIE • "+result_text(m)) if str(m.get("match_status") or "") == "forfeit" else result_text(m))}</span></div>',
                     unsafe_allow_html=True
                 )
         else:
@@ -3261,13 +3300,7 @@ def render_tv_screen(tid:str):
     tables=db.standings(tid)
     if tables:
         st.divider()
-        if "L" in tables:
-            st.markdown("#### 📊 Tabela")
-            st.dataframe(standings_df(tables["L"]),hide_index=True,use_container_width=True)
-        else:
-            c1,c2=st.columns(2)
-            with c1:st.markdown("#### Grupa A");st.dataframe(standings_df(tables["A"]),hide_index=True,use_container_width=True)
-            with c2:st.markdown("#### Grupa B");st.dataframe(standings_df(tables["B"]),hide_index=True,use_container_width=True)
+        render_standings_block(tables)
     st.caption("📺 LIVE odświeża dane co 5 sekund. W trybie AUTO ekran sam przełącza widoki co około 30 sekund.")
 
 def render_viewer_live(t):

@@ -275,7 +275,7 @@ class Database:
             if not any(str(c.get("name"))=="match_status" for c in cols):
                 conn.execute("ALTER TABLE matches ADD COLUMN match_status TEXT NOT NULL DEFAULT 'pending'")
         # Backfill old played rows. Pending rows remain pending.
-        conn.execute(self._sql("UPDATE matches SET match_status='played' WHERE home_score IS NOT NULL AND COALESCE(match_status,'pending')<>'played'"))
+        conn.execute(self._sql("UPDATE matches SET match_status='played' WHERE home_score IS NOT NULL AND COALESCE(match_status,'pending')='pending'"))
 
 
     def _ensure_game_version_column_conn(self, conn) -> None:
@@ -700,7 +700,7 @@ class Database:
         stats=defaultdict(lambda:{"w":0,"d":0,"l":0,"gf":0,"ga":0})
         for m in matches:
             h,a=str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")
-            if not h or not a: continue
+            if not h or not a or self._is_forfeit(m): continue
             hs,ass=self._stats_score_pair(m,fmt)
             stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
             rh=self._result_for_player(m,h)
@@ -753,6 +753,11 @@ class Database:
             q_losers=[self._loser_of(m) for m in matches if m.get("stage") in ("QF","BARRAGE")]
             for pid in rank_group(q_losers): add(pid)
             for pid in rank_group([pid for pid in all_pids if pid not in order]): add(pid)
+        elif fmt in ("swiss8","swiss10"):
+            sf_losers=[self._loser_of(m) for m in matches if m.get("stage")=="SF"]
+            for pid in rank_group(sf_losers): add(pid)
+            # Players outside TOP4 keep their order from the completed Swiss phase.
+            for row in self._swiss_table_conn(conn,tid): add(row.get("player_id"))
         else:
             for pid in rank_group([pid for pid in all_pids if pid not in order]): add(pid)
         for pid in rank_group([pid for pid in all_pids if pid not in order]): add(pid)
@@ -788,7 +793,7 @@ class Database:
         played=self._fetchall(conn,"""
             SELECT match_no,played_at,home_player_id,away_player_id
             FROM matches
-            WHERE tournament_id=? AND home_score IS NOT NULL
+            WHERE tournament_id=? AND home_score IS NOT NULL AND COALESCE(match_status,'played')<>'forfeit'
             ORDER BY CASE WHEN played_at IS NULL THEN 1 ELSE 0 END, played_at, match_no
         """,(prev["id"],))
         if not played:
@@ -876,6 +881,7 @@ class Database:
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
             WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
+              AND COALESCE(m.match_status,'played')<>'forfeit'
               AND COALESCE(t.game_version,'FC26')=?
         """,(game_version,))
         # Mild recency weighting: recent games matter a little more, but older results
@@ -928,7 +934,7 @@ class Database:
             FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
             JOIN matches m ON m.tournament_id=t.id AND (m.home_player_id=tp.player_id OR m.away_player_id=tp.player_id)
             WHERE COALESCE(t.game_version,'FC26')='FC27' AND t.is_test=0 AND t.status IN ('completed','abandoned')
-              AND m.home_score IS NOT NULL AND tp.team<>?
+              AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit' AND tp.team<>?
             GROUP BY tp.team
         """,(REAL_HELPER_TEAM,))
         nmap={str(r['team']):int(r['c']) for r in counts}
@@ -953,6 +959,7 @@ class Database:
                 LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
                 LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
                 WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
+                  AND COALESCE(m.match_status,'played')<>'forfeit'
                   AND COALESCE(t.game_version,'FC26')=?
             """,(game_version,))
         agg=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
@@ -1185,10 +1192,12 @@ class Database:
                 hs=max(0,hs-1)
             return hs,ass
 
-        played=len(matches)
+        forfeits=sum(1 for m in matches if self._is_forfeit(m))
+        stat_matches=[m for m in matches if not self._is_forfeit(m)]
+        played=len(stat_matches)
         total_goals=0
         highest=None
-        for m in matches:
+        for m in stat_matches:
             hs,ass=real_score(m); total=hs+ass; total_goals+=total
             candidate={
                 "match_no":int(m.get("match_no") or 0),
@@ -1216,6 +1225,8 @@ class Database:
 
         return {
             "matches_played":played,
+            "forfeit_count":forfeits,
+            "decided_matches":played+forfeits,
             "goals":total_goals,
             "goals_per_match":round(total_goals/played,2) if played else 0.0,
             "detailed_matches":len(detailed_match_nos),
@@ -1855,13 +1866,13 @@ class Database:
             return {"player_id":None,"name":f"{parts[2]}. miejsce grupy {parts[1]}","source":text,"resolved":False}
         return {"player_id":None,"name":text or "?","source":text,"resolved":False}
 
-    def _save_big_sources_conn(self, conn, tid: str, extra: dict, updates: dict[str,str], draw_kind: str | None=None, candidates: int=1, event_extra: dict | None=None) -> None:
+    def _save_big_sources_conn(self, conn, tid: str, extra: dict, updates: dict[str,str], draw_kind: str | None=None, candidates: int=1, event_extra: dict | None=None, force_visible: bool=False) -> None:
         changed=False; src=extra.setdefault("big_sources",{})
         for k,v in updates.items():
             if k not in src: src[k]=v; changed=True
         if not changed:return
-        if draw_kind and candidates>1:
-            event={"special_kind":draw_kind,"sources":updates,"source_keys":list(updates),"candidate_count":candidates,"ack":False,"is_random_draw":True}
+        if draw_kind and (candidates>1 or force_visible):
+            event={"special_kind":draw_kind,"sources":updates,"source_keys":list(updates),"candidate_count":candidates,"ack":False,"is_random_draw":bool(candidates>1)}
             if event_extra: event.update(event_extra)
             # Build readable pair rows for both phone and synchronized TV.  This
             # deliberately supports unresolved symbolic sources so an early DE draw
@@ -1989,7 +2000,7 @@ class Database:
                 pairs=self._order_pairs_for_rest(pairs,mm)
                 upd={}
                 for slot,(a,b) in enumerate(pairs): upd[f"SWISS:R{rnd}:{slot}:H"]=P(a);upd[f"SWISS:R{rnd}:{slot}:A"]=P(b)
-                self._save_big_sources_conn(conn,tid,extra,upd,f"{fmt}_round_{rnd}",cnt); src=extra.setdefault("big_sources",{})
+                self._save_big_sources_conn(conn,tid,extra,upd,f"{fmt}_round_{rnd}",cnt,force_visible=True); src=extra.setdefault("big_sources",{})
             sfbase=3*per+1
             if played(*range(1,3*per+1)) and "SWISS:SF:1:H" not in src:
                 table=self._swiss_table_conn(conn,tid); top=[r["player_id"] for r in table[:4]]
@@ -3035,7 +3046,7 @@ class Database:
             LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-            WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL"""
+            WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'"""
         params=()
         if exclude_tid:
             sql += " AND m.tournament_id<>?"; params=(exclude_tid,)
@@ -3056,6 +3067,10 @@ class Database:
         if fmt.startswith("double") and str(m.get("stage") or "")=="FINAL":
             hs=max(0,hs-1)
         return hs,ass
+
+    @staticmethod
+    def _is_forfeit(m: dict) -> bool:
+        return str((m or {}).get("match_status") or "pending") == "forfeit"
 
     @staticmethod
     def _team_result_from_score(hs: int, ass: int, home: bool) -> str:
@@ -3350,7 +3365,9 @@ class Database:
             previous=self._records_from_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else {}
             prior_matches=self._official_matches_conn(conn,exclude_tid=tid) if t and not int(t.get("is_test") or 0) else []
         fmt=(meta or {}).get("format_key")
-        played=[m for m in matches if m.get("home_score") is not None]
+        decided=[m for m in matches if m.get("home_score") is not None]
+        played=[m for m in decided if not self._is_forfeit(m)]
+        forfeits=[m for m in decided if self._is_forfeit(m)]
         ps=defaultdict(lambda:{"w":0,"d":0,"l":0,"gf":0,"ga":0})
         for m in played:
             h,a=m["home_player_id"],m["away_player_id"];hs,ass=self._stats_score_pair(m,fmt)
@@ -3360,7 +3377,7 @@ class Database:
             elif rh=="L":ps[a]["w"]+=1;ps[h]["l"]+=1
             else:ps[h]["d"]+=1;ps[a]["d"]+=1
         champ=t.get("champion_player_id") if t else None
-        finals=[m for m in played if m["stage"] in ("FINAL","RESET_FINAL")]
+        finals=[m for m in decided if m["stage"] in ("FINAL","RESET_FINAL")]
         last_final=finals[-1] if finals else None
         runner=None
         if last_final and champ: runner=last_final["away_player_id"] if last_final["home_player_id"]==champ else last_final["home_player_id"]
@@ -3398,7 +3415,7 @@ class Database:
             prev_goals=(previous.get("goals_one_tournament") or {}).get("value",-1)
             if top[0] and top[1].get("gf",0)>prev_goals:new_records.append(f"Gole jednego gracza w turnieju: {players[top[0]]['name']} — {top[1]['gf']}")
 
-        by_no={int(m["match_no"]):m for m in played}
+        by_no={int(m["match_no"]):m for m in decided}
         def place_payload(pid):
             if not pid: return None
             row=ps.get(pid,{})
@@ -3420,8 +3437,8 @@ class Database:
             table=group_table(ids,league_matches,ties)
             if len(table)>=3:third_pid=table[2]["player_id"]
             if len(table)>=4:fourth_pid=table[3]["player_id"]
-        elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage"):
-            sf_losers=rank_same_stage([self._loser_of(m) for m in played if m.get("stage")=="SF"])
+        elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","swiss8","swiss10"):
+            sf_losers=rank_same_stage([self._loser_of(m) for m in decided if m.get("stage")=="SF"])
             if sf_losers: third_pid=sf_losers[0]
             if len(sf_losers)>1: fourth_pid=sf_losers[1]
         elif fmt=="double4":
@@ -3452,6 +3469,7 @@ class Database:
                     "home_penalties":match_of_tournament.get("home_penalties"),"away_penalties":match_of_tournament.get("away_penalties")} if match_of_tournament else None),
                 "third_place": place_payload(third_pid),
                 "fourth_place": place_payload(fourth_pid),
+                "forfeit_count":len(forfeits),"played_match_count":len(played),
                 "rivalry_match":rivalry,"new_records":new_records}
 
     def tournament_export_meta(self, tid: str) -> dict:
@@ -3672,6 +3690,38 @@ class Database:
             conn.execute(self._sql("""UPDATE matches SET match_status='skipped',played_at=?,home_score=NULL,away_score=NULL,
                 home_penalties=NULL,away_penalties=NULL,winner_player_id=NULL WHERE tournament_id=? AND match_no=?"""),(now_iso(),tid,int(match_no)))
             self._resolve_all_conn(conn,tid,fmt)
+
+    def forfeit_match(self, tid: str, match_no: int, forfeiting_player_id: str) -> dict:
+        """Resolve a pending match 3:0/0:3 for tournament logic only.
+
+        A forfeit advances the bracket / changes the current table exactly like a 3:0,
+        but it is not a played match for historical W/L, H2H, ratings, Awards or goals.
+        """
+        with self.connect() as conn:
+            m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,int(match_no)))
+            if not m or not m.get("home_player_id") or not m.get("away_player_id"):
+                raise ValueError("Ten mecz nie ma jeszcze ustalonych obu graczy.")
+            if m.get("home_score") is not None or str(m.get("match_status") or "pending")!="pending":
+                raise ValueError("Ten mecz jest już rozstrzygnięty.")
+            loser=str(forfeiting_player_id or "")
+            home=str(m.get("home_player_id") or ""); away=str(m.get("away_player_id") or "")
+            if loser not in (home,away):
+                raise ValueError("Wybierz zawodnika biorącego udział w tym meczu.")
+            winner=away if loser==home else home
+            hs,ass=(0,3) if loser==home else (3,0)
+            meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=str((meta or {}).get("format_key") or "")
+            # A forfeited match was not physically played: no scorers, timeline events or served absences.
+            conn.execute(self._sql("DELETE FROM match_scorers WHERE tournament_id=? AND match_no=?"),(tid,int(match_no)))
+            conn.execute(self._sql("DELETE FROM match_events WHERE tournament_id=? AND match_no=?"),(tid,int(match_no)))
+            conn.execute(self._sql("""UPDATE matches SET home_score=?,away_score=?,home_penalties=NULL,away_penalties=NULL,
+                winner_player_id=?,played_at=?,match_status='forfeit' WHERE tournament_id=? AND match_no=?"""),
+                (hs,ass,winner,now_iso(),tid,int(match_no)))
+            if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
+            if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"):
+                self._prepare_group_playoffs_conn(conn,tid)
+            self._resolve_all_conn(conn,tid,fmt)
+            self._maybe_finish_conn(conn,tid,fmt)
+            return {"match_no":int(match_no),"winner_player_id":winner,"forfeiting_player_id":loser,"home_score":hs,"away_score":ass}
 
     def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None, events: list[dict] | None = None) -> None:
         with self.connect() as conn:
@@ -5002,7 +5052,7 @@ class Database:
         """Milestone badge for the next official match, including matches already played in an active event."""
         with self.connect() as conn:
             row=self._fetchone(conn,"""SELECT COUNT(*) AS n FROM matches m JOIN tournaments t ON t.id=m.tournament_id
-                WHERE t.is_test=0 AND m.home_score IS NOT NULL""")
+                WHERE t.is_test=0 AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'""")
         no=int((row or {}).get("n") or 0)+1
         if no==50 or (no>=100 and no%100==0):return {"number":no,"title":f"{no}. OFICJALNY MECZ FIFA NIGHT"}
         return None
@@ -5020,7 +5070,7 @@ class Database:
                 FROM matches m
                 JOIN tournaments t ON t.id=m.tournament_id
                 JOIN flex_tournament_meta fm ON fm.tournament_id=m.tournament_id
-                WHERE t.is_test=0 AND m.home_score IS NOT NULL
+                WHERE t.is_test=0 AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'
                 ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no
             """)
             tournament_rows=self._fetchall(conn,"""
@@ -5085,6 +5135,17 @@ class Database:
         with self.connect() as conn:
             self._setting_set_conn(conn,f"flex_award_selections_{int(year)}",json.dumps(data,ensure_ascii=False))
 
+    def clear_award_selection(self, year: int, category_key: str) -> bool:
+        """Remove only one organizer-selected annual award winner."""
+        data=self.award_selections(year)
+        key=str(category_key)
+        existed=key in data
+        if existed:
+            data.pop(key,None)
+            with self.connect() as conn:
+                self._setting_set_conn(conn,f"flex_award_selections_{int(year)}",json.dumps(data,ensure_ascii=False))
+        return existed
+
     def annual_awards(self, year: int) -> dict:
         """Live statistical TOP5 for the annual Awards screen.
 
@@ -5107,7 +5168,7 @@ class Database:
                 LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
                 LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
                 LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-                WHERE m.tournament_id IN ({q}) AND m.home_score IS NOT NULL
+                WHERE m.tournament_id IN ({q}) AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'
                 ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no""",tuple(tids))
             tps=self._fetchall(conn,f"""SELECT tp.tournament_id,tp.player_id,tp.team,p.name
                 FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id IN ({q})""",tuple(tids))
@@ -5843,7 +5904,7 @@ class Database:
             tps=self._fetchall(conn,"SELECT tournament_id,player_id FROM tournament_players")
             matches=self._fetchall(conn,"""SELECT m.*,fm.format_key
                 FROM matches m LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=m.tournament_id
-                WHERE m.home_score IS NOT NULL ORDER BY m.tournament_id,m.match_no""")
+                WHERE m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit' ORDER BY m.tournament_id,m.match_no""")
         finals=[m for m in matches if m["stage"]=="FINAL" and str(m["tournament_id"]) in completed_tournament_ids]
         stats=defaultdict(lambda:{"tournaments":0,"titles":0,"finals":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"pen_wins":0,"duels":0,"duel_wins":0})
         for tp in tps:
