@@ -62,6 +62,11 @@ def run_one(n,fmt):
             assert all(not x.get('home_player_id') for x in nxt), 'R2 unlocked before R1 closed'
 
     last_r1=set(r1_pairs[-1])
+    pending=db.big_visible_draw_state(tid)
+    assert pending and pending.get('kind')==f'{fmt}_round_2', (fmt,pending)
+    b=db.bundle(tid); locked_r2=b['matches'][per:2*per]
+    assert all(not m.get('home_player_id') and not m.get('away_player_id') for m in locked_r2), 'R2 must wait for manual ACK'
+    assert db.current_match_from(b['matches'],b['meta'].get('extra') or {}) is None, 'Swiss must pause between rounds'
     ack_draw(db,tid)
     b=db.bundle(tid); r2=b['matches'][per:2*per]
     assert all(m.get('home_player_id') and m.get('away_player_id') for m in r2)
@@ -84,6 +89,11 @@ def run_one(n,fmt):
         all_pairs.append(frozenset((m['home_player_id'],m['away_player_id'])))
         db.save_result(tid,int(m['match_no']), 1 if int(m['match_no'])%2 else 3, 0)
 
+    pending=db.big_visible_draw_state(tid)
+    assert pending and pending.get('kind')==f'{fmt}_round_3', (fmt,pending)
+    b=db.bundle(tid); locked_r3=b['matches'][2*per:3*per]
+    assert all(not m.get('home_player_id') and not m.get('away_player_id') for m in locked_r3), 'R3 must wait for manual ACK'
+    assert db.current_match_from(b['matches'],b['meta'].get('extra') or {}) is None, 'Swiss must pause between rounds'
     ack_draw(db,tid)
     b=db.bundle(tid); r3=b['matches'][2*per:3*per]
     assert all(m.get('home_player_id') and m.get('away_player_id') for m in r3)
@@ -107,7 +117,18 @@ def run_one(n,fmt):
     got={frozenset((m['home_player_id'],m['away_player_id'])) for m in sf}
     expected={frozenset((top[0],top[3])),frozenset((top[1],top[2]))}
     assert got==expected,(fmt,got,expected)
-    print('PASS',fmt,'no-rematch + score-groups + Buchholz + rest-order + TOP4')
+
+    # No separate bronze match: both semifinal losers must still occupy 3rd/4th
+    # and must never fall below a player eliminated after the Swiss phase.
+    for m in sf: db.save_result(tid,int(m['match_no']),2,0)
+    b=db.bundle(tid); final=b['matches'][3*per+2]
+    assert final.get('home_player_id') and final.get('away_player_id'),(fmt,final)
+    db.save_result(tid,int(final['match_no']),2,1)
+    summary=db.tournament_summary(tid)
+    loser_names={m['away_name'] for m in sf}
+    podium_losers={summary.get('third_place',{}).get('name'),summary.get('fourth_place',{}).get('name')}
+    assert podium_losers==loser_names,(fmt,podium_losers,loser_names,summary)
+    print('PASS',fmt,'no-rematch + score-groups + Buchholz + rest-order + TOP4 + 3rd/4th')
 
 
 def main():
