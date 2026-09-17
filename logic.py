@@ -164,8 +164,8 @@ def weighted_draft_order(player_ids: list[str], placement_by_player_id: dict[str
 
 
 def wildcard_assignment_weights(placement_by_player_id: dict[str,int] | None) -> dict[str,float]:
-    """Soft handicap for Wild Card assignment: 1st=1.40, 2nd=1.25, 3rd=1.10, others=1.00."""
-    rank_weight={1:1.40,2:1.25,3:1.10}
+    """Soft handicap for Wild Card assignment: 1st=1.55, 2nd=1.35, 3rd=1.15, others=1.00."""
+    rank_weight={1:1.55,2:1.35,3:1.15}
     return {str(pid):rank_weight.get(int(place),1.0) for pid,place in (placement_by_player_id or {}).items()}
 
 
@@ -228,7 +228,7 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
                               team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None) -> dict[str,str]:
     """Assign Wild Card slots softly by prior finish, then fixed clubs intelligently.
 
-    Wild Card: 1st=1.40, 2nd=1.25, 3rd=1.10.
+    Wild Card: 1st=1.55, 2nd=1.35, 3rd=1.15.
     Fixed clubs: live strength is a soft handicap for top finishers and exact previous-team
     repeats are reduced to 35% normal weight. Every valid assignment remains possible.
     """

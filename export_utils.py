@@ -104,7 +104,9 @@ def _final(bundle):
 
 
 def _real_score(bundle, m):
-    """Return on-pitch goals; DE Grand Final technical +1 is not a real goal."""
+    """Return goals that count statistically; forfeits contribute zero."""
+    if str(m.get("match_status") or "pending") == "forfeit":
+        return 0, 0
     hs, aw = int(m.get("home_score") or 0), int(m.get("away_score") or 0)
     fmt = str((bundle.get("meta") or {}).get("format_key") or "")
     if fmt.startswith("double") and str(m.get("stage") or "") == "FINAL":
@@ -115,7 +117,7 @@ def _real_score(bundle, m):
 def _champion_record(bundle, champ):
     rec = {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0}
     for m in bundle.get("matches", []):
-        if m.get("home_score") is None:
+        if m.get("home_score") is None or str(m.get("match_status") or "pending") == "forfeit":
             continue
         h, a = m.get("home_name"), m.get("away_name")
         raw_hs, raw_aw = int(m.get("home_score") or 0), int(m.get("away_score") or 0)
@@ -265,12 +267,16 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     if third:y=_classification_line(draw,86,y,3,third.get("name"),third.get("team"),390)
     if fourth:y=_classification_line(draw,86,y,4,fourth.get("name"),fourth.get("team"),390)
 
-    played = [m for m in bundle.get("matches", []) if m.get("home_score") is not None]
+    decided = [m for m in bundle.get("matches", []) if m.get("home_score") is not None]
+    played = [m for m in decided if str(m.get("match_status") or "pending") != "forfeit"]
+    forfeits = len(decided) - len(played)
     total_goals = sum(sum(_real_score(bundle, m)) for m in played)
     avg = (total_goals / len(played)) if played else 0
     draw.text((573, 774), "TURNIEJ W LICZBACH", font=_font(25, True), fill=PURPLE)
-    draw.text((573, 818), f"{len(played)} meczów  •  {total_goals} goli", font=_font(31, True), fill=TEXT)
-    draw.text((573, 860), f"Średnio {avg:.1f} gola / mecz", font=_font(25), fill=MUTED)
+    line=f"{len(played)} meczów  •  {total_goals} goli"
+    if forfeits: line += f"  •  {forfeits} podd."
+    draw.text((573, 818), line, font=_font(31, True), fill=TEXT)
+    draw.text((573, 860), f"Średnio {avg:.1f} gola / rozegrany mecz", font=_font(25), fill=MUTED)
 
     # Footer facts
     facts = []

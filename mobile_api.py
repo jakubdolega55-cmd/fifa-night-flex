@@ -26,7 +26,7 @@ from logic import (
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "1.1.1"
+API_VERSION = "1.1.2"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {
@@ -190,6 +190,10 @@ class ResultPayload(BaseModel):
     away_penalties: int | None = Field(default=None, ge=0, le=30)
     scorers: ScorersPayload | None = None
     events: list[dict[str, Any]] | None = None
+
+
+class ForfeitPayload(BaseModel):
+    forfeiting_player_id: str = Field(min_length=1)
 
 
 class CreateTournamentPayload(BaseModel):
@@ -1256,7 +1260,7 @@ def live_payload() -> dict[str, Any]:
             "format_matches":setup["format_matches"],"created_at":tournament.get("created_at"),"completed_at":tournament.get("completed_at"),
             "players":setup["players"],"current_match":None,"current_context":None,"next_match":None,"schedule":[],"standings":{},
             "live_scorers":[],"summary":None,"setup":setup,"special_event":None,"special_draw":None,
-            "controls":{},"defer":{"allowed":False},"skip":{"allowed":False},"active_absences":[],
+            "controls":{},"defer":{"allowed":False},"skip":{"allowed":False},"forfeit":{"allowed":False},"active_absences":[],
         }}
 
     bundle = db.bundle(tid)
@@ -1286,6 +1290,7 @@ def live_payload() -> dict[str, Any]:
         except Exception: controls["defer"]={"allowed":False}
         try: controls["skip"]=db.can_skip_match(tid,current_no)
         except Exception: controls["skip"]={"allowed":False}
+        controls["forfeit"]={"allowed":bool(current_raw.get("home_player_id") and current_raw.get("away_player_id") and current_raw.get("home_score") is None)}
     try: absences=db.active_absences(tid)
     except Exception: absences=[]
     special=_special_event_payload(tid,fmt) if str(tournament.get("status"))=="active" else None
@@ -1307,7 +1312,7 @@ def live_payload() -> dict[str, Any]:
             "cash_player_names": list(extra.get("cash_player_names") or []),
             "jackpot_cents": db.current_jackpot_cents(),
             "controls": controls, "defer": controls.get("defer") or {"allowed": False},
-            "skip": controls.get("skip") or {"allowed": False}, "active_absences": absences,
+            "skip": controls.get("skip") or {"allowed": False}, "forfeit": controls.get("forfeit") or {"allowed": False}, "active_absences": absences,
         },
     }
 
@@ -1757,6 +1762,17 @@ def save_match_result(tournament_id: str, match_no: int, payload: ResultPayload,
                 alias=str(res.get("raw") or "").strip(); canonical=str(raw.get(name_key) or "").strip()
                 if alias and canonical and db._norm_scorer_name(alias)!=db._norm_scorer_name(canonical):
                     db.remember_footballer_alias(version,team,alias,canonical)
+    return live_payload()
+
+
+@app.post("/api/v1/tournaments/{tournament_id}/matches/{match_no}/forfeit")
+def forfeit_match(tournament_id: str, match_no: int, payload: ForfeitPayload, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_game_control(tournament_id,authorization)
+    current=(live_payload().get("tournament") or {}).get("current_match")
+    if not current or int(current.get("match_no") or 0)!=int(match_no):
+        raise HTTPException(409,"Kolejność FIFA Night zmieniła się na innym urządzeniu. Odśwież ekran.")
+    try: db.forfeit_match(tournament_id,int(match_no),payload.forfeiting_player_id)
+    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return live_payload()
 
 

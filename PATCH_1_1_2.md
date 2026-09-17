@@ -25,8 +25,3 @@
 - Swiss 8/10: manual ACK + no-rematch + Buchholz + TOP4 + 3rd/4th: PASS
 
 Nie wykonano pełnego npm install / TypeScript compiler / EAS build w kontenerze. Te kroki pozostają do wykonania w środowisku buildowym.
-
-## Awards organizer UX
-- Laureate dropdown labels now include the candidate's category-specific `reason` / "Dlaczego jest wysoko" stats, so the organizer does not need to scroll back to the ranking table.
-- A saved laureate can be removed per category with `USUŃ LAUREATA / RESETUJ WYBÓR` and selected again.
-- Reset affects only the selected category; other award selections remain unchanged.

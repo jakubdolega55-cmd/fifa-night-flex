@@ -151,8 +151,8 @@ def fifa_night_api_url() -> str:
 
 def render_vision_ocr_test():
     st.divider()
-    st.markdown("### 🧪 Test rozpoznawania EA FC — OCR / AI")
-    st.caption("Prototyp: wysyła tyle screenów z zakładki Wydarzenia, ile potrzeba. Nic nie zapisuje do Neona.")
+    st.markdown("### 🧪 Test odczytu ekranu EA FC")
+    st.caption("Wrzuć screeny z Wydarzeń. Możesz ich dać kilka — tutaj tylko czytamy, nic po cichu nie zapisujemy.")
     if not controller_access():
         st.info("Włącz sterowanie na tym urządzeniu, aby korzystać z testu.")
         return
@@ -163,7 +163,7 @@ def render_vision_ocr_test():
     api_url = fifa_night_api_url()
 
     provider_label = st.selectbox(
-        "Sposób analizy",
+        "Jak czytamy ekran",
         [
             "Google OCR — darmowy baseline",
             "OpenAI GPT-5.6 Luna — vision",
@@ -214,12 +214,12 @@ def render_vision_ocr_test():
         multipart.append(("images", (item.name, item.getvalue(), mime)))
 
     spinner = {
-        "google_ocr": "Google Vision odczytuje tekst...",
-        "openai_luna": "OpenAI analizuje wydarzenia i ikony...",
-        "gemini_38_flash": "Gemini 3.8 Flash analizuje wydarzenia i ikony...",
-        "gemini_37_flash": "Gemini 3.7 Flash analizuje wydarzenia i ikony...",
-        "gemini_36_flash": "Gemini 3.6 Flash analizuje wydarzenia i ikony...",
-        "gemini_35_flash_lite": "Gemini 3.5 Flash-Lite analizuje wydarzenia i ikony...",
+        "google_ocr": "Google próbuje ogarnąć, co jest na screenie...",
+        "openai_luna": "OpenAI rozkminia gole, kartki i resztę bajzlu...",
+        "gemini_38_flash": "Gemini 3.8 Flash grzebie w screenach...",
+        "gemini_37_flash": "Gemini 3.7 Flash grzebie w screenach...",
+        "gemini_36_flash": "Gemini 3.6 Flash grzebie w screenach...",
+        "gemini_35_flash_lite": "Gemini 3.5 Flash-Lite grzebie w screenach...",
     }[provider]
     started = time.perf_counter()
     with st.spinner(spinner):
@@ -400,7 +400,7 @@ def render_access_settings():
 
 def render_player_rename_settings():
     st.markdown("### ✏️ Zmiana nazwy gracza")
-    st.caption("Zmiana dotyczy całego profilu gracza, więc nowy nick pojawi się również przy historycznych turniejach, meczach, H2H, statystykach i AWARDS. To nie łączy dwóch różnych profili graczy.")
+    st.caption("Nick zmienia się wszędzie — historia, H2H, staty i Awards. Spokojnie: dwóch różnych graczy w jednego Frankensteina z tego nie zrobimy.")
     if not admin_password():
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Zmiana nazwy jest wyłączona.")
         return
@@ -1847,7 +1847,7 @@ def live(tid:str):
                 db.defer_match(tid,int(cur["match_no"]));rf()
             except ValueError as e:st.error(str(e))
     with st.expander("🏳️ Poddaj mecz"):
-        st.caption("Użyj, gdy jedna osoba nie może lub nie chce już zagrać. Wynik turniejowy to 3:0, ale mecz nie liczy się do statystyk historycznych, H2H, ratingów ani Awards.")
+        st.caption("Ktoś musi spadać albo ma już dość? Dajemy 3:0 tylko na potrzeby turnieju. Poza nim ten mecz udaje, że nigdy się nie wydarzył.")
         options=[str(cur.get("home_player_id") or ""),str(cur.get("away_player_id") or "")]
         names={str(cur.get("home_player_id") or ""):str(cur.get("home_name") or "?"),str(cur.get("away_player_id") or ""):str(cur.get("away_name") or "?")}
         with st.form(f"forfeit_{tid}_{cur['match_no']}"):
@@ -2262,7 +2262,7 @@ def render_schedule(t):
 
 def render_stats(t=None,readonly:bool=False):
     st.subheader("📊 Statystyki wszech czasów")
-    st.caption("Oficjalne mecze, turnieje i 1 vs 1. Rozegrane mecze z niedokończonego oficjalnego turnieju nadal liczą się do statystyk meczowych i Awards, ale taki turniej nie daje mistrza, podium ani tytułu.")
+    st.caption("Tu lecą oficjalne staty. Jeśli turniej padł w połowie, rozegrane mecze zostają — ale mistrza z niedokończonej imprezy sobie nie dopisujemy.")
     stats=db.all_time_stats()
     if not stats:
         st.info("Brak rozegranych oficjalnych meczów. Historia testów nadal jest dostępna poniżej.")
@@ -2484,7 +2484,7 @@ def render_stats(t=None,readonly:bool=False):
 
         if not readonly:
             st.markdown("### ✏️ Listy zawodników drużyn")
-            st.caption("Tu możesz dopisać zawodników do podpowiedzi. Wpisywanie w formularzu nie odświeża strony — zapis następuje dopiero po kliknięciu przycisku.")
+            st.caption("Dopisz nazwiska do listy i kliknij zapisz. Samo klepanie w pole niczego jeszcze nie wysadza.")
             teams=db.scorer_roster_teams()
             selected_team=st.selectbox("Drużyna",teams,key="scorer_roster_team")
             current=db.team_scorer_options(selected_team)
@@ -3011,7 +3011,7 @@ def render_awards(readonly:bool=False):
     with c2:
         awards_png=generate_awards_png(year,selected_rows)
         st.download_button("⬇️ FIFA Night Awards — laureaci (PNG)",data=awards_png,file_name=f"fifa-night-awards-{year}.png",mime="image/png",use_container_width=True,key=f"awards_png_{year}")
-        if not selected_rows:st.caption("Grafika Awards będzie uzupełniać się dopiero po wyborze laureatów przez organizatora.")
+        if not selected_rows:st.caption("Najpierw wybierz laureatów. Grafika sama się, niestety, nie domyśli.")
 
 
 
