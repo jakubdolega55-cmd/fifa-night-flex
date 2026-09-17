@@ -82,6 +82,7 @@ export const api = {
   undo:(tid:string)=>jsonRequest<any>(`/api/v1/tournaments/${tid}/undo-last`,{method:'POST'}),
   defer:(tid:string,no:number)=>jsonRequest<LiveResponse>(`/api/v1/tournaments/${tid}/matches/${no}/defer`,{method:'POST'}),
   skip:(tid:string,no:number)=>jsonRequest<LiveResponse>(`/api/v1/tournaments/${tid}/matches/${no}/skip`,{method:'POST'}),
+  forfeit:(tid:string,no:number,payload:{forfeiting_player_id:string})=>jsonRequest<LiveResponse>(`/api/v1/tournaments/${tid}/matches/${no}/forfeit`,{method:'POST',body:JSON.stringify(payload)}),
   setMode:(tid:string,is_test:boolean)=>jsonRequest<LiveResponse>(`/api/v1/tournaments/${tid}/test-mode`,{method:'POST',body:JSON.stringify({is_test})}),
   reset:(tid:string)=>jsonRequest<LiveResponse>(`/api/v1/tournaments/${tid}/reset`,{method:'POST'}),
   abandon:(tid:string)=>jsonRequest<any>(`/api/v1/tournaments/${tid}/abandon`,{method:'POST'}),

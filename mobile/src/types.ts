@@ -50,6 +50,7 @@ export type LiveTournament = {
   controls?:any;
   defer?:any;
   skip?:any;
+  forfeit?:any;
   summary?:any;
   stake_per_player?:number;
   cash_player_ids?:string[];
