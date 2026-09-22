@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from database import Database
+from database import Database, MatchAlreadyDecidedError
 from logic import (
     FORMAT_LABELS, FORMAT_MATCH_COUNTS, FIXED_TEAMS, BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS,
     WILDCARD_TEAM_SUGGESTIONS, GAME_VERSIONS, REAL_HELPER_TEAM, normalize_game_version, fixed_teams_for_version, wildcard_suggestions_for_version, allowed_teams,
@@ -1627,9 +1627,11 @@ def _scorers_to_dict(payload: ScorersPayload | None, match: dict[str, Any]) -> d
     out: dict[str, Any] = {}
     for side in ("home", "away"):
         side_payload = getattr(payload, side)
+        # Team assignment is authoritative on the server. A client may display/send
+        # a team field for convenience, but it must never be allowed to rewrite stats.
+        team = str(match.get(f"{side}_team") or "")
         if side_payload is None:
-            out[side] = {"team": match.get(f"{side}_team") or "", "items": []}; continue
-        team = side_payload.team.strip() or str(match.get(f"{side}_team") or "")
+            out[side] = {"team": team, "items": []}; continue
         out[side] = {"team": team, "items": [{"name": x.name.strip(), "goals": int(x.goals)} for x in side_payload.items if x.name.strip()]}
     return out
 
@@ -1746,7 +1748,10 @@ def save_match_result(tournament_id: str, match_no: int, payload: ResultPayload,
         except ValueError as exc:raise HTTPException(422,str(exc)) from exc
     try:
         db.save_result(tournament_id,int(match_no),int(payload.home_score),int(payload.away_score),payload.home_penalties,payload.away_penalties,scorers,events)
-    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    except MatchAlreadyDecidedError as exc:
+        raise HTTPException(409,str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422,str(exc)) from exc
     # If the scan returned an ambiguous abbreviation and the user corrected it,
     # remember that choice for this game version + club. This happens only after
     # the result was saved successfully, so cancelled previews never train aliases.

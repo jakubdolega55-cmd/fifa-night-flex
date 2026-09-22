@@ -29,6 +29,12 @@ from logic import (
 from scorer_seeds import SCORER_SEEDS
 
 DB_API_VERSION = 1802
+
+
+class MatchAlreadyDecidedError(ValueError):
+    """Raised when a result write loses the race to another device/client."""
+
+
 APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
@@ -40,22 +46,22 @@ LAST_STAKE_KEY = "flex_last_stake_pln"
 AWARD_PRIORITY_GROUPS = [
     (
         "🥇 ETAP 1/4 — Główne nagrody",
-        "Najpierw najważniejsze sportowe wyróżnienia. Wyniki są tu najmocniejszą podpowiedzią.",
+        "Najpierw grube ryby. Tu tabelka już naprawdę zaczyna szczypać.",
         ["player_year", "offensive", "defense", "player_scorers", "clutch"],
     ),
     (
         "🥈 ETAP 2/4 — Charakter, styl i mecz sezonu",
-        "Nagrody za sposób wygrywania i charakter sezonu: powroty, końcówki, fair play, styl gry oraz Mecz Roku.",
+        "Tu zaczyna się kino: comebacki, końcówki, show i mecze, po których ktoś jeszcze godzinę marudzi.",
         ["comeback_king", "late_king", "fair_play", "spectacle", "universal", "match_year"],
     ),
     (
         "🥉 ETAP 3/4 — Rozwój i wyróżnienia sezonu",
-        "Tu patrzymy na wejście do FIFA Night, rozwój w trakcie roku i mocny sezon poza ścisłą dominacją.",
+        "Tu patrzymy, kto odpalił z formą, kto zrobił progres i kto kąsa liderów po kostkach.",
         ["debut", "progress", "outsider"],
     ),
     (
         "🎖️ ETAP 4/4 — Nagrody specjalne",
-        "Na koniec kategorie specjalne i zespołowe.",
+        "Na koniec rzeczy specjalne, dziwne i trochę prestiżowe. Czyli klasyczny FIFA Night.",
         ["finance", "rivalry", "team_best", "superscorer"],
     ),
 ]
@@ -3726,29 +3732,69 @@ class Database:
     def save_result(self, tid: str, match_no: int, hs: int, ass: int, hp: int | None = None, ap: int | None = None, scorers: dict | None = None, events: list[dict] | None = None) -> None:
         with self.connect() as conn:
             m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,match_no))
-            if not m or not m.get("home_player_id") or not m.get("away_player_id"): raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
-            if hs<0 or ass<0: raise ValueError("Wynik nie może być ujemny.")
+            if not m or not m.get("home_player_id") or not m.get("away_player_id"):
+                raise ValueError("Ten mecz nie ma jeszcze ustalonych graczy.")
+            if hs<0 or ass<0:
+                raise ValueError("Wynik nie może być ujemny.")
+            if hp is not None and hp<0 or ap is not None and ap<0:
+                raise ValueError("Wynik karnych nie może być ujemny.")
             meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); fmt=meta["format_key"]
             if fmt in ("double4","double5","double6","double7","double8","double9","double10") and m["stage"]=="FINAL" and hs<1:
                 raise ValueError("Zwycięzca Winners Bracket zaczyna finał od 1:0.")
+
             knockout = m["stage"] not in ("GROUP","LEAGUE")
-            if knockout and hs==ass and (hp is None or ap is None or hp==ap): raise ValueError("W fazie pucharowej remis wymaga karnych.")
+            penalties_supplied = hp is not None or ap is not None
+            if penalties_supplied and (hp is None or ap is None):
+                raise ValueError("Podaj wynik karnych dla obu stron albo usuń karne.")
+            if penalties_supplied and not knockout:
+                raise ValueError("Rzuty karne są dozwolone tylko w fazie pucharowej.")
+            if penalties_supplied and hs!=ass:
+                raise ValueError("Rzuty karne można zapisać tylko przy remisie w meczu.")
+            if penalties_supplied and hp==ap:
+                raise ValueError("Wynik rzutów karnych nie może być remisowy.")
+            if knockout and hs==ass and not penalties_supplied:
+                raise ValueError("W fazie pucharowej remis wymaga karnych.")
+
             winner=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"],hp,ap)
+            teams=self._fetchone(conn,"""SELECT htp.team AS home_team,atp.team AS away_team
+                FROM matches mm
+                LEFT JOIN tournament_players htp ON htp.tournament_id=mm.tournament_id AND htp.player_id=mm.home_player_id
+                LEFT JOIN tournament_players atp ON atp.tournament_id=mm.tournament_id AND atp.player_id=mm.away_player_id
+                WHERE mm.tournament_id=? AND mm.match_no=?""",(tid,match_no)) or {}
+
+            # The server owns team assignment. Never persist a team label supplied by a
+            # client for manual scorer input, because a stale/malformed client could
+            # otherwise contaminate all-time scorer/team statistics.
+            if scorers is not None:
+                canonical_scorers={}
+                for side in ("home","away"):
+                    side_data=scorers.get(side,{}) if isinstance(scorers,dict) else {}
+                    canonical_scorers[side]={
+                        "team":str(teams.get(f"{side}_team") or ""),
+                        "items":list(side_data.get("items") or []) if isinstance(side_data,dict) else [],
+                    }
+                scorers=canonical_scorers
+
+            # Reserve this still-pending row inside the same transaction before any
+            # scorer/event/absence side effects. In PostgreSQL a concurrent writer waits
+            # and then re-checks the WHERE clause; in SQLite the write transaction is
+            # serialized. Only one device can therefore turn pending -> saving.
+            cur=conn.execute(self._sql("""UPDATE matches SET match_status='saving'
+                WHERE tournament_id=? AND match_no=? AND home_score IS NULL
+                  AND COALESCE(match_status,'pending')='pending'"""),(tid,match_no))
+            if int(cur.rowcount or 0)!=1:
+                raise MatchAlreadyDecidedError("Ten mecz został już rozstrzygnięty na innym urządzeniu. Odśwież stan FIFA Night.")
+
             # A red-card/injury absence lasts for exactly the player's next actually
             # played match, regardless of numeric match_no or deferred schedule order.
             self._serve_active_absences_conn(conn,tid,int(match_no),[str(m["home_player_id"]),str(m["away_player_id"])])
             if events is not None:
-                teams=self._fetchone(conn,"""SELECT htp.team AS home_team,atp.team AS away_team
-                    FROM matches mm
-                    LEFT JOIN tournament_players htp ON htp.tournament_id=mm.tournament_id AND htp.player_id=mm.home_player_id
-                    LEFT JOIN tournament_players atp ON atp.tournament_id=mm.tournament_id AND atp.player_id=mm.away_player_id
-                    WHERE mm.tournament_id=? AND mm.match_no=?""",(tid,match_no)) or {}
                 self._save_match_events_conn(conn,tid,match_no,events)
                 self._sync_absences_from_events_conn(conn,tid,match_no,events)
                 scorers=self._aggregate_scorers_from_events(events,str(m["home_player_id"]),str(m["away_player_id"]),
                                                             str(teams.get("home_team") or ""),str(teams.get("away_team") or ""))
             self._save_scorers_conn(conn,tid,match_no,hs,ass,scorers)
-            conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=?,match_status='played' WHERE tournament_id=? AND match_no=?"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
+            conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=?,match_status='played' WHERE tournament_id=? AND match_no=? AND match_status='saving'"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
             if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"): self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
@@ -5221,14 +5267,11 @@ class Database:
         teamagg=defaultdict(lambda:{"display":None,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0})
         match_candidates=[]
         match_map={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
-        # Match of the Year can use the exact goal sequence for newer matches.
-        # Older matches are NOT penalised when no detailed timeline exists; they
-        # simply cannot earn the small "match flow" bonus below.
+        # Szczegółowy przebieg jest dostępny tylko dla nowszych meczów zapisanych
+        # z osią wydarzeń. Starszych spotkań nie zgadujemy i nie karzemy za brak danych.
         moty_events_by_match=defaultdict(list)
         for _e in detailed_event_rows:
-            _tid=str(_e.get("tournament_id") or "")
-            if _tid in tournament_ids:
-                moty_events_by_match[(_tid,int(_e.get("match_no") or 0))].append(_e)
+            moty_events_by_match[(str(_e.get("tournament_id") or ""),int(_e.get("match_no") or 0))].append(_e)
         stages_by_player_tournament=defaultdict(set)
         debut_seq=defaultdict(list)
         has_reset_by_tid={
@@ -5355,59 +5398,42 @@ class Database:
             # 120 zł daje +0.012, 210 zł +0.021, 250 zł +0.025. Nie uwzględniamy
             # przeniesionego jackpotu — liczą się wyłącznie bieżące wpłaty uczestników.
             penalties_drama=1.0 if has_pens else 0.0
-
-            # Small Match-of-the-Year bonus for the ACTUAL course of the game.
-            # It is deliberately capped at +0.06, so a detailed modern match does
-            # not automatically beat an older classic for which we lack goal order.
-            # We award it only when the saved goal timeline fully reconstructs the
-            # real on-pitch score (technical DE +1 is ignored).
-            flow_bonus=0.0
-            flow_reason=[]
-            _flow_events=moty_events_by_match.get((tid,int(m.get("match_no") or 0)),[])
-            _flow_goals=[e for e in _flow_events
-                         if str(e.get("event_type") or "") in {"normal_goal","penalty_goal","own_goal"}
-                         and not int(e.get("synthetic_de") or 0)
-                         and str(e.get("credited_player_id") or "") in {h,a}]
-            _flow_goals=sorted(_flow_goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
-            _home_flow=sum(1 for e in _flow_goals if str(e.get("credited_player_id") or "")==h)
-            _away_flow=sum(1 for e in _flow_goals if str(e.get("credited_player_id") or "")==a)
-            if len(_flow_goals)==hs+ass and _home_flow==hs and _away_flow==ass and _flow_goals:
-                _score={h:0,a:0}; _prev_leader=None; _lead_changes=0; _equalizers=0
-                _scorers=[]; _peak_deficit={h:0,a:0}; _max_comeback=0
-                for _ge in _flow_goals:
-                    _pid=str(_ge.get("credited_player_id") or "")
-                    _peak_deficit[h]=max(_peak_deficit[h],_score[a]-_score[h])
-                    _peak_deficit[a]=max(_peak_deficit[a],_score[h]-_score[a])
-                    _score[_pid]+=1; _scorers.append(_pid)
-                    _diff=_score[h]-_score[a]
-                    _leader=h if _diff>0 else (a if _diff<0 else None)
-                    if _leader is None:
-                        _equalizers+=1
-                        _max_comeback=max(_max_comeback,_peak_deficit[h],_peak_deficit[a])
-                    else:
-                        if _prev_leader is not None and _leader!=_prev_leader:
-                            _lead_changes+=1
-                        _prev_leader=_leader
-                        _max_comeback=max(_max_comeback,_peak_deficit[_leader])
-                _switches=sum(1 for i in range(1,len(_scorers)) if _scorers[i]!=_scorers[i-1])
-                _switch_ratio=(_switches/(len(_scorers)-1)) if len(_scorers)>1 else 0.0
-                _exchange=(len(_scorers)>=4 and _switch_ratio>=.60)
-                flow_bonus=min(.06,
-                    min(_lead_changes,3)*.012
-                    + min(_equalizers,3)*.006
-                    + (.012 if _exchange else 0.0)
-                    + (.012 if _max_comeback>=2 else 0.0)
-                )
-                if _lead_changes:
-                    _lc_word="zmiana prowadzenia" if _lead_changes==1 else ("zmiany prowadzenia" if 2<=_lead_changes<=4 else "zmian prowadzenia")
-                    flow_reason.append(f"{_lead_changes} {_lc_word}")
-                if _equalizers>=2: flow_reason.append(f"{_equalizers} wyrównania")
-                if _exchange: flow_reason.append("wymiana ciosów")
-                if _max_comeback>=2: flow_reason.append(f"odrobione {_max_comeback} gole")
-
             finance_event=finance_by_tid.get(tid) or {}
             cash_pot_cents=max(0,int(finance_event.get("contribution_cents") or 0))
             cash_bonus=min(cash_pot_cents/1_000_000.0,.04)
+
+            # Mały bonus Meczu Roku za PRAWDZIWY przebieg spotkania. Liczymy go
+            # wyłącznie, gdy komplet realnych goli da się odtworzyć z match_events.
+            # Dzięki temu np. naprzemienne 4:3 jest trochę wyżej niż 4:0 -> 4:3,
+            # ale przebieg nie może przykryć wyniku, stawki ani rangi meczu.
+            drama_bonus=0.0; drama_text=[]
+            _goal_types={"normal_goal","penalty_goal","own_goal"}
+            _mk=(tid,int(m.get("match_no") or 0))
+            _goals=[e for e in moty_events_by_match.get(_mk,[])
+                    if str(e.get("event_type") or "") in _goal_types
+                    and not int(e.get("synthetic_de") or 0)
+                    and str(e.get("credited_player_id") or "") in (h,a)]
+            if len(_goals)==hs+ass and _goals:
+                _goals=sorted(_goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
+                _score={h:0,a:0}; _last_non_tied=None; _last_scorer=None
+                _equalizers=0; _lead_changes=0; _alternations=0
+                for _ge in _goals:
+                    _pid=str(_ge.get("credited_player_id") or "")
+                    if _last_scorer and _pid!=_last_scorer:_alternations+=1
+                    _last_scorer=_pid
+                    _score[_pid]+=1
+                    if _score[h]==_score[a]:
+                        if _score[h]>0:_equalizers+=1
+                    else:
+                        _leader=h if _score[h]>_score[a] else a
+                        if _last_non_tied and _leader!=_last_non_tied:_lead_changes+=1
+                        _last_non_tied=_leader
+                _alt_ratio=_alternations/max(1,len(_goals)-1)
+                drama_bonus=min(.06,_equalizers*.010+_lead_changes*.015+_alt_ratio*.025)
+                if _alt_ratio>=.65 and len(_goals)>=4:drama_text.append("wymiana ciosów")
+                if _equalizers:drama_text.append(f"{_equalizers} wyrównania")
+                if _lead_changes:drama_text.append(f"{_lead_changes} zmiany prowadzenia")
+
             match_score=(
                 closeness*.35
                 + goals_value*.22
@@ -5415,7 +5441,7 @@ class Database:
                 + rank_value*.13
                 + penalties_drama*.12
                 + cash_bonus
-                + flow_bonus
+                + drama_bonus
             )
 
             # Najbardziej Widowiskowy Gracz bazuje na charakterze KAŻDEGO meczu, nie na
@@ -5427,7 +5453,7 @@ class Database:
                 ps[pid]["spectacle_pens"]+=int(has_pens)
 
             reason_parts=[stage_text,closeness_text,stakes_text,f"{hs+ass} goli"]
-            reason_parts.extend(flow_reason)
+            reason_parts.extend(drama_text)
             if raw_hs!=hs or raw_ass!=ass:
                 reason_parts.append("techniczne 1:0 pominięte")
             if cash_pot_cents>0:
@@ -5636,18 +5662,18 @@ class Database:
             wp=pc(pid,v);cl=(v["clutch_w"]/v["clutch_m"]*100 if v["clutch_m"] else 0);gdpm=(v["gf"]-v["ga"])/v["m"]
             score=v["titles"]*27+v["finals"]*14+wp*.28+cl*.11+gdpm*4+len(participant_tournaments[pid])
             items.append(cand(pid,score,f"{v['titles']} tytuł(y), {v['finals']} finał(y), W% {wp}, bilans {v['gf']}:{v['ga']}"))
-        add("player_year","🏆 Gracz Roku","Krótko: kto był największym kozakiem sezonu. Tytuły, finały, wyniki i duże mecze. 1 VS 1 ma swoją działkę. Minimum 5 meczów turniejowych.",items)
+        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, wyniki i najważniejsze mecze. 1 VS 1 gra tu we własnej lidze. Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[cand(pid,(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2,f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+") for pid,v in ps.items() if v["m"]>=5]
-        add("offensive","🔥 Ofensywny Gracz Roku","Tu się nie broni 1:0. Tu się napierdala gole. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Gole, gole i jeszcze raz gole. Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[]
         for pid,v in ps.items():
             if v["m"]<5:continue
             ga_pm=v["ga"]/v["m"];cs_rate=v["clean_sheets"]/v["m"]*100
             score=110-ga_pm*25+min(v["m"],20)+cs_rate*.18+v["clean_sheets"]*1.5
             items.append(cand(pid,score,f"{ga_pm:.2f} gola straconego/mecz • {v['clean_sheets']} czystych kont • {v['ga']} straconych • {v['m']} meczów"))
-        add("defense","🧱 Beton Roku","Mur, autobus, beton. Najlepiej nic nie wpuścić i patrzeć, jak rywal się gotuje. Minimum 5 meczów.",items)
+        add("defense","🧱 Beton Roku","Tu gole wpuszcza się niechętnie, a najlepiej wcale. Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch") for pid,v in ps.items() if v["clutch_m"]>=5]
-        add("clutch","🎯 Clutch Player Roku","Tu nie ma „odrobimy później”. Przegrywasz i dupa — droga po tytuł się kończy. Winners Bracket daje drugie życie, więc tu nie wchodzi. Minimum 5 takich meczów.",items)
+        add("clutch","🎯 Clutch Player Roku","Najważniejsze są mecze bez marginesu błędu. Przegrywasz — kończy się droga po tytuł. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi. Minimum 5 meczów clutch.",items)
         items=[cand(
             pid,
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
@@ -5661,7 +5687,7 @@ class Database:
             mid=len(seq)//2;early=seq[:mid];late=seq[mid:]
             epts=sum(x[0] for x in early)/len(early);lpts=sum(x[0] for x in late)/len(late);egd=sum(x[1] for x in early)/len(early);lgd=sum(x[1] for x in late)/len(late)
             items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • bilans bramek/mecz {egd:+.2f} → {lgd:+.2f}"))
-        add("progress","📈 Największy Progres","Na początku bywało różnie, potem nagle odpalił. Kto zrobił największy skok? Minimum 5 meczów turniejowych.",items)
+        add("progress","📈 Największy Progres","Kto zaczął rok jednym graczem, a kończy go jak zupełnie inny zawodnik? Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[]
         for pid,v in ps.items():
             vals=v["spectacle_scores"]
@@ -5672,7 +5698,7 @@ class Database:
             score=avg*80+spectacular_rate*20
             avg_goals=v["spectacle_goals"]/len(vals)
             items.append(cand(pid,score,f"{avg_goals:.2f} gola/mecz w jego spotkaniach • {spectacular}/{len(vals)} bardzo widowiskowych • {v['spectacle_pens']} mecz(e) z karnymi"))
-        add("spectacle","🎆 Najbardziej Widowiskowy Gracz","Jak gra, popcorn jest obowiązkowy. Gole, końcówki, karne i ogólny rozpierdziel. Minimum 5 meczów.",items)
+        add("spectacle","🎆 Najbardziej Widowiskowy Gracz","Jeśli gra, zwykle coś się dzieje. Gole, końcówki, karne — spokojne 1:0 mile widziane gdzie indziej. Minimum 5 meczów.",items)
         items=[]
         for pid,v in ps.items():
             vals=[tr["pts"]/tr["m"] for tr in v["t_results"].values() if tr["m"]]
@@ -5698,7 +5724,7 @@ class Database:
                 "_sort":(int(v["late_goals"]),int(v["goals_90plus"]),int(v["latest_value"])),
                 "reason":f"{v['late_goals']} goli od 85. minuty • {v['goals_90plus']} od 90. minuty • najpóźniejszy {v['latest_label'] or '—'}"
             })
-        add("late_king","⏰ Król Końcówek","85. minuta? Dla niego dopiero zaczyna się mecz. Im później boli rywala, tym piękniej.",items)
+        add("late_king","⏰ Król Końcówek","Od 85. minuty zaczyna się jego ulubiona część meczu. Im później boli rywala, tym lepiej.",items)
 
         items=[]
         for pid,v in comeback_stats.items():
@@ -5709,7 +5735,7 @@ class Database:
                 "_sort":(int(v["points"]),int(v["max_deficit"]),int(v["wins"])),
                 "reason":f"{v['wins']} comeback win • {v['points']} pkt comebacku • największa odrobiona strata {v['max_deficit']} gola(e)"+(f" • {breakdown}" if breakdown else "")
             })
-        add("comeback_king","🔄 Comeback King","Najpierw w plecy, potem „dobra, teraz gramy”. Liczymy wygrane po prawdziwym odrabianiu strat.",items)
+        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie. Liczymy zwycięstwa, w których trzeba było naprawdę wracać z daleka.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
@@ -5720,7 +5746,7 @@ class Database:
                 "score":round(100-ppm*20,4),"_sort":(-ppm,int(matches_n),-int(d["points"])),
                 "reason":f"{d['points']} pkt dyscypliny w {matches_n} meczach • {ppm:.2f} pkt/mecz • 🟨 {d['yellow']} • 🟥 {d['red']}"
             })
-        add("fair_play","😇 Fair Play","Da się grać bez kosy na wysokości kolan. Serio. Minimum 5 meczów ze szczegółowym przebiegiem.",items)
+        add("fair_play","😇 Fair Play","Da się wygrać bez koszenia wszystkiego, co się rusza. Minimum 5 meczów ze szczegółowym przebiegiem.",items)
 
         # Additional live rankings based on detailed EA FC event timelines.
         # They are informational and do not create an official Award winner.
@@ -5795,7 +5821,7 @@ class Database:
             cats[-1]["debut_first10"]=top(debut10)
             cats[-1]["debut_primary_window"]=10 if debut10 else 5
         items=[cand(pid,pc(pid,v)+v["w"]*2+(v["gf"]-v["ga"])*.4,f"maks. 1 tytuł • W% {pc(pid,v)} • {v['w']} W") for pid,v in ps.items() if v["m"]>=5 and v["titles"]<=1]
-        add("outsider","🏅 Najlepszy spoza dominatorów","Półka z pucharami jeszcze nie pęka, ale liderzy już oglądają się przez ramię. Minimum 5 meczów turniejowych.",items)
+        add("outsider","🏅 Najlepszy spoza dominatorów","Dla tych, którzy jeszcze nie zapełnili półki pucharami, ale regularnie depczą liderom po piętach. Minimum 5 oficjalnych meczów turniejowych.",items)
         successful_teams=defaultdict(set)
         for (tid,pid),stages in stages_by_player_tournament.items():
             fmt=str(event_by.get(tid,{}).get("format_key") or "")
@@ -5858,7 +5884,7 @@ class Database:
         for pid,v in finance.items():
             bal=v["won"]-v["paid"];fin_items.append(cand(pid,bal/100,f"bilans {(bal/100):+.2f} zł • wygrane {v['won']/100:.2f} zł • wpłaty {v['paid']/100:.2f} zł"))
         sponsor=min(fin_items,key=lambda x:x["score"],default=None)
-        add("finance","🦈 Rekin Finansowy","Excel też ma swojego mistrza. Kto zgarnął hajs, a kto regularnie finansuje resztę ekipy?",fin_items,secondary=sponsor)
+        add("finance","🦈 Rekin Finansowy","Kto najlepiej wyszedł na FIFA Night w złotówkach? Na drugim końcu czeka honorowy Sponsor wieczorów.",fin_items,secondary=sponsor)
         # duel king
         dv=defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0})
         for m in matches:
@@ -5873,7 +5899,7 @@ class Database:
             if v["n"]<3:continue
             balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"]);score=v["n"]*5+balance*20+v["importance_points"]*2
             na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"));rivalry.append({"id":f"{a}|{b}","name":f"{na} vs {nb}","score":round(score,2),"reason":f"{v['n']} meczów • {v['aw']}:{v['bw']} w zwycięstwach • ważne mecze {v['important_matches']}"})
-        add("rivalry","⚔️ Rywalizacja Roku","Ci dwaj znowu na siebie trafili. Przypadek? Jasne. Minimum 3 bezpośrednie mecze.",rivalry)
+        add("rivalry","⚔️ Rywalizacja Roku","Są pary, które po prostu lubią na siebie wpadać. Minimum 3 bezpośrednie mecze w roku.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
             if nt==self._norm_team_name(REAL_HELPER_TEAM) or v["m"]<5:continue
@@ -5882,14 +5908,14 @@ class Database:
             teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}"})
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
         worst_team=top(worst,1)[0] if worst else None
-        add("team_best","🏟️ Drużyny Roku","Która ekipa niesie, a która tylko ładnie wygląda w menu? Minimum 5 oficjalnych meczów drużyny.",teamitems,secondary=worst_team)
+        add("team_best","🏟️ Drużyny Roku","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje. Minimum 5 oficjalnych meczów danej drużyny.",teamitems,secondary=worst_team)
         scorer_items=[{"id":sn,"name":scorer_display.get(sn,sn),"score":goals,"reason":f"{goals} wpisanych goli łącznie"} for sn,goals in scorer_totals.items() if goals>=5]
         add("superscorer","⚡ Supersnajper Roku","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
-        add("match_year","🎬 Mecz Roku","Ten mecz, po którym jeszcze przy piwie padnie: „pamiętasz, kurwa, to 4:3?”. Wynik to nie wszystko — liczy się też, jak do niego doszło.",match_candidates)
+        add("match_year","🎬 Mecz Roku","Taki mecz, o którym jeszcze długo ktoś będzie mówił: „pamiętasz to…?”.",match_candidates)
         items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
-        add("minimalist","📐 Król Minimalistów","Po co strzelać pięć, skoro można wygrać o jedną i osiwieć przy okazji?",items,award=False)
+        add("minimalist","📐 Król Minimalistów","Po co strzelać pięć, skoro jedna bramka przewagi też daje zwycięstwo?",items,award=False)
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
-        add("unlucky","🤕 Pechowiec Roku","„Prawie” dalej znaczy porażka. Brutalne, ale tabela nie ma uczuć.",items,award=False)
+        add("unlucky","🤕 Pechowiec Roku","Prawie się nie liczy. Statystyki i tak pamiętają każdą porażkę o włos.",items,award=False)
 
         # Summary of nominations only for categories that have a physical trophy.
         # Each category counts at most once per FIFA Night participant. Match of the
