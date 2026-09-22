@@ -21,6 +21,7 @@ export type Match = {
   played_at?:string|null;
   match_status:string;
   ready:boolean;
+  group_tiebreak?:{required?:boolean;group?:string;cutoff?:number;message?:string}|null;
   scorers?:any[];
   events?:any[];
 };
