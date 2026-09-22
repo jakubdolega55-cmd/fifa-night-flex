@@ -1,0 +1,20 @@
+# Dependencies installed locally. EAS reinstalls them on the build server.
+node_modules/
+
+# Expo / build output
+.expo/
+dist/
+web-build/
+coverage/
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Logs / OS files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
