@@ -736,37 +736,105 @@ def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Ra
     if format_key=="double10": return schedule_double10(draw,extra)
     raise ValueError(format_key)
 
-def group_table(group_player_ids: Iterable[str], matches: list[dict], tie_orders: dict[str,int]) -> list[dict]:
+def group_table(group_player_ids: Iterable[str], matches: list[dict], tie_orders: dict[str,int],
+                fair_play_points: dict[str,int] | None = None, lot_orders: dict[str,int] | None = None) -> list[dict]:
+    """Build a group table with FIFA Night tie-break rules.
+
+    Order: points -> goal difference -> goals scored -> H2H / mini-table ->
+    fair play -> persistent lot. ``tie_order`` is only a final technical fallback
+    while a group is still unfinished / before a real lot has been created.
+
+    A tied group match that was explicitly sent to a shoot-out keeps the draw
+    points and goal totals, but its penalty winner breaks the H2H tie.
+    """
     ids=list(group_player_ids)
-    stats={pid:{"player_id":pid,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0} for pid in ids}; played=[]
+    fair={str(k):int(v or 0) for k,v in (fair_play_points or {}).items()}
+    lot={str(k):int(v or 0) for k,v in (lot_orders or {}).items()}
+    stats={pid:{"player_id":pid,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0} for pid in ids}
+    played=[]
     for m in matches:
         if m.get("home_score") is None or m.get("away_score") is None: continue
         h,a=m.get("home_player_id"),m.get("away_player_id")
         if h not in stats or a not in stats: continue
         hs,ass=int(m["home_score"]),int(m["away_score"])
-        stats[h]["m"]+=1; stats[a]["m"]+=1; stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
-        if hs>ass: stats[h]["w"]+=1; stats[a]["l"]+=1; stats[h]["pts"]+=3
-        elif hs<ass: stats[a]["w"]+=1; stats[h]["l"]+=1; stats[a]["pts"]+=3
-        else: stats[h]["d"]+=1; stats[a]["d"]+=1; stats[h]["pts"]+=1; stats[a]["pts"]+=1
+        stats[h]["m"]+=1; stats[a]["m"]+=1
+        stats[h]["gf"]+=hs; stats[h]["ga"]+=ass; stats[a]["gf"]+=ass; stats[a]["ga"]+=hs
+        if hs>ass:
+            stats[h]["w"]+=1; stats[a]["l"]+=1; stats[h]["pts"]+=3
+        elif hs<ass:
+            stats[a]["w"]+=1; stats[h]["l"]+=1; stats[a]["pts"]+=3
+        else:
+            stats[h]["d"]+=1; stats[a]["d"]+=1; stats[h]["pts"]+=1; stats[a]["pts"]+=1
         played.append(m)
-    for row in stats.values(): row["gd"]=row["gf"]-row["ga"]
-    rows=list(stats.values()); rows.sort(key=lambda r:(r["pts"],r["gd"],r["gf"]),reverse=True)
-    i=0
+    for row in stats.values():
+        row["gd"]=row["gf"]-row["ga"]
+        row["fair_play"]=int(fair.get(str(row["player_id"]),0))
+        row["tie_order"]=int(tie_orders.get(row["player_id"],9999))
+
+    def mini_stats(block_ids: list[str]) -> dict[str,dict]:
+        wanted=set(block_ids)
+        out={pid:{"pts":0,"gf":0,"ga":0,"gd":0} for pid in block_ids}
+        for m in played:
+            h,a=m.get("home_player_id"),m.get("away_player_id")
+            if h not in wanted or a not in wanted: continue
+            hs,aw=int(m["home_score"]),int(m["away_score"])
+            out[h]["gf"]+=hs;out[h]["ga"]+=aw;out[a]["gf"]+=aw;out[a]["ga"]+=hs
+            if hs>aw:out[h]["pts"]+=3
+            elif aw>hs:out[a]["pts"]+=3
+            else:out[h]["pts"]+=1;out[a]["pts"]+=1
+        for x in out.values():x["gd"]=x["gf"]-x["ga"]
+        return out
+
+    def direct_penalty_winner(a: str, b: str) -> str | None:
+        # Single round-robin groups have one H2H. Keep this robust if a format ever
+        # contains more: the latest played direct meeting is the relevant one.
+        direct=[m for m in played if {str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")}=={str(a),str(b)}]
+        if not direct:return None
+        direct.sort(key=lambda m:(str(m.get("played_at") or ""),int(m.get("match_no") or 0)))
+        m=direct[-1];hs,aw=int(m["home_score"]),int(m["away_score"])
+        if hs!=aw:return str(m.get("home_player_id") if hs>aw else m.get("away_player_id"))
+        hp,ap=m.get("home_penalties"),m.get("away_penalties")
+        if hp is not None and ap is not None and int(hp)!=int(ap):
+            return str(m.get("home_player_id") if int(hp)>int(ap) else m.get("away_player_id"))
+        return None
+
+    def finish_equal(sub: list[dict]) -> list[dict]:
+        if len(sub)<=1:return sub
+        # For exactly two players, a special last-group-match shoot-out is a real
+        # sporting H2H decider even though the group score remains a draw.
+        if len(sub)==2:
+            w=direct_penalty_winner(str(sub[0]["player_id"]),str(sub[1]["player_id"]))
+            if w:
+                return sorted(sub,key=lambda r:0 if str(r["player_id"])==w else 1)
+        sub=sorted(sub,key=lambda r:(int(fair.get(str(r["player_id"]),0)),
+                                     int(lot.get(str(r["player_id"]),10**9)),
+                                     int(tie_orders.get(r["player_id"],9999))))
+        return sub
+
+    def resolve_overall_block(block: list[dict]) -> list[dict]:
+        if len(block)<=1:return block
+        mini=mini_stats([str(r["player_id"]) for r in block])
+        ordered=sorted(block,key=lambda r:(mini[str(r["player_id"])]["pts"],
+                                           mini[str(r["player_id"])]["gd"],
+                                           mini[str(r["player_id"])]["gf"]),reverse=True)
+        out=[];i=0
+        while i<len(ordered):
+            pid=str(ordered[i]["player_id"]);key=(mini[pid]["pts"],mini[pid]["gd"],mini[pid]["gf"]);j=i+1
+            while j<len(ordered):
+                q=str(ordered[j]["player_id"]);qkey=(mini[q]["pts"],mini[q]["gd"],mini[q]["gf"])
+                if qkey!=key:break
+                j+=1
+            out.extend(finish_equal(ordered[i:j]));i=j
+        return out
+
+    rows=list(stats.values());rows.sort(key=lambda r:(r["pts"],r["gd"],r["gf"]),reverse=True)
+    final=[];i=0
     while i<len(rows):
-        key=(rows[i]["pts"],rows[i]["gd"],rows[i]["gf"]); j=i+1
-        while j<len(rows) and (rows[j]["pts"],rows[j]["gd"],rows[j]["gf"])==key: j+=1
-        block=rows[i:j]
-        if len(block)==2:
-            p1,p2=block[0]["player_id"],block[1]["player_id"]
-            h2h=next((m for m in played if {m["home_player_id"],m["away_player_id"]}=={p1,p2}),None)
-            if h2h and h2h["home_score"]!=h2h["away_score"]:
-                win=h2h["home_player_id"] if h2h["home_score"]>h2h["away_score"] else h2h["away_player_id"]
-                if block[1]["player_id"]==win: rows[i],rows[i+1]=rows[i+1],rows[i]
-            else: rows[i:j]=sorted(block,key=lambda r:tie_orders.get(r["player_id"],9999))
-        elif len(block)>1: rows[i:j]=sorted(block,key=lambda r:tie_orders.get(r["player_id"],9999))
-        i=j
-    for pos,row in enumerate(rows,1): row["position"]=pos
-    return rows
+        key=(rows[i]["pts"],rows[i]["gd"],rows[i]["gf"]);j=i+1
+        while j<len(rows) and (rows[j]["pts"],rows[j]["gd"],rows[j]["gf"])==key:j+=1
+        final.extend(resolve_overall_block(rows[i:j]));i=j
+    for pos,row in enumerate(final,1):row["position"]=pos
+    return final
 
 
 def winner_from_result(home_score:int,away_score:int,home_id:str,away_id:str,home_pen:int|None=None,away_pen:int|None=None)->str|None:

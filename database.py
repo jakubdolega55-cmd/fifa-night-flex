@@ -1651,12 +1651,119 @@ class Database:
         h,a = match.get("home_player_id"), match.get("away_player_id")
         return a if match["winner_player_id"] == h else h
 
+    @staticmethod
+    def _group_advancement_cutoff(format_key: str, group: str) -> int | None:
+        """Local qualification boundary for the special last-group-match decider.
+
+        Return only boundaries where one player is definitely IN and the next one is
+        definitely OUT of the tournament phase. Formats with cross-group wildcards or
+        where everyone advances deliberately return None.
+        """
+        fmt=str(format_key or ""); g=str(group or "")
+        if fmt=="groups6": return 2
+        if fmt=="groups7": return 3 if g=="A" else None
+        if fmt=="groups7_sf": return 2
+        if fmt=="groups8_sf": return 2
+        if fmt=="groups8_barrage": return 3
+        if fmt=="groups9_barrage_final3": return 2
+        if fmt=="groups10_sf": return 2
+        return None
+
+    def _group_fair_play_conn(self, conn, tid: str, group: str) -> dict[str,int]:
+        """Fair-play penalty points from group-stage card events.
+
+        Yellow = 1, red = 3. If the event feed contains a yellow followed by a red
+        for the same dismissal, both events naturally total 4. Lower is better.
+        """
+        players=self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=? AND group_name=?",(tid,group))
+        out={str(r["player_id"]):0 for r in players}
+        rows=self._fetchall(conn,"""
+            SELECT me.actor_player_id,me.event_type
+            FROM match_events me
+            JOIN matches m ON m.tournament_id=me.tournament_id AND m.match_no=me.match_no
+            WHERE me.tournament_id=? AND m.group_name=? AND me.event_type IN ('yellow_card','red_card')
+        """,(tid,group))
+        for r in rows:
+            pid=str(r.get("actor_player_id") or "")
+            if pid not in out: continue
+            out[pid]+=1 if str(r.get("event_type"))=="yellow_card" else 3
+        return out
+
+    def _group_is_complete_conn(self, conn, tid: str, group: str) -> bool:
+        rows=self._fetchall(conn,"SELECT home_score,match_status FROM matches WHERE tournament_id=? AND group_name=?",(tid,group))
+        return bool(rows) and all(r.get("home_score") is not None or str(r.get("match_status") or "")=='skipped' for r in rows)
+
+    def _ensure_group_lot_order_conn(self, conn, tid: str, group: str) -> dict[str,int]:
+        meta,extra=self._meta_extra_conn(conn,tid)
+        lots=extra.setdefault("group_lot_order",{})
+        stored=lots.get(group)
+        if isinstance(stored,dict) and stored:
+            return {str(k):int(v) for k,v in stored.items()}
+        players=[str(r["player_id"]) for r in self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=? AND group_name=? ORDER BY tie_order",(tid,group))]
+        shuffled=players[:]; random.SystemRandom().shuffle(shuffled)
+        stored={pid:i for i,pid in enumerate(shuffled,1)}; lots[group]=stored
+        conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+        return stored
+
+    def _ensure_cross_group_lot_order_conn(self, conn, tid: str) -> dict[str,int]:
+        meta,extra=self._meta_extra_conn(conn,tid)
+        stored=extra.get("cross_group_lot_order")
+        if isinstance(stored,dict) and stored:
+            return {str(k):int(v) for k,v in stored.items()}
+        players=[str(r["player_id"]) for r in self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=? ORDER BY tie_order",(tid,))]
+        shuffled=players[:]; random.SystemRandom().shuffle(shuffled)
+        stored={pid:i for i,pid in enumerate(shuffled,1)}; extra["cross_group_lot_order"]=stored
+        conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
+        return stored
+
+    def _group_match_tiebreak_context_conn(self, conn, tid: str, match_no: int) -> dict:
+        m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,int(match_no)))
+        if not m or str(m.get("stage") or "")!="GROUP" or not m.get("group_name"):
+            return {"required":False}
+        if not m.get("home_player_id") or not m.get("away_player_id") or m.get("home_score") is not None:
+            return {"required":False}
+        meta=self._fetchone(conn,"SELECT format_key FROM flex_tournament_meta WHERE tournament_id=?",(tid,)) or {}
+        cutoff=self._group_advancement_cutoff(str(meta.get("format_key") or ""),str(m.get("group_name") or ""))
+        if not cutoff:
+            return {"required":False}
+        group=str(m["group_name"])
+        others=self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? AND group_name=? AND match_no<>? ORDER BY match_no",(tid,group,int(match_no)))
+        if any(x.get("home_score") is None and str(x.get("match_status") or "pending")!='skipped' for x in others):
+            return {"required":False}
+        prows=self._fetchall(conn,"SELECT player_id,tie_order FROM tournament_players WHERE tournament_id=? AND group_name=?",(tid,group))
+        ids=[str(x["player_id"]) for x in prows]; ties={str(x["player_id"]):int(x.get("tie_order") or 9999) for x in prows}
+        table=group_table(ids,[x for x in others if x.get("home_score") is not None],ties)
+        by={str(r["player_id"]):r for r in table}
+        h=str(m["home_player_id"]); a=str(m["away_player_id"])
+        if h not in by or a not in by:return {"required":False}
+        keyh=(int(by[h]["pts"]),int(by[h]["gd"]),int(by[h]["gf"]))
+        keya=(int(by[a]["pts"]),int(by[a]["gd"]),int(by[a]["gf"]))
+        if keyh!=keya:return {"required":False}
+        tied=[pid for pid,r in by.items() if (int(r["pts"]),int(r["gd"]),int(r["gf"]))==keyh]
+        if set(tied)!={h,a}:return {"required":False}
+        above=sum(1 for r in table if (int(r["pts"]),int(r["gd"]),int(r["gf"]))>keyh)
+        if above!=int(cutoff)-1:return {"required":False}
+        return {
+            "required":True,"group":group,"cutoff":int(cutoff),
+            "home_player_id":h,"away_player_id":a,
+            "message":"Remis po 90 minutach oznacza dogrywkę. Jeśli po dogrywce nadal będzie remis, o awansie decydują karne.",
+        }
+
+    def group_match_tiebreak_context(self, tid: str, match_no: int) -> dict:
+        with self.connect() as conn:
+            return self._group_match_tiebreak_context_conn(conn,tid,int(match_no))
+
     def _table_from_conn(self, conn, tid: str, group: str) -> list[dict]:
         players = self._fetchall(conn, "SELECT tp.*,p.name FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=? AND tp.group_name=?", (tid,group))
         # Tables must only use their own league/group phase. Knockout matches must never alter an already-finished table.
         matches = [m for m in self._matches_conn(conn,tid) if m.get("group_name") == group]
         ids = [p["player_id"] for p in players]; ties = {p["player_id"]:int(p["tie_order"]) for p in players}; names={p["player_id"]:p["name"] for p in players}; teams={p["player_id"]:p["team"] for p in players}
-        rows = group_table(ids,matches,ties)
+        fair=self._group_fair_play_conn(conn,tid,group) if group not in ("L","S","F3") else {}
+        lot={}
+        if group not in ("L","S","F3"):
+            _meta,_extra=self._meta_extra_conn(conn,tid)
+            lot=dict(((_extra.get("group_lot_order") or {}).get(group) or {}))
+        rows = group_table(ids,matches,ties,fair,lot)
         for r in rows: r["name"]=names[r["player_id"]]; r["team"]=teams[r["player_id"]]
         return rows
 
@@ -2019,7 +2126,8 @@ class Database:
                 tabs={g:self._table_from_conn(conn,tid,g) for g in ("A","B","C")}
                 group_by={r["player_id"]:g for g,t in tabs.items() for r in t}
                 winners=[tabs[g][0] for g in ("A","B","C")]; runners=[tabs[g][1] for g in ("A","B","C")]; thirds=[tabs[g][2] for g in ("A","B","C")]
-                rank=lambda r:(int(r.get("pts",0)),int(r.get("gd",0)),int(r.get("gf",0)),-int(r.get("tie_order",9999) or 9999))
+                cross_lot=self._ensure_cross_group_lot_order_conn(conn,tid)
+                rank=lambda r:(int(r.get("pts",0)),int(r.get("gd",0)),int(r.get("gf",0)),-int(r.get("fair_play",0) or 0),-int(cross_lot.get(str(r.get("player_id") or ""),9999)))
                 runners_sorted=sorted(runners,key=rank,reverse=True); thirds_sorted=sorted(thirds,key=rank,reverse=True)
                 if fmt=="groups9_final4":
                     four=[r["player_id"] for r in winners]+[runners_sorted[0]["player_id"]]
@@ -3722,6 +3830,9 @@ class Database:
             conn.execute(self._sql("""UPDATE matches SET home_score=?,away_score=?,home_penalties=NULL,away_penalties=NULL,
                 winner_player_id=?,played_at=?,match_status='forfeit' WHERE tournament_id=? AND match_no=?"""),
                 (hs,ass,winner,now_iso(),tid,int(match_no)))
+            if m.get("stage")=="GROUP" and m.get("group_name") and self._group_is_complete_conn(conn,tid,str(m.get("group_name"))):
+                self._ensure_group_lot_order_conn(conn,tid,str(m.get("group_name")))
+                self._ensure_cross_group_lot_order_conn(conn,tid)
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
             if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"):
                 self._prepare_group_playoffs_conn(conn,tid)
@@ -3743,17 +3854,21 @@ class Database:
                 raise ValueError("Zwycięzca Winners Bracket zaczyna finał od 1:0.")
 
             knockout = m["stage"] not in ("GROUP","LEAGUE")
+            group_decider = self._group_match_tiebreak_context_conn(conn,tid,int(match_no)) if m["stage"]=="GROUP" else {"required":False}
+            group_shootout = bool(group_decider.get("required"))
             penalties_supplied = hp is not None or ap is not None
             if penalties_supplied and (hp is None or ap is None):
                 raise ValueError("Podaj wynik karnych dla obu stron albo usuń karne.")
-            if penalties_supplied and not knockout:
-                raise ValueError("Rzuty karne są dozwolone tylko w fazie pucharowej.")
+            if penalties_supplied and not knockout and not group_shootout:
+                raise ValueError("Rzuty karne są dozwolone tylko w fazie pucharowej albo w ostatnim meczu grupy rozstrzygającym awans.")
             if penalties_supplied and hs!=ass:
                 raise ValueError("Rzuty karne można zapisać tylko przy remisie w meczu.")
             if penalties_supplied and hp==ap:
                 raise ValueError("Wynik rzutów karnych nie może być remisowy.")
             if knockout and hs==ass and not penalties_supplied:
                 raise ValueError("W fazie pucharowej remis wymaga karnych.")
+            if group_shootout and hs==ass and not penalties_supplied:
+                raise ValueError("Ten remis decyduje o awansie. Dograj dogrywkę, a jeśli nadal jest remis — podaj wynik karnych.")
 
             winner=winner_from_result(hs,ass,m["home_player_id"],m["away_player_id"],hp,ap)
             teams=self._fetchone(conn,"""SELECT htp.team AS home_team,atp.team AS away_team
@@ -3795,6 +3910,12 @@ class Database:
                                                             str(teams.get("home_team") or ""),str(teams.get("away_team") or ""))
             self._save_scorers_conn(conn,tid,match_no,hs,ass,scorers)
             conn.execute(self._sql("UPDATE matches SET home_score=?,away_score=?,home_penalties=?,away_penalties=?,winner_player_id=?,played_at=?,match_status='played' WHERE tournament_id=? AND match_no=? AND match_status='saving'"),(hs,ass,hp,ap,winner,now_iso(),tid,match_no))
+            if m.get("stage")=="GROUP" and m.get("group_name") and self._group_is_complete_conn(conn,tid,str(m.get("group_name"))):
+                self._ensure_group_lot_order_conn(conn,tid,str(m.get("group_name")))
+                # Cross-group wildcards are resolved only after all groups finish, but a
+                # stable tournament-wide lot is cheap to persist now and prevents any
+                # hidden dependence on historical tie_order.
+                self._ensure_cross_group_lot_order_conn(conn,tid)
             if fmt=="double7": self._prepare_double7_pairing_conn(conn,tid)
             if fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"): self._prepare_group_playoffs_conn(conn,tid)
             self._resolve_all_conn(conn,tid,fmt)
@@ -3850,6 +3971,13 @@ class Database:
             conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL WHERE tournament_id=? AND home_score IS NULL AND COALESCE(match_status,'pending')='pending'"),(tid,))
             conn.execute(self._sql("UPDATE tournaments SET status='active',phase='active',champion_player_id=NULL,completed_at=NULL WHERE id=?"),(tid,))
             meta,extra=self._meta_extra_conn(conn,tid);fmt=meta["format_key"]
+            undone_group=str(last.get("group_name") or "") if str(last.get("stage") or "")=="GROUP" else ""
+            if undone_group:
+                group_lots=extra.get("group_lot_order") or {}
+                group_lots.pop(undone_group,None)
+                if group_lots: extra["group_lot_order"]=group_lots
+                else: extra.pop("group_lot_order",None)
+                extra.pop("cross_group_lot_order",None)
             # DE5 opponent is now an early draw of the symbolic W1/W2 route.
             # Undoing M1/M2 must not silently reroll a draw the room has already seen.
             if fmt=="double7":

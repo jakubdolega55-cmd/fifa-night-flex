@@ -1,54 +1,35 @@
-FIFA Night 1.1.2 — AUDIT PATCH / GITHUB
-=======================================
+FIFA NIGHT 1.1.3 — GROUP TIEBREAK PATCH
 
-Ta paczka ma strukturę zgodną z repozytorium.
-Skopiuj jej zawartość do katalogu głównego repozytorium i zezwól na zastąpienie plików o tych samych nazwach.
+Podmień te pliki w głównym repozytorium GitHub, zachowując strukturę katalogów.
+Po pushu zrób/restartuj deploy backendu na Renderze.
 
-PLIKI RUNTIME — najważniejsze:
-- database.py
-- mobile_api.py
-
-Poprawki backendu:
-1. Rzuty karne:
-   - tylko w fazie pucharowej,
-   - tylko przy remisie wyniku meczu,
-   - wymagane obie wartości,
-   - wynik karnych nie może być remisowy.
-2. Atomowy zapis wyniku:
-   - drugi telefon / drugi zapis nie nadpisze już zapisanego wyniku.
-3. Strzelcy:
-   - backend ignoruje nazwę drużyny przesłaną przez klienta i bierze właściwą drużynę z turnieju.
-
-SYNCHRONIZACJA ŹRÓDEŁ MOBILE Z APK FIX2, KTÓRĄ JUŻ ZAINSTALOWANO:
-- mobile/src/FifaScreen.tsx
-- mobile/src/AwardsScreen.tsx
-- mobile/src/StatsScreen.tsx
-
-Te pliki NIE wymagają ponownego APK, ponieważ są dokładnie zsynchronizowane z użytym BUILD-READY-FIX2.
-FifaScreen.tsx zawiera poprawiony przycisk PODDAJ MECZ z własnym async/await + refresh.
-
-BEZPIECZEŃSTWO PRZYSZŁYCH BUILDÓW:
-- mobile/.gitignore
-- mobile/.easignore
-
-TEST DODANY:
-- tests/audit_regression_smoke.py
-
-TESTY PO PATCHU:
-- Python compile: PASS
-- audit_regression_smoke: PASS
-- forfeit_smoke: PASS
-- swiss_smoke: PASS
-- de456_draw_smoke: PASS
-- de9_de10_smoke: PASS
-- smart_scheduler_smoke: PASS
-- versioning_alias_smoke: PASS
-- visible_draw_policy_smoke: PASS
-- wheel_shrink_smoke: PASS
-- big_patch_smoke: PASS
-- mobile_api_smoke: 51/51 PASS
+NOWA ZASADA GRUP:
+1) punkty -> różnica bramek -> gole strzelone -> H2H / mini-tabela
+2) jeśli ostatni mecz w danej grupie jest dokładnie między dwoma graczami równymi
+   na granicy awansu, remis po 90 min oznacza dogrywkę; jeśli nadal remis -> karne
+3) przy remisie 3+ graczy albo remisie nierozstrzyganym w ostatnim bezpośrednim meczu:
+   fair play (żółta = 1 pkt karny, czerwona = 3; mniej = lepiej)
+4) jeśli fair play też równe -> trwałe losowanie kolejności; tie_order nie decyduje o awansie
 
 WAŻNE:
-- Patch nie zmienia schematu bazy danych i nie wymaga migracji Neon.
-- Zainstalowanego APK FIX2 nie trzeba przebudowywać dla tych poprawek.
-- Po podmianie database.py i mobile_api.py trzeba jedynie doprowadzić do redeployu backendu na Render (jeżeli auto-deploy z GitHub jest włączony, commit/push powinien go uruchomić).
+- To jest zmiana mobilnego UI i wymaga nowego APK.
+- Wersja mobile: 1.1.3, Android versionCode: 8.
+- Pakiet APK BUILD-READY jest dostarczony osobno.
+- Nie ma migracji schematu bazy danych.
+
+TESTY ODPALONE:
+- group_tiebreak_smoke.py PASS
+- audit_regression_smoke.py PASS
+- forfeit_smoke.py PASS
+- Swiss8/10 PASS
+- DE4–10 PASS
+- smart scheduler PASS
+- visible draw policy PASS
+- FC26/FC27/versioning PASS
+- wheel shrink PASS
+- mobile_api_smoke 51/51 PASS
+- big_patch_smoke 8/8 formatów PASS
+- Python compile PASS
+- TypeScript/TSX parse 12/12 PASS
+
+Nie oznaczono jako PASS rzeczywistego EAS build na koncie Expo.

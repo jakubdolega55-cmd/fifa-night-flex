@@ -26,7 +26,7 @@ from logic import (
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
-API_VERSION = "1.1.2"
+API_VERSION = "1.1.3"
 TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60
 
 STAGE_LABELS = {
@@ -1275,6 +1275,10 @@ def live_payload() -> dict[str, Any]:
         except Exception: current_context = None
     current_no = int(current_raw.get("match_no") or 0) if current_raw else 0
     next_raw = db.next_ready_match_from(matches, current_no, extra) if current_raw else None
+    group_tiebreak = {"required": False}
+    if current_raw and str(current_raw.get("stage") or "")=="GROUP":
+        try: group_tiebreak = db.group_match_tiebreak_context(tid,current_no)
+        except Exception: group_tiebreak = {"required": False}
     try: standings = db.standings(tid)
     except Exception: standings = {}
     try: scorers = db.tournament_live_scorers(tid, 5)
@@ -1294,6 +1298,15 @@ def live_payload() -> dict[str, Any]:
     try: absences=db.active_absences(tid)
     except Exception: absences=[]
     special=_special_event_payload(tid,fmt) if str(tournament.get("status"))=="active" else None
+    current_clean=clean_match(current_raw) if current_raw else None
+    if current_clean is not None: current_clean["group_tiebreak"]=group_tiebreak
+    schedule_clean=[]
+    for raw in schedule_raw:
+        item=clean_match(raw)
+        if int(item.get("match_no") or 0)==current_no:
+            item["group_tiebreak"]=group_tiebreak
+        schedule_clean.append(item)
+    next_clean=clean_match(next_raw) if next_raw else None
     return {
         "server_time": utc_now(), "api_version": API_VERSION,
         "tournament": {
@@ -1302,10 +1315,10 @@ def live_payload() -> dict[str, Any]:
             "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt), "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
             "created_at": tournament.get("created_at"), "completed_at": tournament.get("completed_at"),
             "players": [{"player_id":p.get("player_id"),"name":p.get("name"),"team":p.get("team"),"group_name":p.get("group_name")} for p in (bundle.get("players") or [])],
-            "current_match": clean_match(current_raw) if current_raw else None,
+            "current_match": current_clean,
             "current_context": current_context,
-            "next_match": clean_match(next_raw) if next_raw else None,
-            "schedule": [clean_match(m) for m in schedule_raw], "standings": standings, "live_scorers": scorers,
+            "next_match": next_clean,
+            "schedule": schedule_clean, "standings": standings, "live_scorers": scorers,
             "summary": summary, "setup": None, "special_event": special, "special_draw": special,
             "stake_per_player": float(extra.get("stake_per_player") or 0),
             "cash_player_ids": [str(x) for x in (extra.get("cash_player_ids") or [])],

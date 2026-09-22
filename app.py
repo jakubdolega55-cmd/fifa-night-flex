@@ -151,8 +151,8 @@ def fifa_night_api_url() -> str:
 
 def render_vision_ocr_test():
     st.divider()
-    st.markdown("### 🧪 Test odczytu ekranu EA FC")
-    st.caption("Wrzuć screeny z Wydarzeń. Możesz ich dać kilka — tutaj tylko czytamy, nic po cichu nie zapisujemy.")
+    st.markdown("### 🧪 Test rozpoznawania EA FC — OCR / AI")
+    st.caption("Prototyp: wysyła tyle screenów z zakładki Wydarzenia, ile potrzeba. Nic nie zapisuje do Neona.")
     if not controller_access():
         st.info("Włącz sterowanie na tym urządzeniu, aby korzystać z testu.")
         return
@@ -163,7 +163,7 @@ def render_vision_ocr_test():
     api_url = fifa_night_api_url()
 
     provider_label = st.selectbox(
-        "Jak czytamy ekran",
+        "Sposób analizy",
         [
             "Google OCR — darmowy baseline",
             "OpenAI GPT-5.6 Luna — vision",
@@ -214,12 +214,12 @@ def render_vision_ocr_test():
         multipart.append(("images", (item.name, item.getvalue(), mime)))
 
     spinner = {
-        "google_ocr": "Google próbuje ogarnąć, co jest na screenie...",
-        "openai_luna": "OpenAI rozkminia gole, kartki i resztę bajzlu...",
-        "gemini_38_flash": "Gemini 3.8 Flash grzebie w screenach...",
-        "gemini_37_flash": "Gemini 3.7 Flash grzebie w screenach...",
-        "gemini_36_flash": "Gemini 3.6 Flash grzebie w screenach...",
-        "gemini_35_flash_lite": "Gemini 3.5 Flash-Lite grzebie w screenach...",
+        "google_ocr": "Google Vision odczytuje tekst...",
+        "openai_luna": "OpenAI analizuje wydarzenia i ikony...",
+        "gemini_38_flash": "Gemini 3.8 Flash analizuje wydarzenia i ikony...",
+        "gemini_37_flash": "Gemini 3.7 Flash analizuje wydarzenia i ikony...",
+        "gemini_36_flash": "Gemini 3.6 Flash analizuje wydarzenia i ikony...",
+        "gemini_35_flash_lite": "Gemini 3.5 Flash-Lite analizuje wydarzenia i ikony...",
     }[provider]
     started = time.perf_counter()
     with st.spinner(spinner):
@@ -400,7 +400,7 @@ def render_access_settings():
 
 def render_player_rename_settings():
     st.markdown("### ✏️ Zmiana nazwy gracza")
-    st.caption("Nick zmienia się wszędzie — historia, H2H, staty i Awards. Spokojnie: dwóch różnych graczy w jednego Frankensteina z tego nie zrobimy.")
+    st.caption("Zmiana dotyczy całego profilu gracza, więc nowy nick pojawi się również przy historycznych turniejach, meczach, H2H, statystykach i AWARDS. To nie łączy dwóch różnych profili graczy.")
     if not admin_password():
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Zmiana nazwy jest wyłączona.")
         return
@@ -1330,8 +1330,13 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
         ass=st.number_input(m.get("away_name") or "Gracz 2",min_value=0,max_value=99,value=int(edit.get("away_score") or 0),step=1,key=f"scan_as_{tid}_{no}_{scan_id}")
 
     knockout=str(m.get("stage") or "") not in ("GROUP","LEAGUE")
+    try: group_tb=db.group_match_tiebreak_context(tid,no) if str(m.get("stage") or "")=="GROUP" else {"required":False}
+    except Exception: group_tb={"required":False}
+    group_decider=bool(group_tb.get("required"))
+    if group_decider:
+        st.warning("⚠️ Ten mecz może rozstrzygnąć awans. Remis po 90 minutach = dogrywka; jeśli nadal remis = karne.")
     pens_default=edit.get("home_penalties") is not None and edit.get("away_penalties") is not None
-    show_pens=bool(pens_default or (knockout and int(hs)==int(ass)))
+    show_pens=bool(pens_default or ((knockout or group_decider) and int(hs)==int(ass)))
     use_pens=False;hp=ap=None
     if show_pens:
         use_pens=st.checkbox("🎯 Mecz rozstrzygnięty serią karnych",value=pens_default,key=f"scan_use_pens_{tid}_{no}_{scan_id}")
@@ -1592,7 +1597,8 @@ def render_match_vision_scan(tid:str,m:dict,fmt:str):
 def score_form(tid,m,fmt):
     no=int(m["match_no"]);pending=st.session_state.get("pending_ko")
     if pending and pending.get("tid")==tid and pending.get("no")==no:
-        st.markdown("### ⚽ Karne")
+        st.markdown("### ⚽ Karne o awans" if pending.get("group_decider") else "### ⚽ Karne")
+        if pending.get("group_decider"):st.caption("Dogrywka nadal nie dała rozstrzygnięcia — wpisz wynik serii karnych.")
         with st.form(f"pens_{tid}_{no}"):
             c1,c2=st.columns(2)
             with c1:hp=st.number_input(m["home_name"],0,30,4,1,key=f"hp_{tid}_{no}")
@@ -1607,8 +1613,13 @@ def score_form(tid,m,fmt):
         if st.button("↩️ Zmień wynik przed karnymi",use_container_width=True,key=f"change_{tid}_{no}"):st.session_state.pop("pending_ko",None);rf()
         return
     wb_bonus = fmt in ("double4","double5","double6","double7","double8","double9","double10") and m.get("stage")=="FINAL"
+    try: group_tb=db.group_match_tiebreak_context(tid,no) if str(m.get("stage") or "")=="GROUP" else {"required":False}
+    except Exception: group_tb={"required":False}
+    group_decider=bool(group_tb.get("required"))
     start_home = 1 if wb_bonus else 0
     if wb_bonus and st.session_state.get(f"hs_{tid}_{no}",1) < 1:st.session_state[f"hs_{tid}_{no}"]=1
+    if group_decider:
+        st.warning("⚠️ **MECZ O AWANS:** jeśli po 90 minutach będzie remis, gracie dogrywkę. Jeśli po dogrywce nadal remis — karne. Nie kończcie meczu na remisie.")
     render_match_vision_scan(tid,m,fmt)
     st.markdown("#### ✍️ Wpisanie ręczne / korekta")
     c1,mid,c2=st.columns([1,.18,1])
@@ -1624,7 +1635,7 @@ def score_form(tid,m,fmt):
     if wb_bonus:st.caption("Bonusowe 1:0 z Winners Bracket nie ma strzelca.")
     if st.button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True,key=f"save_score_{tid}_{no}"):
         scorers={"home":home_sc,"away":away_sc};ko=m["stage"] not in ("GROUP","LEAGUE")
-        if ko and int(hs)==int(ass):st.session_state.pending_ko={"tid":tid,"no":no,"hs":int(hs),"as":int(ass),"scorers":scorers};rf()
+        if (ko or group_decider) and int(hs)==int(ass):st.session_state.pending_ko={"tid":tid,"no":no,"hs":int(hs),"as":int(ass),"scorers":scorers,"group_decider":group_decider};rf()
         else:
             try:db.save_result(tid,no,int(hs),int(ass),scorers=scorers);rf()
             except ValueError as e:st.error(str(e))
@@ -1705,10 +1716,10 @@ def render_special_event(tid:str, b:dict) -> bool:
         if swiss_draw:
             rnd=(str(state.get("kind") or "").rsplit("_",1)[-1] or "?")
             st.markdown(f"### 🇨🇭 Pary — runda {rnd}")
-            st.caption("Pary następnej rundy Swiss zostają na ekranie do ręcznego zatwierdzenia.")
+            st.caption("Pary następnej rundy zostają na ekranie, dopóki ktoś ich nie klepnie. Nic nie ucieknie bokiem.")
         else:
             st.markdown("### 🎲 Losowanie w trakcie turnieju" if random_draw else "### ✅ Pary ustalone")
-            st.caption("Prawdziwe losowanie spośród równorzędnych wariantów." if random_draw else "Układ wynika jednoznacznie z zasad — pokazujemy go do zatwierdzenia bez udawania losowania.")
+            st.caption("Tu faktycznie losujemy. Żadnego udawania." if random_draw else "Tu nie ma co losować — zasady dały jeden układ. Pokazujemy go i czekamy na klepnięcie.")
         bye_pid=state.get("bye_player_id")
         if bye_pid:
             candidate=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
@@ -1847,7 +1858,7 @@ def live(tid:str):
                 db.defer_match(tid,int(cur["match_no"]));rf()
             except ValueError as e:st.error(str(e))
     with st.expander("🏳️ Poddaj mecz"):
-        st.caption("Ktoś musi spadać albo ma już dość? Dajemy 3:0 tylko na potrzeby turnieju. Poza nim ten mecz udaje, że nigdy się nie wydarzył.")
+        st.caption("Ktoś musi spadać albo ma już dość? Poddanie daje turniejowe 3:0. Poza tym turniejem ten mecz statystycznie nie istnieje.")
         options=[str(cur.get("home_player_id") or ""),str(cur.get("away_player_id") or "")]
         names={str(cur.get("home_player_id") or ""):str(cur.get("home_name") or "?"),str(cur.get("away_player_id") or ""):str(cur.get("away_name") or "?")}
         with st.form(f"forfeit_{tid}_{cur['match_no']}"):
@@ -2226,7 +2237,7 @@ def render_schedule(t):
     ready_pending=[] if abandoned else [m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
     next_no=int(ready_pending[1]["match_no"]) if len(ready_pending)>1 and cur_no is not None and int(ready_pending[0]["match_no"])==cur_no else None
     if cur_no is not None:
-        st.caption("Kolejność jest aktualizowana po każdym wyniku. Gotowe mecze są ustawiane zgodnie z faktyczną kolejnością gry, a zablokowane spotkania przesuwają się po ustaleniu uczestników.")
+        st.caption("Kolejka układa się na bieżąco. Gotowi grają, reszta czeka aż drabinka przestanie kombinować.")
     milestone_by_match={}
     if not int(t.get("is_test") or 0):
         for x in db.milestones_in_tournament(t["id"]):
@@ -2262,7 +2273,7 @@ def render_schedule(t):
 
 def render_stats(t=None,readonly:bool=False):
     st.subheader("📊 Statystyki wszech czasów")
-    st.caption("Tu lecą oficjalne staty. Jeśli turniej padł w połowie, rozegrane mecze zostają — ale mistrza z niedokończonej imprezy sobie nie dopisujemy.")
+    st.caption("Oficjalne mecze, turnieje i 1 vs 1. Rozegrane mecze z niedokończonego oficjalnego turnieju nadal liczą się do statystyk meczowych i Awards, ale taki turniej nie daje mistrza, podium ani tytułu.")
     stats=db.all_time_stats()
     if not stats:
         st.info("Brak rozegranych oficjalnych meczów. Historia testów nadal jest dostępna poniżej.")
@@ -2484,7 +2495,7 @@ def render_stats(t=None,readonly:bool=False):
 
         if not readonly:
             st.markdown("### ✏️ Listy zawodników drużyn")
-            st.caption("Dopisz nazwiska do listy i kliknij zapisz. Samo klepanie w pole niczego jeszcze nie wysadza.")
+            st.caption("Tu możesz dopisać zawodników do podpowiedzi. Wpisywanie w formularzu nie odświeża strony — zapis następuje dopiero po kliknięciu przycisku.")
             teams=db.scorer_roster_teams()
             selected_team=st.selectbox("Drużyna",teams,key="scorer_roster_team")
             current=db.team_scorer_options(selected_team)
@@ -2781,7 +2792,7 @@ def render_awards(readonly:bool=False):
                 if candidates:
                     st.dataframe(pd.DataFrame([{"#":i,"Gracz":x.get("name"),"Wynik":x.get("reason") or "—"} for i,x in enumerate(candidates[:5],1)]),hide_index=True,use_container_width=True)
                 else:
-                    st.caption("Brak wystarczającej próby.")
+                    st.caption("Jeszcze za mało grania. Statystyka nie będzie wróżyć z fusów.")
         return
 
     # W zwykłym widoku AWARDS pokazujemy dokładnie tę samą kolejność kategorii,
@@ -2807,7 +2818,7 @@ def render_awards(readonly:bool=False):
                 st.caption(f"💬 {AWARD_QUIPS[str(cat.get('key'))]}")
             if selected_note: st.markdown(selected_note)
             if not candidates:
-                st.info("Kategoria jest warunkowa albo nie ma jeszcze wystarczającej próby danych.")
+                st.info("Jeszcze za mało materiału. Trzeba pograć, a nie czarować tabelkę.")
             elif cat.get("key")=="debut":
                 def debut_table_rows(items):
                     return [{
@@ -2895,7 +2906,7 @@ def render_awards(readonly:bool=False):
         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
 
     st.divider();st.markdown("### 🔐 Organizator — wybór laureatów")
-    st.caption("W każdej kategorii możesz wybrać jedną osobę z TOP 2–3. Liczba już przyznanych nagród jest tylko informacją — nie ma twardego limitu.")
+    st.caption("Wybierasz laureata z czołówki. Liczba już przyznanych nagród to tylko podpowiedź — nikt tu nie zabiera pucharu za nadmiar szczęścia.")
     secret_ready=bool(admin_password())
     if readonly:
         st.info("📺 Tryb podglądu — kandydaci i wybrani laureaci są widoczni, ale wyboru dokonuje się na urządzeniu ze sterowaniem.")
@@ -2938,7 +2949,7 @@ def render_awards(readonly:bool=False):
         else:
             st.caption("🎁 Nikt nie ma jeszcze wybranej nagrody — zaczynamy od najważniejszych kategorii.")
 
-        st.caption("Kolejność poniżej jest celowa: najpierw wybierz główne nagrody. Przy kolejnych kategoriach zobaczysz, kto już coś dostał, więc przy zbliżonych kandydaturach możesz świadomie rozłożyć wyróżnienia szerzej. Nic nie jest wymuszane — organizator nadal może wybrać dowolną osobę z TOP 3.")
+        st.caption("Najpierw grube nagrody, potem reszta. Przy każdym kandydacie widać już jego staty i ile pucharów zgarnął — dalej decyduje człowiek, nie święta tabelka.")
 
         award_priority_groups=AWARD_PRIORITY_GROUPS
         cat_by_key={str(c.get("key")):c for c in award_cats}
@@ -3011,7 +3022,7 @@ def render_awards(readonly:bool=False):
     with c2:
         awards_png=generate_awards_png(year,selected_rows)
         st.download_button("⬇️ FIFA Night Awards — laureaci (PNG)",data=awards_png,file_name=f"fifa-night-awards-{year}.png",mime="image/png",use_container_width=True,key=f"awards_png_{year}")
-        if not selected_rows:st.caption("Najpierw wybierz laureatów. Grafika sama się, niestety, nie domyśli.")
+        if not selected_rows:st.caption("Grafika Awards będzie uzupełniać się dopiero po wyborze laureatów przez organizatora.")
 
 
 
@@ -3194,7 +3205,7 @@ def render_tv_screen(tid:str):
         if fmt!="duel1v1":
             runner=summary.get("runner_up") or "—"
             c1,c2=st.columns(2);c1.success(f"🏆 **{champ}**");c2.info(f"🥈 **{runner}**")
-        st.caption("Ekran odświeża się automatycznie. Nowy turniej uruchamia urządzenie ze sterowaniem.")
+        st.caption("TV samo się odświeża. Turniej odpala telefon ze sterowaniem — telewizor ma tylko wyglądać mądrze.")
         return
     if str(t.get("phase") or "") in SETUP_PHASES:
         render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL)
@@ -3272,7 +3283,7 @@ def render_tv_screen(tid:str):
 
     if not cur:
         st.markdown("### ⏳ Czekamy na kolejny mecz")
-        st.caption("Para pojawi się automatycznie po rozstrzygnięciu poprzedniego etapu.")
+        st.caption("Para wskoczy, gdy poprzedni etap wreszcie się rozstrzygnie.")
         return
     st.markdown(f"<div style='text-align:center;font-weight:900;color:#22c55e;letter-spacing:.08em;margin-bottom:.35rem'>▶️ TERAZ</div>",unsafe_allow_html=True)
     if not int(t.get("is_test") or 0):
