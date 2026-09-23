@@ -5566,21 +5566,48 @@ class Database:
                 out[key]=str(candidates[0].get("id"))
         return out
 
+    def _gala_snapshot(self, base: dict, order: list[str], nominee_order: dict, winner_ids: dict) -> dict:
+        """Freeze the public Gala payload once at START.
+
+        Live TV/status polling must never recalculate annual Awards; that was slow enough
+        to consume most of the intro timer before the television received the new state.
+        """
+        out={}
+        categories=base.get("categories") or {}
+        for key in order:
+            cat=categories.get(key) or {}
+            candidates=list(cat.get("candidates") or [])
+            by_id={str(x.get("id") or ""):x for x in candidates}
+            ids=list((nominee_order or {}).get(key) or [])
+            nominees=[dict(by_id[x]) for x in ids if x in by_id][:3]
+            if not nominees:nominees=[dict(x) for x in candidates[:3]]
+            wid=str((winner_ids or {}).get(key) or "")
+            winner=dict(by_id[wid]) if wid in by_id else None
+            out[key]={
+                "key":key,"title":cat.get("title") or GALA_AWARD_LABELS.get(key,key),
+                "engraving":cat.get("engraving"),"nominees":nominees,"winner":winner,
+                "winner_is_test_fallback":bool(winner and not str(((base.get("selections") or {}).get(key) or {}).get("id") or "")),
+            }
+        return out
+
     def start_awards_gala(self, year: int) -> dict:
         base=self._gala_base(year)
-        if not base["available"]:
+        if not base.get("available"):
             raise ValueError("Gala będzie dostępna po wybraniu laureatów wszystkich 18 kategorii.")
         # In rehearsal mode skip categories that genuinely have no candidates yet.
         # In production readiness guarantees the full 18-category order.
-        order=list(GALA_AWARD_ORDER if base["ready"] else base["available_keys"])
+        order=list(GALA_AWARD_ORDER if base.get("ready") else base["available_keys"])
         if not order:
             raise ValueError("Brak kandydatów do uruchomienia gali.")
         now=now_iso()
+        nominee_order=self._gala_nominee_order(base,order)
+        winner_ids=self._gala_winner_ids(base,order)
+        meta={k:base.get(k) for k in ("available","ready","test_mode","selected_count","required_count","missing_selections","missing_selection_details","invalid_selections","invalid_selection_details","unavailable_keys","unavailable")}
         state={
             "year":int(year),"status":"running","current_index":0,"category_started_at":now,
-            "order":order,"nominee_order":self._gala_nominee_order(base,order),
-            "winner_ids":self._gala_winner_ids(base,order),
-            "created_at":now,"updated_at":now,
+            "order":order,"nominee_order":nominee_order,"winner_ids":winner_ids,
+            "categories_snapshot":self._gala_snapshot(base,order,nominee_order,winner_ids),
+            "base_meta":meta,"created_at":now,"updated_at":now,
         }
         self._gala_save_state(year,state)
         return self.awards_gala_status(year)
@@ -5646,11 +5673,11 @@ class Database:
         def money(v):return f"{num(v,2)} zł"
 
         if key=="superscorer":
-            teaser=[f"{int(c.get('goals') or c.get('score') or 0)} goli",f"{int(c.get('fifa_night_players') or 0)} graczy FIFA Night • {int(c.get('hattricks') or 0)} hat-tricki"]
-            winner=list(teaser)
+            teaser=[f"{int(c.get('scoring_matches') or 0)} meczów z golem",f"{int(c.get('fifa_night_players') or 0)} graczy FIFA Night • {int(c.get('hattricks') or 0)} hat-tricki"]
+            winner=[f"{int(c.get('goals') or c.get('score') or 0)} goli",f"{int(c.get('scoring_matches') or 0)} meczów z golem",f"{int(c.get('fifa_night_players') or 0)} graczy FIFA Night • {int(c.get('hattricks') or 0)} hat-tricki"]
             special={"type":"goal_progress","values":list(c.get("goal_progress") or [])}
         elif key=="team_best":
-            teaser=[f"{int(c.get('matches') or 0)} meczów • {int(c.get('titles') or 0)} tytuły"]
+            teaser=[f"{int(c.get('matches') or 0)} meczów",f"{int(c.get('finals') or 0)} finał(y)"]
             winner=[f"{int(c.get('wins') or 0)} W • {int(c.get('draws') or 0)} R • {int(c.get('losses') or 0)} P • {pct(c.get('win_pct'))} W",
                     f"bramki {int(c.get('gf') or 0)}:{int(c.get('ga') or 0)} • bilans {signed(c.get('gd'),0)}",
                     f"{int(c.get('titles') or 0)} tytuły • {int(c.get('matches') or 0)} meczów"]
@@ -5766,10 +5793,14 @@ class Database:
         return {"display_name":name,"teaser_lines":[x for x in teaser if x],"winner_lines":[x for x in winner if x],"special":special}
 
     def awards_gala_status(self, year: int) -> dict:
-        base=self._gala_base(year);state=self._gala_load_state(year)
+        state=self._gala_load_state(year)
         if not state:
             state={"year":int(year),"status":"idle","current_index":-1,"order":[],"nominee_order":{},"winner_ids":{}}
         status=str(state.get("status") or "idle")
+        snapshot=state.get("categories_snapshot") or {}
+        # Once a Gala starts, all public data is frozen. Status polling is then a
+        # lightweight state read instead of a full annual_awards() rebuild.
+        base=(state.get("base_meta") or {}) if status in ("running","finale","finished") and snapshot else self._gala_base(year)
         idx=int(state.get("current_index") if state.get("current_index") is not None else -1)
         saved_order=list(state.get("order") or [])
         # Backward compatibility for Gala states created by an earlier checkpoint.
@@ -5778,19 +5809,24 @@ class Database:
         current=None;display_phase=status;elapsed=0.0;reveal_count=0
         winner_ids=state.get("winner_ids") or {}
         if current_key:
-            cat=(base.get("categories") or {}).get(current_key) or {}
-            candidates=list(cat.get("candidates") or [])
-            by_id={str(x.get("id") or ""):x for x in candidates}
-            order=list((state.get("nominee_order") or {}).get(current_key) or [])
-            nominees=[by_id[x] for x in order if x in by_id][:3]
-            if not nominees:nominees=candidates[:3]
-            frozen_id=str(winner_ids.get(current_key) or "")
-            selected=base.get("selections",{}).get(current_key) or {}
-            selected_id=frozen_id or str(selected.get("id") or "")
-            winner=by_id.get(selected_id)
-            fallback=bool(winner and frozen_id and not str((selected or {}).get("id") or ""))
-            if winner is None and GALA_TEST_MODE and candidates:
-                winner=candidates[0];fallback=True
+            snap=(snapshot.get(current_key) or {}) if snapshot else {}
+            if snap:
+                cat=snap;nominees=[dict(x) for x in (snap.get("nominees") or [])];winner=dict(snap.get("winner")) if snap.get("winner") else None;fallback=bool(snap.get("winner_is_test_fallback"))
+            else:
+                # Backward compatibility with Gala states created before snapshots.
+                cat=(base.get("categories") or {}).get(current_key) or {}
+                candidates=list(cat.get("candidates") or [])
+                by_id={str(x.get("id") or ""):x for x in candidates}
+                order=list((state.get("nominee_order") or {}).get(current_key) or [])
+                nominees=[by_id[x] for x in order if x in by_id][:3]
+                if not nominees:nominees=candidates[:3]
+                frozen_id=str(winner_ids.get(current_key) or "")
+                selected=base.get("selections",{}).get(current_key) or {}
+                selected_id=frozen_id or str(selected.get("id") or "")
+                winner=by_id.get(selected_id)
+                fallback=bool(winner and frozen_id and not str((selected or {}).get("id") or ""))
+                if winner is None and GALA_TEST_MODE and candidates:
+                    winner=candidates[0];fallback=True
             try:
                 started=datetime.fromisoformat(str(state.get("category_started_at") or "").replace("Z","+00:00"))
                 now=datetime.now(timezone.utc);elapsed=max(0.0,(now-started).total_seconds())
@@ -5819,21 +5855,25 @@ class Database:
             }
         winner_summary=[]
         if status in ("finale","finished"):
-            categories=base.get("categories") or {}; selections=base.get("selections") or {}
-            for key in runtime_order:
-                cat=categories.get(key) or {}; candidates=list(cat.get("candidates") or [])
-                by_id={str(x.get("id") or ""):x for x in candidates}
-                wid=str(winner_ids.get(key) or (selections.get(key) or {}).get("id") or "")
-                w=by_id.get(wid)
-                if w:
-                    winner_summary.append({"key":key,"title":cat.get("title") or GALA_AWARD_LABELS.get(key,key),"name":str(w.get("name") or "—")})
+            if snapshot:
+                for key in runtime_order:
+                    cat=snapshot.get(key) or {};w=cat.get("winner")
+                    if w:winner_summary.append({"key":key,"title":cat.get("title") or GALA_AWARD_LABELS.get(key,key),"name":str(w.get("name") or "—")})
+            else:
+                categories=base.get("categories") or {}; selections=base.get("selections") or {}
+                for key in runtime_order:
+                    cat=categories.get(key) or {}; candidates=list(cat.get("candidates") or [])
+                    by_id={str(x.get("id") or ""):x for x in candidates}
+                    wid=str(winner_ids.get(key) or (selections.get(key) or {}).get("id") or "")
+                    w=by_id.get(wid)
+                    if w:winner_summary.append({"key":key,"title":cat.get("title") or GALA_AWARD_LABELS.get(key,key),"name":str(w.get("name") or "—")})
         total=len(runtime_order) if status in ("running","finale","finished") and runtime_order else len(GALA_AWARD_ORDER)
         return {
-            "year":int(year),"status":status,"available":base["available"],"ready":base["ready"],
-            "test_mode":base["test_mode"],"selected_count":base["selected_count"],"required_count":base["required_count"],
-            "missing_selections":base["missing_selections"],"missing_selection_details":base["missing_selection_details"],
-            "invalid_selections":base["invalid_selections"],"invalid_selection_details":base["invalid_selection_details"],
-            "unavailable_keys":base["unavailable_keys"],"unavailable":base["unavailable"],
+            "year":int(year),"status":status,"available":base.get("available"),"ready":base.get("ready"),
+            "test_mode":base.get("test_mode"),"selected_count":base.get("selected_count"),"required_count":base.get("required_count"),
+            "missing_selections":base.get("missing_selections"),"missing_selection_details":base.get("missing_selection_details"),
+            "invalid_selections":base.get("invalid_selections"),"invalid_selection_details":base.get("invalid_selection_details"),
+            "unavailable_keys":base.get("unavailable_keys"),"unavailable":base.get("unavailable"),
             "order":runtime_order,"required_order":list(GALA_AWARD_ORDER),
             "current_index":idx,"total_categories":total,"current_category":current,
             "display_phase":display_phase,"phase_elapsed_seconds":round(elapsed,3),
@@ -5927,6 +5967,7 @@ class Database:
             "penalty_matches":0,"fairplay_a":0,"fairplay_b":0,"drama_raw":0.0,"names":None
         })
         teamagg=defaultdict(lambda:{"display":None,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"titles":0})
+        team_final_tournaments=defaultdict(set)
         match_candidates=[]
         match_map={(str(m["tournament_id"]),int(m["match_no"])):m for m in matches}
         # Parsed EA FC Summary snapshots. They are optional and only rows joined to
@@ -5980,6 +6021,10 @@ class Database:
                         version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
                         if self._is_wildcard_team(fteam,version):
                             ps[pid]["wc_finals"]+=1
+                        # Drużyna Roku teaser may show finals, but not titles. Count
+                        # at most one final appearance per club per tournament.
+                        if fteam and not (version=="FC26" and self._is_helper_team(fteam)):
+                            team_final_tournaments[self._norm_team_name(fteam)].add(tid)
 
         for m in matches:
             tid=str(m["tournament_id"]);h=str(m.get("home_player_id") or "");a=str(m.get("away_player_id") or "")
@@ -6855,7 +6900,8 @@ class Database:
             rating=50+(raw*100-50)*shrink*.8+max(-10,min(10,gdpm*3))*shrink+v["titles"]*3
             teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}",
                               "matches":int(v["m"]),"wins":int(v["w"]),"draws":int(v["d"]),"losses":int(v["l"]),
-                              "win_pct":round(v["w"]/v["m"]*100,1),"gf":int(v["gf"]),"ga":int(v["ga"]),"gd":int(v["gf"]-v["ga"]),"titles":int(v["titles"]),"rating":round(rating,1)})
+                              "win_pct":round(v["w"]/v["m"]*100,1),"gf":int(v["gf"]),"ga":int(v["ga"]),"gd":int(v["gf"]-v["ga"]),"titles":int(v["titles"]),
+                              "finals":len(team_final_tournaments.get(nt,set())),"rating":round(rating,1)})
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
         worst_team=top(worst,1)[0] if worst else None
         add("team_best","🏟️ Drużyna Roku","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje. Minimum 5 oficjalnych meczów danej drużyny.",teamitems,secondary=worst_team)
@@ -6870,6 +6916,7 @@ class Database:
                 "id":sn,"name":scorer_display.get(sn,sn),"score":goals,
                 "reason":f"{goals} wpisanych goli • {len(scorer_players.get(sn,set()))} graczy FIFA Night • {int(scorer_hattricks.get(sn,0))} hat-trick(i)",
                 "goals":int(goals),"fifa_night_players":len(scorer_players.get(sn,set())),
+                "scoring_matches":len(scorer_goals_by_match.get(sn) or {}),
                 "hattricks":int(scorer_hattricks.get(sn,0)),"goal_progress":progress,
             })
         add("superscorer","⚡ Supersnajper Roku","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
