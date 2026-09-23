@@ -1880,6 +1880,13 @@ def replay_awards_gala(year: int, authorization: str | None = Header(default=Non
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
 
 
+@app.post("/api/v1/gala/{year}/tv-ready")
+def awards_gala_tv_ready(year: int, current_index: int | None = None) -> dict[str, Any]:
+    # Public/idempotent TV acknowledgement. It can only start the clock of the
+    # category that is already armed by an authenticated controller action.
+    return db.mark_awards_gala_tv_ready(int(year),current_index)
+
+
 @app.post("/api/v1/gala/{year}/reset")
 def reset_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
     _require_controller_header(authorization)

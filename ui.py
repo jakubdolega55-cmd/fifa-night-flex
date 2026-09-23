@@ -407,7 +407,9 @@ def render_awards_gala_tv(initial_status: dict, api_url: str, year: int):
     import json
     payload=json.dumps(initial_status or {},ensure_ascii=False).replace("</","<\\/")
     endpoint=f"{str(api_url or '').rstrip('/')}/api/v1/gala/{int(year)}"
+    ready_endpoint=f"{endpoint}/tv-ready"
     endpoint_json=json.dumps(endpoint,ensure_ascii=False)
+    ready_endpoint_json=json.dumps(ready_endpoint,ensure_ascii=False)
     tpl=r"""
 <div id="gala-root" class="gala-shell"><div class="loading">FIFA NIGHT AWARDS</div></div>
 <style>
@@ -425,7 +427,9 @@ html,body{margin:0;background:transparent;font-family:Inter,ui-sans-serif,system
 <script>
 const ROOT=document.getElementById('gala-root');
 const ENDPOINT=__ENDPOINT__;
+const READY_ENDPOINT=__READY_ENDPOINT__;
 let state=__PAYLOAD__;
+let readyAckInFlight=false, readyAckKey='';
 const esc=(s)=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
 const plainTitle=(s)=>String(s||'').replace(/^\s*[^A-Za-zÀ-ž0-9]+\s*/, '').trim();
 function topLine(s){return `<div class="topline"><div class="brand">FIFA NIGHT AWARDS ${esc(s.year)}</div><div class="step">${s.status==='running' ? (Number(s.current_index)+1)+' / '+s.total_categories : 'GALA'}</div></div>`}
@@ -441,11 +445,12 @@ function beforeAfterHtml(sp,phase){let f=(v,signed=false)=>{let n=Number(v||0);l
 function vsHtml(g,c,key){let sp=g.special||{};let a,b;if(key==='rivalry'){let names=c.participant_names||[];a=names[0]||'?';b=names[1]||'?'}else{a=c.home_name||'?';b=c.away_name||'?'}let win=sp.winner_name||'';let lose=sp.loser_name||'';let badge=(nm)=>nm===win?'<div class="medal gold">GOLD</div>':(nm===lose?'<div class="medal transparent">TRANSPARENT</div>':'');return `<div class="vs-grid"><div><div class="vs-name">${esc(a)}</div>${badge(a)}</div><div class="vs-mark">VS</div><div><div class="vs-name">${esc(b)}</div>${badge(b)}</div></div>`}
 function renderWinner(s,c){let w=c.winner||{name:'—',gala:{}},g=w.gala||{},sp=g.special||{},phase=s.display_phase,cls=phase==='winner_animation'?'winner-anim':'winner-hold';let special='';if(sp.type==='goal_progress')special=goalCounterHtml(g,phase);else if(sp.type==='before_after')special=beforeAfterHtml(sp,phase);else if(sp.type==='finance_equation')special=`<div class="equation ${phase==='winner_animation'?'anim':''}"><span>${fmtMoney(sp.won)}</span><span>−</span><span>${fmtMoney(sp.paid)}</span><span>=</span><span class="result">${Number(sp.balance||0)>=0?'+':''}${fmtMoney(sp.balance)}</span></div>`;else if(sp.type==='rivalry_vs'||sp.type==='match_vs')special=vsHtml(g,w,c.key);else if(sp.type==='late_clock')special=`<div class="clock" id="late-clock">${phase==='winner_animation'?'85:00':esc(sp.latest||'90+')}</div>`;else if(sp.type==='player_year')special=`<div class="hero-metric ${phase==='winner_animation'?'anim':''}">${esc(sp.hero_metric||'')}</div>`;return `${topLine(s)}<div class="stage ${cls}"><div class="winner-card"><div class="winner-label">${esc(plainTitle(c.title||''))} • ${esc(s.year)}</div><div class="winner-name">${esc(g.display_name||w.name||'—')}</div>${special}${winnerLines(g.winner_lines||[])}<div class="hold-note">${phase==='winner_hold'?'CZEKA NA NASTĘPNĄ KATEGORIĘ':'ODSŁANIAMY LAUREATA'}</div></div></div>`}
 function renderFinale(s){let n=Number(s.total_categories||18);return `${topLine(s)}<div class="stage finale"><div class="finale-mark">🏆</div><div class="eyebrow">${s.status==='finished'?'GALA ZAKOŃCZONA':'WSZYSTKIE KATEGORIE ZA NAMI'}</div><div class="idle-title">FIFA NIGHT<br>AWARDS ${esc(s.year)}</div><div class="idle-sub">${n} kategorii. Jeden sezon. Dzięki za ten chaos.</div><div class="quote second" style="animation-delay:.65s">Do zobaczenia na następnym FIFA Night.</div></div>`}
-function render(s){state=s||state;let c=state.current_category||{};let html='';if(state.status==='idle')html=renderIdle(state);else if(state.status==='finale'||state.status==='finished')html=renderFinale(state);else if(state.display_phase==='intro')html=renderIntro(state,c);else if(state.display_phase==='nominees')html=renderNominees(state,c);else if(state.display_phase==='suspense')html=renderSuspense(state,c);else html=renderWinner(state,c);ROOT.innerHTML=html;startSpecialAnimation(state,c)}
+function render(s){state=s||state;let c=state.current_category||{};let html='';if(state.status==='idle')html=renderIdle(state);else if(state.status==='finale'||state.status==='finished')html=renderFinale(state);else if(state.display_phase==='intro'||state.display_phase==='intro_pending')html=renderIntro(state,c);else if(state.display_phase==='nominees')html=renderNominees(state,c);else if(state.display_phase==='suspense')html=renderSuspense(state,c);else html=renderWinner(state,c);ROOT.innerHTML=html;startSpecialAnimation(state,c);if(state.display_phase==='intro_pending')ackTvReady(state)}
+async function ackTvReady(s){let key=[s.year,s.current_index].join('|');if(readyAckInFlight||readyAckKey===key)return;readyAckInFlight=true;try{let r=await fetch(READY_ENDPOINT+'?current_index='+encodeURIComponent(s.current_index),{method:'POST',cache:'no-store'});if(r.ok)readyAckKey=key}catch(e){}finally{readyAckInFlight=false}}
 function startSpecialAnimation(s,c){if(s.display_phase!=='winner_animation')return;let w=c.winner||{},g=w.gala||{},sp=g.special||{};if(sp.type==='goal_progress'){let el=document.getElementById('goal-counter');let vals=(sp.values||[]).map(Number);if(!el||!vals.length)return;let i=0;let duration=Math.max(2400,Number(s.timing?.winner_animation_seconds||4)*1000-250);let step=Math.max(90,duration/Math.max(vals.length,1));let timer=setInterval(()=>{if(i>=vals.length){clearInterval(timer);return}el.textContent=vals[i]+' GOLI';i++},step)}else if(sp.type==='late_clock'){let el=document.getElementById('late-clock');if(!el)return;let vals=['85:00','88:00','90:00',String(sp.latest||'90+')],i=0;let timer=setInterval(()=>{i++;if(i>=vals.length){clearInterval(timer);return}el.textContent=vals[i]},850)}}
-async function poll(){try{let r=await fetch(ENDPOINT,{cache:'no-store'});if(r.ok){let next=await r.json();let sig=[next.status,next.current_index,next.display_phase,next.nominees_revealed].join('|');let old=[state.status,state.current_index,state.display_phase,state.nominees_revealed].join('|');if(sig!==old)render(next);else state=next}}catch(e){}}
-render(state);setInterval(poll,650);
+async function poll(){try{let r=await fetch(ENDPOINT,{cache:'no-store'});if(r.ok){let next=await r.json();let sig=[next.status,next.current_index,next.display_phase,next.nominees_revealed].join('|');let old=[state.status,state.current_index,state.display_phase,state.nominees_revealed].join('|');if(sig!==old)render(next);else{state=next;if(next.display_phase==='intro_pending')ackTvReady(next)}}}catch(e){}}
+render(state);setInterval(poll,500);
 </script>
 """
-    html_doc=tpl.replace("__ENDPOINT__",endpoint_json).replace("__PAYLOAD__",payload)
+    html_doc=tpl.replace("__ENDPOINT__",endpoint_json).replace("__READY_ENDPOINT__",ready_endpoint_json).replace("__PAYLOAD__",payload)
     components.html(html_doc,height=840,scrolling=False)

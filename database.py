@@ -136,8 +136,8 @@ GALA_OPENING_TEXTS = {
 }
 GALA_PLAYER_YEAR_SECOND_LINE = "Nie za jeden mecz. Nie za jeden turniej. Za cały jebany sezon."
 GALA_TIMING = {
-    "intro_seconds": 6.0,
-    "nominees_seconds": 15.0,
+    "intro_seconds": 9.0,
+    "nominees_seconds": 11.0,
     "nominee_interval_seconds": 2.5,
     "suspense_seconds": 4.5,
     "winner_animation_seconds": 4.0,
@@ -5604,7 +5604,7 @@ class Database:
         winner_ids=self._gala_winner_ids(base,order)
         meta={k:base.get(k) for k in ("available","ready","test_mode","selected_count","required_count","missing_selections","missing_selection_details","invalid_selections","invalid_selection_details","unavailable_keys","unavailable")}
         state={
-            "year":int(year),"status":"running","current_index":0,"category_started_at":now,
+            "year":int(year),"status":"running","current_index":0,"category_started_at":None,
             "order":order,"nominee_order":nominee_order,"winner_ids":winner_ids,
             "categories_snapshot":self._gala_snapshot(base,order,nominee_order,winner_ids),
             "base_meta":meta,"created_at":now,"updated_at":now,
@@ -5627,7 +5627,7 @@ class Database:
         if idx>=len(order)-1:
             state["status"]="finale";state["finale_started_at"]=now_iso()
         else:
-            state["current_index"]=idx+1;state["category_started_at"]=now_iso()
+            state["current_index"]=idx+1;state["category_started_at"]=None
         state["updated_at"]=now_iso();self._gala_save_state(year,state)
         return self.awards_gala_status(year)
 
@@ -5638,7 +5638,26 @@ class Database:
         live=self.awards_gala_status(year)
         if live.get("display_phase")!="winner_hold":
             raise ValueError("Kategorię można powtórzyć dopiero po zakończeniu jej revealu.")
-        state["category_started_at"]=now_iso();state["updated_at"]=now_iso();self._gala_save_state(year,state)
+        state["category_started_at"]=None;state["updated_at"]=now_iso();self._gala_save_state(year,state)
+        return self.awards_gala_status(year)
+
+    def mark_awards_gala_tv_ready(self, year: int, expected_index: int | None = None) -> dict:
+        """Start the category clock only after the TV has actually rendered it.
+
+        NEXT/START/REPLAY put the next category in an armed state with no running
+        timer.  The Streamlit TV iframe acknowledges that it can display the new
+        category, then this method starts the intro clock.  This prevents slow
+        network/render time from eating the opening quote.
+        """
+        state=self._gala_load_state(year)
+        if not state or state.get("status")!="running":
+            return self.awards_gala_status(year)
+        idx=int(state.get("current_index") if state.get("current_index") is not None else -1)
+        if expected_index is not None and int(expected_index)!=idx:
+            return self.awards_gala_status(year)
+        if not state.get("category_started_at"):
+            now=now_iso();state["category_started_at"]=now;state["tv_ready_at"]=now;state["updated_at"]=now
+            self._gala_save_state(year,state)
         return self.awards_gala_status(year)
 
     def reset_awards_gala(self, year: int) -> dict:
@@ -5827,13 +5846,18 @@ class Database:
                 fallback=bool(winner and frozen_id and not str((selected or {}).get("id") or ""))
                 if winner is None and GALA_TEST_MODE and candidates:
                     winner=candidates[0];fallback=True
-            try:
-                started=datetime.fromisoformat(str(state.get("category_started_at") or "").replace("Z","+00:00"))
-                now=datetime.now(timezone.utc);elapsed=max(0.0,(now-started).total_seconds())
-            except Exception:
+            started_raw=state.get("category_started_at")
+            if not started_raw:
                 elapsed=0.0
+            else:
+                try:
+                    started=datetime.fromisoformat(str(started_raw).replace("Z","+00:00"))
+                    now=datetime.now(timezone.utc);elapsed=max(0.0,(now-started).total_seconds())
+                except Exception:
+                    elapsed=0.0
             intro=float(GALA_TIMING["intro_seconds"]);nom=float(GALA_TIMING["nominees_seconds"]);sus=float(GALA_TIMING["suspense_seconds"]);anim=float(GALA_TIMING["winner_animation_seconds"]);interval=float(GALA_TIMING["nominee_interval_seconds"])
-            if elapsed<intro:display_phase="intro"
+            if not started_raw:display_phase="intro_pending"
+            elif elapsed<intro:display_phase="intro"
             elif elapsed<intro+nom:
                 display_phase="nominees";reveal_count=min(len(nominees),1+int((elapsed-intro)//interval))
             elif elapsed<intro+nom+sus:
@@ -5878,6 +5902,7 @@ class Database:
             "current_index":idx,"total_categories":total,"current_category":current,
             "display_phase":display_phase,"phase_elapsed_seconds":round(elapsed,3),
             "nominees_revealed":reveal_count,"timing":dict(GALA_TIMING),
+            "waiting_for_tv":status=="running" and display_phase=="intro_pending",
             "winner_summary":winner_summary,
             "can_replay":status=="running" and display_phase=="winner_hold",
             "can_advance":status=="finale" or (status=="running" and display_phase=="winner_hold"),
