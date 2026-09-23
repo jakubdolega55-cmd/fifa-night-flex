@@ -22,7 +22,8 @@ import streamlit as st
 
 from logic import (
     BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FIXED_TEAMS, WILDCARD_TEAM_SUGGESTIONS,
-    GAME_VERSIONS, REAL_HELPER_TEAM, normalize_game_version, fixed_teams_for_version, wildcard_suggestions_for_version, allowed_teams,
+    GAME_VERSIONS, TEAM_MODES, REAL_HELPER_TEAM, FRANCE_BANNED_TEAM, normalize_game_version, normalize_team_mode, effective_team_mode,
+    fixed_teams_for_version, wildcard_suggestions_for_version, banned_team_names, real_helper_available, is_wildcard_slot, allowed_teams,
     build_draw, draw_signature, structure_match_preview, group_members, group_table,
     schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_draft_order, reveal_order_with_previous_finalists, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, apply_de_playin_priority, weighted_bye_choice,
 )
@@ -39,6 +40,7 @@ APP_KEY = "flex"
 CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
 LAST_STAKE_KEY = "flex_last_stake_pln"
+TEAM_MODE_KEY = "flex_team_mode"
 
 # One canonical Awards order shared by Streamlit and mobile clients.
 # Keep selection flow and public display in the same order so the gala reads
@@ -380,11 +382,25 @@ class Database:
     def _is_helper_team(self, team_name: str) -> bool:
         return self._norm_team_name(team_name)==self._norm_team_name(REAL_HELPER_TEAM)
 
-    def _is_wildcard_team(self, team_name: str, game_version: str = "FC26") -> bool:
+    def _is_wildcard_team(self, team_name: str, game_version: str = "FC26", team_mode: str | None = None) -> bool:
         team=" ".join(str(team_name or "").strip().split())
-        if not team or self._is_helper_team(team):
+        version=normalize_game_version(game_version)
+        if not team:
             return False
-        fixed={self._norm_team_name(x) for x in fixed_teams_for_version(game_version)}
+        if team_mode is None:
+            # Historical callers may not know the stored mode. Treat every fixed team
+            # available in that EA FC version as non-WC; everything else remains WC.
+            fixed={self._norm_team_name(x) for x in fixed_teams_for_version(version,"clubs")}
+            if version=="FC26":
+                fixed|={self._norm_team_name(x) for x in fixed_teams_for_version(version,"national")}
+            if self._is_helper_team(team) and version=="FC26":
+                return False
+            return self._norm_team_name(team) not in fixed
+        mode=effective_team_mode(version,team_mode)
+        # Real is a helper only in legacy FC26 club mode. In FC27 it is a normal fixed club.
+        if self._is_helper_team(team) and real_helper_available(version,mode):
+            return False
+        fixed={self._norm_team_name(x) for x in fixed_teams_for_version(version,mode)}
         return self._norm_team_name(team) not in fixed
 
     @staticmethod
@@ -468,8 +484,8 @@ class Database:
                 if exists: continue
                 conn.execute(self._sql("INSERT INTO team_scorers (id,team_name,normalized_team,scorer_name,normalized_scorer,seed_rank,created_at) VALUES (?,?,?,?,?,?,?)"),
                              (str(uuid.uuid4()),team,nt,clean,ns,rank,now_iso()))
-        # Real is a helper team available in both game versions. Keep an explicit
-        # version-aware local roster so abbreviations are resolved in the right EA FC context.
+        # Real uses the same scorer seed in both versions: helper-only in FC26, normal wheel club in FC27.
+        # Keep a version-aware local roster so abbreviations resolve in the correct EA FC context.
         real_names=SCORER_SEEDS.get(REAL_HELPER_TEAM,[])
         nt=self._norm_team_name(REAL_HELPER_TEAM)
         for version in GAME_VERSIONS:
@@ -482,15 +498,23 @@ class Database:
                 conn.execute(self._sql("INSERT INTO footballer_rosters (id,game_version,team_name,normalized_team,scorer_name,normalized_scorer,seed_rank,created_at) VALUES (?,?,?,?,?,?,?,?)"),
                              (str(uuid.uuid4()),version,REAL_HELPER_TEAM,nt,clean,ns,rank,now_iso()))
 
-    def wildcard_team_suggestions(self, game_version: str = "FC26") -> list[str]:
-        game_version=normalize_game_version(game_version)
-        fixed={self._norm_team_name(x) for x in fixed_teams_for_version(game_version)}
-        with self.connect() as conn:
-            rows=self._fetchall(conn,"SELECT team,COUNT(*) AS c FROM tournament_players WHERE team<>'' GROUP BY team ORDER BY c DESC,team")
+    def wildcard_team_suggestions(self, game_version: str = "FC26", team_mode: str = "clubs") -> list[str]:
+        version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+        fixed={self._norm_team_name(x) for x in fixed_teams_for_version(version,mode)}
+        banned={self._norm_team_name(x) for x in banned_team_names(version,mode)}
+        history=[]
+        # Historical free-text choices remain useful only for legacy FC26 club mode.
+        # FC27 and national mode use the explicit ranked pools approved for the wheel/WC UI.
+        if mode=="clubs" and version=="FC26":
+            with self.connect() as conn:
+                rows=self._fetchall(conn,"SELECT team,COUNT(*) AS c FROM tournament_players WHERE team<>'' GROUP BY team ORDER BY c DESC,team")
+            history=[r["team"] for r in rows]
         out=[]; seen=set()
-        for name in wildcard_suggestions_for_version(game_version)+[r["team"] for r in rows]:
+        for name in wildcard_suggestions_for_version(version,mode)+history:
             clean=" ".join(str(name or "").strip().split()); norm=self._norm_team_name(clean)
-            if not clean or "dowolna drużyna" in clean.casefold() or norm in fixed or norm in seen: continue
+            if not clean or is_wildcard_slot(clean) or norm in fixed or norm in banned or norm in seen: continue
+            # Do not surface legacy helper Real as a WC suggestion in FC26.
+            if real_helper_available(version,mode) and self._is_helper_team(clean): continue
             seen.add(norm); out.append(clean)
         return out
 
@@ -498,11 +522,15 @@ class Database:
         clean=" ".join(str(team or "").strip().split())
         if not clean: raise ValueError("Wpisz drużynę dla Wild Card.")
         norm=self._norm_team_name(clean)
-        banned={"real","real madrid","real madryt","rma"}
-        if norm in banned or "real madrid" in norm or "real madryt" in norm: raise ValueError("Real Madryt jest banned 🚫")
-        meta=self._fetchone(conn,"SELECT team_pool_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
-        pool=json.loads(meta["team_pool_json"]) if meta else []
-        fixed={self._norm_team_name(x) for x in pool if "Dowolna drużyna" not in x}
+        trow=self._fetchone(conn,"SELECT game_version FROM tournaments WHERE id=?",(tid,)) or {}
+        meta,extra=self._meta_extra_conn(conn,tid)
+        version=normalize_game_version(trow.get("game_version")); mode=effective_team_mode(version,extra.get("team_mode") or "clubs")
+        banned={self._norm_team_name(x) for x in banned_team_names(version,mode)}
+        if norm in banned:
+            banned_label=FRANCE_BANNED_TEAM if mode=="national" else REAL_HELPER_TEAM
+            raise ValueError(f"{banned_label} jest banned 🚫")
+        pool=meta.get("team_pool") or []
+        fixed={self._norm_team_name(x) for x in pool if not is_wildcard_slot(x)}
         if norm in fixed: raise ValueError("Ta drużyna jest już osobnym wyborem w puli.")
         rows=self._fetchall(conn,"SELECT player_id,team FROM tournament_players WHERE tournament_id=? AND team<>''",(tid,))
         for r in rows:
@@ -515,6 +543,17 @@ class Database:
 
     def _setting_set_conn(self, conn, key: str, value: str) -> None:
         conn.execute(self._sql("INSERT INTO app_settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"), (key, value))
+
+    def team_mode_setting(self) -> str:
+        """Global default for NEW tournaments. Clubs remain the safe default."""
+        with self.connect() as conn:
+            return normalize_team_mode(self._setting_get_conn(conn, TEAM_MODE_KEY) or "clubs")
+
+    def set_team_mode(self, mode: str) -> str:
+        clean=normalize_team_mode(mode)
+        with self.connect() as conn:
+            self._setting_set_conn(conn,TEAM_MODE_KEY,clean)
+        return clean
 
     def last_player_count(self) -> int:
         with self.connect() as conn:
@@ -961,15 +1000,16 @@ class Database:
                 return 1.0
 
         stats=defaultdict(lambda:{"m":0.0,"points":0.0,"gf":0.0,"ga":0.0})
+        real_norm=self._norm_team_name(REAL_HELPER_TEAM)
+        exclude_real_helper=(game_version=="FC26")
         for r in rows:
             ht=str(r.get("home_team") or "").strip(); at=str(r.get("away_team") or "").strip()
             if not ht or not at: continue
             hs,ass=self._stats_score_pair(r); w=recency_weight(r.get("rating_date"))
-            real_norm=self._norm_team_name(REAL_HELPER_TEAM)
-            if self._norm_team_name(ht)!=real_norm:
+            if not (exclude_real_helper and self._norm_team_name(ht)==real_norm):
                 stats[ht]["m"]+=w; stats[ht]["gf"]+=hs*w; stats[ht]["ga"]+=ass*w
                 stats[ht]["points"]+=(1.0 if hs>ass else 0.5 if hs==ass else 0.0)*w
-            if self._norm_team_name(at)!=real_norm:
+            if not (exclude_real_helper and self._norm_team_name(at)==real_norm):
                 stats[at]["m"]+=w; stats[at]["gf"]+=ass*w; stats[at]["ga"]+=hs*w
                 stats[at]["points"]+=(1.0 if ass>hs else 0.5 if hs==ass else 0.0)*w
         out={}
@@ -995,9 +1035,9 @@ class Database:
             FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
             JOIN matches m ON m.tournament_id=t.id AND (m.home_player_id=tp.player_id OR m.away_player_id=tp.player_id)
             WHERE COALESCE(t.game_version,'FC26')='FC27' AND t.is_test=0 AND t.status IN ('completed','abandoned')
-              AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit' AND tp.team<>?
+              AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'
             GROUP BY tp.team
-        """,(REAL_HELPER_TEAM,))
+        """)
         nmap={str(r['team']):int(r['c']) for r in counts}
         teams=set(fc26)|set(fc27)|set(fixed_teams_for_version('FC27'))|set(wildcard_suggestions_for_version('FC27'))
         out={}
@@ -1005,7 +1045,6 @@ class Database:
             n=min(5,max(0,nmap.get(team,0)))
             alpha=n/5.0
             out[team]=(1-alpha)*float(fc26.get(team,50.0))+alpha*float(fc27.get(team,50.0))
-        out.pop(REAL_HELPER_TEAM,None)
         return out
 
     def live_team_ratings(self, game_version: str = "FC26") -> list[dict]:
@@ -1025,26 +1064,25 @@ class Database:
             """,(game_version,))
         agg=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
         real_norm=self._norm_team_name(REAL_HELPER_TEAM)
+        exclude_real_helper=(game_version=="FC26")
         for r in rows:
             ht=str(r.get("home_team") or "").strip();at=str(r.get("away_team") or "").strip()
             if not ht or not at: continue
-            if self._norm_team_name(ht)==real_norm or self._norm_team_name(at)==real_norm:
-                # Real is a helper only: the opponent's result affects its internal rating,
-                # but Real itself never appears in the public team-rating table.
-                pass
             hs,ass=self._stats_score_pair(r)
-            for team,gf,ga in ((ht,hs,ass),(at,ass,hs)):
-                if self._norm_team_name(team)==real_norm:continue
+            valid_ht=not (exclude_real_helper and self._norm_team_name(ht)==real_norm)
+            valid_at=not (exclude_real_helper and self._norm_team_name(at)==real_norm)
+            for team,gf,ga,valid in ((ht,hs,ass,valid_ht),(at,ass,hs,valid_at)):
+                if not valid:continue
                 agg[team]["m"]+=1;agg[team]["gf"]+=gf;agg[team]["ga"]+=ga
             if hs>ass:
-                if self._norm_team_name(ht)!=real_norm:agg[ht]["w"]+=1
-                if self._norm_team_name(at)!=real_norm:agg[at]["l"]+=1
+                if valid_ht:agg[ht]["w"]+=1
+                if valid_at:agg[at]["l"]+=1
             elif hs<ass:
-                if self._norm_team_name(at)!=real_norm:agg[at]["w"]+=1
-                if self._norm_team_name(ht)!=real_norm:agg[ht]["l"]+=1
+                if valid_at:agg[at]["w"]+=1
+                if valid_ht:agg[ht]["l"]+=1
             else:
-                if self._norm_team_name(ht)!=real_norm:agg[ht]["d"]+=1
-                if self._norm_team_name(at)!=real_norm:agg[at]["d"]+=1
+                if valid_ht:agg[ht]["d"]+=1
+                if valid_at:agg[at]["d"]+=1
         out=[]
         for team,v in agg.items():
             out.append({"team":team,"rating":float(ratings.get(team,50.0)),**v,"matches":int(v["m"]),"gd":int(v["gf"])-int(v["ga"]),"win_pct":round(v["w"]/v["m"]*100,1) if v["m"] else 0.0})
@@ -1052,8 +1090,11 @@ class Database:
         return out
 
     def create_tournament(self, player_names: list[str], player_count: int, format_key: str, teams: list[str], is_test: bool,
-                          stake_per_player: float = 0.0, cash_flags: list[bool] | None = None, game_version: str = "FC26") -> str:
+                          stake_per_player: float = 0.0, cash_flags: list[bool] | None = None, game_version: str = "FC26",
+                          team_mode: str | None = None) -> str:
         game_version=normalize_game_version(game_version)
+        requested_mode=team_mode if team_mode is not None else self.team_mode_setting()
+        team_mode=effective_team_mode(game_version,requested_mode)
         if player_count not in (3,4,5,6,7,8,9,10): raise ValueError("Obsługiwane są turnieje od 3 do 10 graczy.")
         if len(player_names) != player_count: raise ValueError(f"Turniej wymaga dokładnie {player_count} graczy.")
         clean = [" ".join(str(x or "").strip().split()) for x in player_names]
@@ -1091,7 +1132,9 @@ class Database:
             placements=(carry or {}).get("placement_by_player_id") or {}
             ratings=self._live_team_ratings_conn(conn,game_version)
             previous_teams=(carry or {}).get("previous_team_by_player_id") or {}
-            assignments = {} if draft_mode else weighted_team_assignments(pids, teams, placements, rng, ratings, previous_teams)
+            assignments = {} if draft_mode else weighted_team_assignments(
+                pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode
+            )
             if draft_mode:
                 reveal=weighted_draft_order(pids,placements,(carry or {}).get("source_player_count"),player_count,rng)
             else:
@@ -1103,6 +1146,7 @@ class Database:
             extra["cash_player_names"]=[name for name,flag in zip(clean,flags) if flag]
             extra["team_rating_snapshot"]={k:float(v) for k,v in ratings.items()}
             extra["game_version"]=game_version
+            extra["team_mode"]=team_mode
             if carry:
                 draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 draw=apply_de_playin_priority(draw,format_key,carry.get("placement_by_player_id") or {},rng,carry.get("new_player_ids") or [])
@@ -1122,12 +1166,15 @@ class Database:
         return tid
 
     def assign_real_helper(self, tid: str, player_id: str) -> dict:
-        """Assign Real outside wheel/WC only to a cash-opt-out player before structure draw."""
+        """Assign helper Real only in FC26 club mode, outside wheel/WC."""
         with self.connect() as conn:
-            t=self._fetchone(conn,"SELECT phase FROM tournaments WHERE id=?",(tid,))
+            t=self._fetchone(conn,"SELECT phase,game_version FROM tournaments WHERE id=?",(tid,))
             if not t or str(t.get("phase")) not in ("team_draft","team_draw"):
                 raise ValueError("Real pomocniczy można wybrać tylko przed losowaniem struktury turnieju.")
             meta,extra=self._meta_extra_conn(conn,tid)
+            version=normalize_game_version(t.get("game_version")); mode=effective_team_mode(version,extra.get("team_mode") or "clubs")
+            if not real_helper_available(version,mode):
+                raise ValueError("Real pomocniczy jest dostępny tylko w trybie klubowym EA FC 26.")
             cash={str(x) for x in (extra.get("cash_player_ids") or [])}
             if str(player_id) in cash:
                 raise ValueError("Real pomocniczy jest dostępny tylko dla gracza z „Gra za kasę = NIE”.")
@@ -1143,11 +1190,13 @@ class Database:
             return {"player_id":player_id,"name":prow.get("name") or "?","team":REAL_HELPER_TEAM}
 
     def create_duel(self, player_names: list[str], team_names: list[str], is_test: bool = False, stake_per_player: float = 0.0,
-                    cash_flags: list[bool] | None = None, game_version: str = "FC26") -> str:
+                    cash_flags: list[bool] | None = None, game_version: str = "FC26", team_mode: str | None = None) -> str:
         # 1 vs 1 is always an official match. Keep the is_test argument only for
         # backwards compatibility with older callers/API payloads.
         is_test=False
         game_version=normalize_game_version(game_version)
+        requested_mode=team_mode if team_mode is not None else self.team_mode_setting()
+        team_mode=effective_team_mode(game_version,requested_mode)
         clean=[" ".join(str(x or "").strip().split()) for x in player_names]
         if len(clean)!=2 or any(not x for x in clean): raise ValueError("Wybierz dwóch graczy.")
         if clean[0].casefold()==clean[1].casefold(): raise ValueError("Wybierz dwóch różnych graczy.")
@@ -1156,12 +1205,16 @@ class Database:
         norms=[self._norm_team_name(x) for x in teams]
         flags=list(cash_flags) if cash_flags is not None else [True,True]
         if len(flags)!=2: flags=[True,True]
-        real_norms={"real","real madrid","real madryt","rma"}
+        banned={self._norm_team_name(x) for x in banned_team_names(game_version,team_mode)}
         for i,norm in enumerate(norms):
-            is_real=norm in real_norms or "real madrid" in norm or "real madryt" in norm
-            if is_real and bool(flags[i]):
-                raise ValueError("Real Madryt jako pomoc jest dostępny tylko dla gracza z „Gra za kasę = NIE”.")
-            if is_real: teams[i]=REAL_HELPER_TEAM
+            if norm in banned:
+                banned_label=FRANCE_BANNED_TEAM if team_mode=="national" else REAL_HELPER_TEAM
+                raise ValueError(f"{banned_label} jest banned 🚫")
+            is_real=(norm in {"real","real madrid","real madryt","rma"} or "real madrid" in norm or "real madryt" in norm)
+            if is_real and real_helper_available(game_version,team_mode):
+                if bool(flags[i]):
+                    raise ValueError("Real Madryt jako pomoc jest dostępny tylko dla gracza z „Gra za kasę = NIE”.")
+                teams[i]=REAL_HELPER_TEAM
         norms=[self._norm_team_name(x) for x in teams]
         if norms[0]==norms[1]: raise ValueError("W meczu 1 vs 1 wybierz dwie różne drużyny.")
         # If either player opts out, the duel is automatically free. No one-sided stake.
@@ -1170,9 +1223,12 @@ class Database:
         with self.connect() as conn:
             pids=[self._get_or_create_player_conn(conn,n) for n in clean]
             draw={"slots":{"A":pids[0],"B":pids[1]}}
+            helper_ids=[pids[i] for i,t in enumerate(teams)
+                        if self._norm_team_name(t)==self._norm_team_name(REAL_HELPER_TEAM)
+                        and real_helper_available(game_version,team_mode)]
             extra={"stake_per_player":self._stake_cents(effective_stake)/100,"cash_player_ids":pids if effective_stake>0 else [],
                    "cash_player_names":clean if effective_stake>0 else [],"is_duel":True,"game_version":game_version,
-                   "real_helper_player_ids":[pids[i] for i,t in enumerate(teams) if self._norm_team_name(t)==self._norm_team_name(REAL_HELPER_TEAM)]}
+                   "team_mode":team_mode,"real_helper_player_ids":helper_ids}
             self._setting_set_conn(conn,CURRENT_KEY,tid); self._setting_set_conn(conn,LAST_STAKE_KEY,f"{extra['stake_per_player']:.2f}")
             conn.execute(self._sql("INSERT INTO tournaments (id,status,phase,is_test,is_current,game_version,groups_revealed,created_at) VALUES (?,'active','active',?,0,?,0,?)"),(tid,int(is_test),game_version,now_iso()))
             for i,(pid,team) in enumerate(zip(pids,teams),1):
@@ -1463,15 +1519,14 @@ class Database:
             return self._remaining_wheel_pool_conn(conn,tid)
 
     def available_wildcard_suggestions(self, tid: str) -> list[str]:
-        """Unused Wild Card clubs for this tournament, in the strength order of its EA FC version."""
+        """Unused Wild Card suggestions for this tournament in its version/mode ranking."""
         with self.connect() as conn:
-            t=self._fetchone(conn,"SELECT game_version FROM tournaments WHERE id=?",(tid,))
-            game_version=normalize_game_version((t or {}).get("game_version") if t else "FC26")
+            t=self._fetchone(conn,"SELECT game_version FROM tournaments WHERE id=?",(tid,)) or {}
+            _meta,extra=self._meta_extra_conn(conn,tid)
+            game_version=normalize_game_version(t.get("game_version"))
+            team_mode=effective_team_mode(game_version,extra.get("team_mode") or "clubs")
             picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team<>''",(tid,))
-        # Keep the curated version-specific strength ranking first (FC27 is based on
-        # the agreed top-100/top-200 player-strength review), then append historical
-        # clubs that are not already represented.
-        suggestions=self.wildcard_team_suggestions(game_version)
+        suggestions=self.wildcard_team_suggestions(game_version,team_mode)
         used={self._norm_team_name(r.get("team") or "") for r in picked}
         return [x for x in suggestions if self._norm_team_name(x) not in used]
 
@@ -1479,7 +1534,7 @@ class Database:
         with self.connect() as conn:
             meta=self._fetchone(conn,"SELECT team_pool_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,))
             if not meta: return []
-            pool=json.loads(meta["team_pool_json"]); fixed=[x for x in pool if "Dowolna drużyna" not in x]
+            pool=json.loads(meta["team_pool_json"]); fixed=[x for x in pool if not is_wildcard_slot(x)]
             picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team_revealed=1",(tid,))
             picked_names=[r["team"] for r in picked]
             fixed_norm={self._norm_team_name(x):x for x in fixed}; used_fixed={self._norm_team_name(x) for x in picked_names if self._norm_team_name(x) in fixed_norm}
@@ -1497,10 +1552,10 @@ class Database:
             if not current: return True
             if current["player_id"]!=player_id: raise ValueError("Teraz wybiera inny gracz.")
             meta=self._fetchone(conn,"SELECT team_pool_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,)); pool=json.loads(meta["team_pool_json"])
-            fixed=[x for x in pool if "Dowolna drużyna" not in x]
+            fixed=[x for x in pool if not is_wildcard_slot(x)]
             picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team_revealed=1",(tid,)); picked_names=[r["team"] for r in picked]
             picked_norm={self._norm_team_name(x) for x in picked_names}
-            is_wild=(str(slot)=="🃏 Wild Card" or "Dowolna drużyna" in str(slot))
+            is_wild=(str(slot)=="🃏 Wild Card" or is_wildcard_slot(slot))
             if is_wild:
                 team=self._validate_wildcard_team_conn(conn,tid,wildcard_name,player_id)
             else:
@@ -1533,7 +1588,7 @@ class Database:
             pool=self._remaining_wheel_pool_conn(conn,tid)
             pending=extra.get("pending_wildcard")
             if pending: return {**pending,"wheel_team":pending.get("team"),"pool":pool,"wildcard":True}
-            if "Dowolna drużyna" in str(row.get("team") or ""):
+            if is_wildcard_slot(row.get("team")):
                 pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
                 extra["pending_wildcard"]=pending
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
@@ -4436,7 +4491,7 @@ class Database:
         """
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
-            champions=self._fetchall(conn,"""SELECT tp.team,tp.player_id,p.name
+            champions=self._fetchall(conn,"""SELECT tp.team,tp.player_id,p.name,t.game_version
                 FROM tournaments t
                 JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
                 JOIN tournament_players tp ON tp.tournament_id=t.id AND tp.player_id=t.champion_player_id
@@ -4448,6 +4503,8 @@ class Database:
             for side in ("home","away"):
                 pid=m.get(f"{side}_player_id"); team=" ".join(str(m.get(f"{side}_team") or "").strip().split())
                 if not pid or not team: continue
+                if normalize_game_version(m.get("game_version"))=="FC26" and self._is_helper_team(team):
+                    continue
                 nt=self._norm_team_name(team); rec=agg[nt]; rec["display"]=rec["display"] or team; rec["matches"]+=1; rec["players"].add(pid)
                 hs,ass=self._stats_score_pair(m)
                 gf,ga=(hs,ass) if side=="home" else (ass,hs)
@@ -4458,6 +4515,8 @@ class Database:
         for c in champions:
             team=" ".join(str(c.get("team") or "").strip().split())
             if team:
+                if normalize_game_version(c.get("game_version"))=="FC26" and self._is_helper_team(team):
+                    continue
                 nt=self._norm_team_name(team); agg[nt]["display"]=agg[nt]["display"] or team; agg[nt]["titles"]+=1; agg[nt]["players"].add(c["player_id"])
         best_by_team={}
         for (nt,pid),v in by_player.items():
@@ -4471,7 +4530,6 @@ class Database:
             out.append({"team":v["display"] or nt,"matches":v["matches"],"w":v["w"],"d":v["d"],"l":v["l"],"gf":v["gf"],"ga":v["ga"],
                         "gd":v["gf"]-v["ga"],"titles":v["titles"],"players":len(v["players"]),"win_pct":round(v["w"]/v["matches"]*100,1),
                         "goals_per_match":round(v["gf"]/v["matches"],2),"best_player":bp.get("player_name") or "—","best_player_wins":bp.get("w",0)})
-        out=[row for row in out if self._norm_team_name(row.get("team"))!=self._norm_team_name(REAL_HELPER_TEAM)]
         out.sort(key=lambda x:(x["titles"],x["w"],x["win_pct"],x["gd"]),reverse=True)
         return out
 
@@ -5959,9 +6017,12 @@ class Database:
             # Grand Final decides the player's match but does not give the CLUB a win.
             home_team_result=self._team_result_from_score(hs,ass,True)
             away_team_result=self._team_result_from_score(hs,ass,False)
+            _team_version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
             for pid,team,gf,ga,r in ((h,m.get("home_team"),hs,ass,home_team_result),(a,m.get("away_team"),ass,hs,away_team_result)):
                 team=" ".join(str(team or "").split())
                 if team:
+                    if _team_version=="FC26" and self._is_helper_team(team):
+                        continue
                     nt=self._norm_team_name(team);tr=teamagg[nt];tr["display"]=tr["display"] or team;tr["m"]+=1;tr["gf"]+=gf;tr["ga"]+=ga;tr[{"W":"w","D":"d","L":"l"}[r]]+=1
             if tid not in tournament_ids:continue
             stages_by_player_tournament[(tid,h)].add(stage); stages_by_player_tournament[(tid,a)].add(stage)
@@ -6015,9 +6076,12 @@ class Database:
                 debut_seq[pid].append({"tid":tid,"stage":stage,"result":r,"pts":pts,"gf":gf,"ga":ga})
                 tr=v["t_results"][tid];tr["m"]+=1;tr["pts"]+=pts;tr["gf"]+=gf;tr["ga"]+=ga
                 team=" ".join(str(team or "").split())
+                version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
                 if team:
-                    nt=self._norm_team_name(team);tv=v["teams"][nt];tv["m"]+=1;tv["gf"]+=gf;tv["ga"]+=ga;tv["w"]+=int(r=="W")
-                    version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
+                    # Real is only a helper in FC26 and must stay outside team-based Awards.
+                    # In FC27 it is a normal wheel club and counts exactly like every other club.
+                    if not (version=="FC26" and self._is_helper_team(team)):
+                        nt=self._norm_team_name(team);tv=v["teams"][nt];tv["m"]+=1;tv["gf"]+=gf;tv["ga"]+=ga;tv["w"]+=int(r=="W")
                     if self._is_wildcard_team(team,version):v["wc_m"]+=1;v["wc_w"]+=int(r=="W");v["wc_gf"]+=gf;v["wc_ga"]+=ga
                 if stage in clutch_stages:
                     v["clutch_m"]+=1;v["clutch_w"]+=int(r=="W")
@@ -6193,6 +6257,9 @@ class Database:
             tid=str(e["id"]);champ=str(e.get("champion_player_id") or "")
             if tid in tournament_ids and champ:
                 team=team_by.get((tid,champ),"");nt=self._norm_team_name(team)
+                version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
+                if version=="FC26" and self._is_helper_team(team):
+                    continue
                 if nt:teamagg[nt]["display"]=teamagg[nt]["display"] or team;teamagg[nt]["titles"]+=1
         # Scorers:
         # - scorer_totals: concrete EA FC footballer across all official matches (Supersnajper)
@@ -6663,6 +6730,9 @@ class Database:
             fmt=str(event_by.get(tid,{}).get("format_key") or "")
             team=" ".join(str(team_by.get((tid,pid),"") or "").split())
             if not team:continue
+            version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
+            if version=="FC26" and self._is_helper_team(team):
+                continue
             if fmt.startswith("double"):
                 success=bool(stages & {"WB_FINAL","LB_FINAL","FINAL","RESET_FINAL"})
             elif fmt.startswith("groups"):
@@ -6780,7 +6850,7 @@ class Database:
         add("rivalry","⚔️ Rywalizacja Roku","Tylko turniejowe H2H: częstotliwość, wyrównanie, ważne mecze i mały bonus za dramatyczność. Minimum 3 bezpośrednie mecze w roku.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
-            if nt==self._norm_team_name(REAL_HELPER_TEAM) or v["m"]<5:continue
+            if v["m"]<5:continue
             raw=(v["w"]*3+v["d"])/(v["m"]*3);shrink=v["m"]/(v["m"]+6);gdpm=(v["gf"]-v["ga"])/v["m"]
             rating=50+(raw*100-50)*shrink*.8+max(-10,min(10,gdpm*3))*shrink+v["titles"]*3
             teamitems.append({"id":nt,"name":v["display"] or nt,"score":round(rating,2),"reason":f"rating {rating:.1f} • {v['w']}/{v['m']} W • {v['titles']} tytuł(y) • {v['gf']}:{v['ga']}",

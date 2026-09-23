@@ -9,10 +9,11 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from logic import structure_match_preview
+from logic import structure_match_preview, is_wildcard_slot
 
 TEAM_SHORT = {
-    "Bayern Monachium":"BAYERN", "FC Barcelona":"BARCA", "PSG":"PSG", "Liverpool":"LIVERPOOL", "Manchester City":"MAN CITY",
+    "Bayern Monachium":"BAYERN", "FC Barcelona":"BARCA", "PSG":"PSG", "Liverpool":"LIVERPOOL", "Manchester City":"MAN CITY", "Real Madryt":"REAL", "Arsenal":"ARSENAL", "Atletico":"ATLETICO", "Man United":"MAN UTD", "Inter":"INTER", "BVB":"BVB",
+    "Hiszpania":"HISZPANIA", "Anglia":"ANGLIA", "Brazylia":"BRAZYLIA", "Niemcy":"NIEMCY", "Portugalia":"PORTUGALIA",
     "Dowolna drużyna (Real Madryt banned)":"DZIKA KARTA",
     "Dowolna drużyna #1 (Real Madryt banned)":"WC 1",
     "Dowolna drużyna #2 (Real Madryt banned)":"WC 2",
@@ -58,8 +59,14 @@ def hero(subtitle="4–8 graczy • jeden link • różne formaty"):
 
 
 def joke_for(player,team,tid):
-    if "Dowolna drużyna" in team:
-        choices=["Wildcard. Real Madryt nadal banned 🚫","Florentino złożył protest. Odrzucony."]
+    if is_wildcard_slot(team):
+        raw=str(team or "").casefold()
+        if "francja banned" in raw:
+            choices=["Wildcard. Francja ogląda z trybun 🚫","Francja złożyła protest. Odrzucony."]
+        elif "real madryt banned" in raw:
+            choices=["Wildcard. Real Madryt nadal banned 🚫","Florentino złożył protest. Odrzucony."]
+        else:
+            choices=["Wildcard. Teraz dopiero zaczyna się kombinowanie.","Dzika karta. Komisja umywa ręce."]
     else: choices=JOKES.get(team,["Los zdecydował. Pretensje do komisji."])
     d=hashlib.sha256(f"{player}|{team}|{tid}".encode()).digest(); return choices[int.from_bytes(d[:2],"big")%len(choices)]
 
@@ -78,7 +85,7 @@ def render_wheel(result,player,tid,pool,display_result=None):
     if wheel_result not in pool:
         # Po zatwierdzeniu WC `result` może być już konkretnym klubem,
         # podczas gdy koło nadal zawiera techniczny slot Wild Card.
-        wildcards=[x for x in pool if "Dowolna drużyna" in str(x)]
+        wildcards=[x for x in pool if is_wildcard_slot(x)]
         if wildcards:
             wheel_result=wildcards[0]
         elif pool:
@@ -103,14 +110,19 @@ def render_wheel(result,player,tid,pool,display_result=None):
     for i,team in enumerate(pool):
         sectors.append(f'<path d="{sector_path_tv(i)}" fill="{COLORS[i%len(COLORS)]}" stroke="rgba(255,255,255,.25)" stroke-width="2"/>')
         deg=i*span;rad=math.radians(deg);x=c+label_r*math.sin(rad);y=c-label_r*math.cos(rad)
-        if "Dowolna drużyna" in str(team):
+        if is_wildcard_slot(team):
             # Supports WC1–WC5 even if a future pool name is not explicitly in TEAM_SHORT.
             import re
             m=re.search(r"#(\d+)",str(team)); label=f"WC {m.group(1)}" if m else "WILD CARD"
         else:
             label=TEAM_SHORT.get(team,team[:12].upper())
         labels.append(f'<text x="{x:.1f}" y="{y:.1f}" class="wl" text-anchor="middle" dominant-baseline="middle">{html.escape(label)}</text>')
-    wc_note = "<div class='legend'><b>WC</b> = Wild Card &nbsp;•&nbsp; Real Madryt jest poza kołem</div>" if any("Dowolna drużyna" in str(x) for x in pool) else ""
+    if any(is_wildcard_slot(x) for x in pool):
+        joined=" ".join(str(x) for x in pool).casefold()
+        banned_note=" • Francja banned" if "francja banned" in joined else (" • Real Madryt poza kołem" if "real madryt banned" in joined else "")
+        wc_note=f"<div class='legend'><b>WC</b> = Wild Card{banned_note}</div>"
+    else:
+        wc_note=""
     components.html(f"""<div class='card'><div class='eye'>LOSOWANIE DRUŻYNY</div><div class='who'>Teraz losujemy dla <b>{html.escape(player)}</b></div><div class='shell'><div class='pointer'><span></span></div><svg viewBox='0 0 560 560'><g class='spin'>{''.join(sectors)}{''.join(labels)}<circle cx='280' cy='280' r='56' fill='#07111f' stroke='#f8fafc' stroke-width='8'/><text x='280' y='280' text-anchor='middle' dominant-baseline='middle' class='hub'>FC</text></g></svg></div>{wc_note}<div class='land'><div class='small'>{html.escape(player)} dostaje</div><div class='team'>{html.escape(display_result)}</div><div class='joke'>{html.escape(joke_for(player,display_result,tid))}</div></div></div>
     <style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.card{{max-width:900px;margin:2px auto;padding:18px 18px 16px;border-radius:26px;background:radial-gradient(circle at 50% 28%,#1e3a5f,#111c30 48%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center;overflow:hidden}}.eye{{font-size:12px;font-weight:950;letter-spacing:.19em;color:#7dd3fc}}.who{{font-size:20px;color:#dbeafe;margin:5px 0 2px}}.shell{{position:relative;width:min(74vw,560px);margin:0 auto}}svg{{display:block;width:100%;filter:drop-shadow(0 18px 22px rgba(0,0,0,.38))}}.spin{{transform-box:view-box;transform-origin:280px 280px;animation:spin 10s cubic-bezier(.08,.72,.10,1) forwards}}@keyframes spin{{to{{transform:rotate({rotation:.2f}deg)}}}}.wl{{fill:white;font-size:{'17' if n>=9 else '18'}px;font-weight:1000;letter-spacing:.02em;paint-order:stroke;stroke:rgba(0,0,0,.58);stroke-width:4px;stroke-linejoin:round}}.hub{{fill:#fff;font-size:27px;font-weight:1000}}.pointer{{position:absolute;z-index:5;top:3px;left:50%;transform:translateX(-50%);width:52px;height:62px}}.pointer:before{{content:'';position:absolute;left:8px;top:0;width:36px;height:36px;border-radius:50%;background:#f8fafc;border:6px solid #0b1220;box-shadow:0 5px 12px rgba(0,0,0,.3)}}.pointer span{{position:absolute;left:12px;top:30px;border-left:14px solid transparent;border-right:14px solid transparent;border-top:27px solid #f8fafc}}.legend{{display:inline-block;margin:-1px auto 7px;padding:5px 11px;border-radius:999px;background:rgba(15,23,42,.75);border:1px solid rgba(148,163,184,.2);font-size:12px;color:#94a3b8}}.legend b{{color:#f8fafc}}.land{{opacity:0;transform:translateY(8px);animation:land .38s ease 9.72s forwards;min-height:78px}}@keyframes land{{to{{opacity:1;transform:none}}}}.small{{font-size:12px;color:#94a3b8;text-transform:uppercase;font-weight:850}}.team{{font-size:clamp(24px,4vw,34px);font-weight:1000;color:#fff;margin:4px 0}}.joke{{font-size:14px;color:#cbd5e1}}@media(max-width:720px){{.card{{padding:14px 8px 13px}}.shell{{width:min(92vw,500px)}}.wl{{font-size:{'15' if n>=9 else '16'}px}}.who{{font-size:17px}}}}</style>{FIT_SCRIPT}""",height=760,scrolling=False)
 
@@ -305,7 +317,7 @@ def render_synced_setup_tv(tid: str, api_url: str):
       const FEED={url_js}; const root=document.getElementById('stage'); const headline=document.getElementById('headline');
       const seen=new Set(); const queue=[]; let initialized=false, playing=false, latest=null, timer=null;
       const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[m]));
-      const short=s=>{{s=String(s||'');const wc=s.match(/Dowolna drużyna(?: #(\\d+))?/i);if(wc)return wc[1]?`WC ${{wc[1]}}`:'WILD CARD';return s.replace('Manchester City','MAN CITY').replace('Bayern Monachium','BAYERN').replace('FC Barcelona','BARCA').slice(0,15).toUpperCase()}};
+      const short=s=>{{s=String(s||'');const wc=s.match(/Dowolna (?:drużyna|reprezentacja)(?: #(\\d+))?/i);if(wc)return wc[1]?`WC ${{wc[1]}}`:'WILD CARD';return s.replace('Manchester City','MAN CITY').replace('Bayern Monachium','BAYERN').replace('FC Barcelona','BARCA').replace('Real Madryt','REAL').slice(0,15).toUpperCase()}};
       function phaseName(p){{return ({{draft_order:'Losowanie kolejności draftu',team_draft:'Draft drużyn',team_draw:'Koło drużyn',structure_draw:'Losowanie struktury'}})[p]||'Przygotowanie FIFA Night'}}
       function wheelMarkup(pool,player,spinning,target,result){{
         pool=pool||[]; const n=Math.max(pool.length,1); const idx=Math.max(0,pool.indexOf(target)); const colors=['#2563EB','#DB2777','#0891B2','#EA580C','#16A34A','#7C3AED','#CA8A04','#DC2626'];

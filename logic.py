@@ -10,23 +10,32 @@ WILDCARD_TEAM_SUGGESTIONS = [
 ]
 
 GAME_VERSIONS = ("FC26", "FC27")
+TEAM_MODES = ("clubs", "national")
 REAL_HELPER_TEAM = "Real Madryt"
+FRANCE_BANNED_TEAM = "Francja"
 
 FC26_FIXED_TEAMS = ["Bayern Monachium", "FC Barcelona", "PSG", "Liverpool"]
 FC26_WILDCARD_SUGGESTIONS = WILDCARD_TEAM_SUGGESTIONS.copy()
-FC27_FIXED_TEAMS = ["PSG", "Bayern Monachium", "FC Barcelona", "Arsenal", "Manchester City"]
-# FC27 strength order from the approved Top 15 review. Real Madrid is banned and
-# the five strongest non-Real clubs are already the fixed wheel pool, so Wild Card
-# suggestions continue with the remaining ranked clubs in order.
+
+# EA FC 27 clubs — approved wheel/Wild Card split.
+# Real is a normal wheel club in FC27; Manchester City moves to Wild Cards.
+FC27_FIXED_TEAMS = ["Real Madryt", "PSG", "Bayern Monachium", "FC Barcelona", "Arsenal"]
 FC27_WILDCARD_SUGGESTIONS = [
-    "Atletico", "Liverpool", "Man United", "Inter", "BVB", "Napoli", "Chelsea", "Tottenham", "AC Milan",
+    "Manchester City", "Atletico", "Liverpool", "Man United", "Inter", "BVB",
+    "Napoli", "Chelsea", "Tottenham", "AC Milan",
 ]
 
-# Extra soft handicap inside the five fixed FC27 clubs. PSG remains possible for
-# everybody, but the previous champion/finalist are less likely to receive it.
-PSG_TOP_FINISHER_MULTIPLIER = {1: 0.50, 2: 0.70}
+# National teams are supported only in FC27. France is banned.
+FC27_NATIONAL_FIXED_TEAMS = ["Hiszpania", "Anglia", "Brazylia", "Niemcy", "Portugalia"]
+FC27_NATIONAL_WILDCARD_SUGGESTIONS = [
+    "Włochy", "Argentyna", "Holandia", "Belgia", "Chorwacja",
+    "Dania", "Maroko", "Turcja", "Szwajcaria",
+]
 
-# Backwards-compatible aliases used by existing screens. FC26 remains legacy/default.
+# Strong-team soft handicap for previous champion/finalist.
+TOP_FINISHER_STRONG_TEAM_MULTIPLIER = {1: 0.50, 2: 0.70}
+
+# Backwards-compatible aliases used by existing screens. FC26 clubs remain legacy/default.
 FIXED_TEAMS = FC26_FIXED_TEAMS
 BASE_TEAMS = FIXED_TEAMS + ["Dowolna drużyna (Real Madryt banned)"]
 SIX_TEAMS = FIXED_TEAMS + ["Dowolna drużyna #1 (Real Madryt banned)", "Dowolna drużyna #2 (Real Madryt banned)"]
@@ -39,24 +48,98 @@ def normalize_game_version(value: str | None) -> str:
     return raw if raw in GAME_VERSIONS else "FC26"
 
 
-def fixed_teams_for_version(game_version: str) -> list[str]:
-    return (FC27_FIXED_TEAMS if normalize_game_version(game_version)=="FC27" else FC26_FIXED_TEAMS).copy()
+def normalize_team_mode(value: str | None) -> str:
+    raw=str(value or "clubs").strip().casefold()
+    return "national" if raw in {"national","nationals","reps","reprezentacje","reprezentacja"} else "clubs"
 
 
-def wildcard_suggestions_for_version(game_version: str) -> list[str]:
-    return (FC27_WILDCARD_SUGGESTIONS if normalize_game_version(game_version)=="FC27" else FC26_WILDCARD_SUGGESTIONS).copy()
+def effective_team_mode(game_version: str, team_mode: str | None = "clubs") -> str:
+    # National teams are intentionally FC27-only. FC26 always remains clubs.
+    version=normalize_game_version(game_version)
+    mode=normalize_team_mode(team_mode)
+    return "national" if version=="FC27" and mode=="national" else "clubs"
 
 
-def allowed_teams(player_count: int, game_version: str = "FC26") -> list[str]:
-    fixed=fixed_teams_for_version(game_version)
-    # FC27: exactly five normal teams; every extra seat is a real weakening Wild Card.
-    normal_count=5 if normalize_game_version(game_version)=="FC27" else 4
+def fixed_teams_for_version(game_version: str, team_mode: str | None = "clubs") -> list[str]:
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    if mode=="national":
+        return FC27_NATIONAL_FIXED_TEAMS.copy()
+    return (FC27_FIXED_TEAMS if version=="FC27" else FC26_FIXED_TEAMS).copy()
+
+
+def wildcard_suggestions_for_version(game_version: str, team_mode: str | None = "clubs") -> list[str]:
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    if mode=="national":
+        return FC27_NATIONAL_WILDCARD_SUGGESTIONS.copy()
+    return (FC27_WILDCARD_SUGGESTIONS if version=="FC27" else FC26_WILDCARD_SUGGESTIONS).copy()
+
+
+def banned_team_names(game_version: str, team_mode: str | None = "clubs") -> set[str]:
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    if mode=="national":
+        return {"france","francja"}
+    if version=="FC26":
+        return {"real","real madrid","real madryt","rma"}
+    return set()
+
+
+def real_helper_available(game_version: str, team_mode: str | None = "clubs") -> bool:
+    return normalize_game_version(game_version)=="FC26" and effective_team_mode(game_version,team_mode)=="clubs"
+
+
+def is_wildcard_slot(value: str | None) -> bool:
+    raw=str(value or "").casefold()
+    return "dowolna drużyna" in raw or "dowolna reprezentacja" in raw
+
+
+def wildcard_slot_label(index: int | None, game_version: str, team_mode: str | None = "clubs") -> str:
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    base="Dowolna reprezentacja" if mode=="national" else "Dowolna drużyna"
+    suffix=f" #{int(index)}" if index else ""
+    if mode=="national":
+        return f"{base}{suffix} (Francja banned)"
+    if version=="FC26":
+        return f"{base}{suffix} (Real Madryt banned)"
+    return f"{base}{suffix}"
+
+
+def allowed_teams(player_count: int, game_version: str = "FC26", team_mode: str | None = "clubs") -> list[str]:
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    fixed=fixed_teams_for_version(version,mode)
+    # FC27 clubs and FC27 national teams use five fixed wheel teams. Legacy FC26 clubs use four.
+    normal_count=5 if (version=="FC27" or mode=="national") else 4
     fixed=fixed[:normal_count]
     if player_count <= len(fixed):
-        # 3–4 stay manual draft; 5 uses the full normal FC27 pool without WC.
-        return fixed + (["Dowolna drużyna (Real Madryt banned)"] if normalize_game_version(game_version)=="FC26" else [])
+        # 3–4 use draft; FC26 clubs keep one optional Wild Card slot at five.
+        if mode=="clubs" and version=="FC26" and player_count==5:
+            return fixed + [wildcard_slot_label(None,version,mode)]
+        return fixed
     wc_count=max(0,player_count-len(fixed))
-    return fixed + [f"Dowolna drużyna #{i+1} (Real Madryt banned)" for i in range(wc_count)]
+    return fixed + [wildcard_slot_label(i+1,version,mode) for i in range(wc_count)]
+
+
+def _strong_team_key(team: str) -> str:
+    raw=" ".join(str(team or "").strip().casefold().replace("-"," ").split())
+    aliases={
+        "paris saint germain":"psg",
+        "real madrid":"real madryt",
+        "spain":"hiszpania",
+        "brazil":"brazylia",
+    }
+    return aliases.get(raw,raw)
+
+
+def strong_team_multiplier(team: str, placement: int | None, game_version: str, team_mode: str | None = "clubs") -> float:
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    key=_strong_team_key(team)
+    strong=set()
+    if version=="FC27" and mode=="clubs":
+        strong={"psg","real madryt"}
+    elif version=="FC27" and mode=="national":
+        strong={"hiszpania","brazylia"}
+    if key not in strong:
+        return 1.0
+    return TOP_FINISHER_STRONG_TEAM_MULTIPLIER.get(int(placement or 0),1.0)
 
 
 FORMAT_LABELS = {
@@ -187,13 +270,14 @@ def _weighted_choice_pairs(options: list[tuple[object,float]], rng: random.Rando
 
 def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], placement_by_player_id: dict[str,int] | None,
                                  team_ratings: dict[str,float] | None, previous_team_by_player_id: dict[str,str] | None,
-                                 rng: random.Random) -> dict[str,str]:
-    """Assign fixed clubs with soft live-strength handicap + anti-repeat.
+                                 rng: random.Random, game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
+    """Assign fixed teams with soft live-strength handicap + anti-repeat.
 
     Every permutation remains possible. Previous top finishers are gently nudged
-    toward currently weaker clubs; in FC27 the previous champion/finalist also have
-    an extra soft reduction for PSG (x0.50 / x0.70). Repeating exactly the same club
-    as the immediately previous tournament keeps 35% of normal weight, never zero.
+    toward currently weaker teams. Extra strong-team soft handicaps apply to
+    PSG+Real in FC27 clubs and Spain+Brazil in FC27 national-team mode.
+    Repeating exactly the same team as the immediately previous tournament keeps
+    35% of normal weight, never zero.
     """
     import itertools, math
     pids=[str(x) for x in player_ids]
@@ -213,9 +297,7 @@ def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], 
             w*=math.exp((50.0-rating)*coef)
             if previous.get(pid) and previous.get(pid).casefold()==str(team).casefold():
                 w*=0.35
-            team_key=" ".join(str(team or "").strip().casefold().replace("-"," ").split())
-            if team_key in {"psg","paris saint germain"}:
-                w*=PSG_TOP_FINISHER_MULTIPLIER.get(placements.get(pid),1.0)
+            w*=strong_team_multiplier(team,placements.get(pid),game_version,team_mode)
         opts.append((perm,w))
     chosen=_weighted_choice_pairs(opts,rng)
     return dict(zip(pids,chosen))
@@ -236,7 +318,8 @@ def reveal_order_with_previous_finalists(player_ids: list[str], placement_by_pla
     return normal+runner+champ
 
 def weighted_team_assignments(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random,
-                              team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None) -> dict[str,str]:
+                              team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None,
+                              game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
     """Assign Wild Card slots softly by prior finish, then fixed clubs intelligently.
 
     Wild Card: 1st=1.55, 2nd=1.35, 3rd=1.15.
@@ -246,10 +329,10 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
     if len(player_ids)!=len(teams):
         raise ValueError("Liczba drużyn musi odpowiadać liczbie graczy.")
     pids=[str(x) for x in player_ids]
-    wild=[t for t in teams if "Dowolna drużyna" in str(t)]
-    fixed=[t for t in teams if "Dowolna drużyna" not in str(t)]
+    wild=[t for t in teams if is_wildcard_slot(t)]
+    fixed=[t for t in teams if not is_wildcard_slot(t)]
     if not wild:
-        return weighted_fixed_team_matching(pids,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng)
+        return weighted_fixed_team_matching(pids,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng,game_version,team_mode)
     weights=wildcard_assignment_weights(placement_by_player_id)
     weighted_order=weighted_sample_without_replacement(pids,weights,rng)
     wild_players=weighted_order[:len(wild)]
@@ -257,7 +340,7 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
     remaining=[pid for pid in pids if pid not in wild_set]
     wild_pool=wild.copy(); rng.shuffle(wild_pool)
     out={pid:team for pid,team in zip(wild_players,wild_pool,strict=True)}
-    out.update(weighted_fixed_team_matching(remaining,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng))
+    out.update(weighted_fixed_team_matching(remaining,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng,game_version,team_mode))
     return out
 
 def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> dict:

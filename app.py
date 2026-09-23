@@ -15,7 +15,7 @@ from database import (
     Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, TROPHY_NOMINATION_KEYS, GALA_TEST_MODE,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
-from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, allowed_teams, fixed_teams_for_version
+from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, normalize_team_mode, effective_team_mode, allowed_teams, fixed_teams_for_version, real_helper_available
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw,
                 render_awards_gala_tv)
@@ -362,6 +362,27 @@ def render_vision_ocr_test():
     with st.expander("Surowy JSON modelu"):
         st.json(result)
 
+def render_team_mode_settings():
+    current=db.team_mode_setting()
+    st.markdown("### 🏳️ Tryb drużyn dla nowych rozgrywek")
+    st.caption("Domyślnie FIFA Night zawsze działa na klubach. Reprezentacje są dostępne tylko w EA FC 27; EA FC 26 zawsze używa klubów.")
+    if controller_access():
+        choice=st.segmented_control(
+            "Pula drużyn",
+            ["Kluby","Reprezentacje"],
+            default="Reprezentacje" if current=="national" else "Kluby",
+            key="settings_team_mode",
+        ) or ("Reprezentacje" if current=="national" else "Kluby")
+        selected="national" if choice=="Reprezentacje" else "clubs"
+        if selected!=current:
+            db.set_team_mode(selected)
+            st.success("Tryb nowych rozgrywek ustawiony na reprezentacje." if selected=="national" else "Tryb nowych rozgrywek ustawiony na kluby.")
+            rr()
+    else:
+        st.info("Aktualnie: **Reprezentacje (tylko FC27)**." if current=="national" else "Aktualnie: **Kluby**.")
+        st.caption("Zmiana jest dostępna po włączeniu sterowania.")
+
+
 def render_access_settings():
     st.subheader("⚙️ Ustawienia dostępu")
     if controller_access():
@@ -392,6 +413,8 @@ def render_access_settings():
             else:
                 st.error("Nieprawidłowe hasło.")
         st.caption("Dostęp jest zapamiętany w bieżącej sesji przeglądarki. Po zamknięciu sesji, ponownym otwarciu aplikacji lub jej wybudzeniu może być potrzebne ponowne wpisanie hasła.")
+    st.divider()
+    render_team_mode_settings()
     st.divider()
     render_player_rename_settings()
     st.divider()
@@ -459,10 +482,17 @@ def start_defaults(count:int, official_names:list[str]):
     st.session_state[key]=True
 
 
-def render_duel_start(official_names:list[str], game_version:str="FC26"):
+def render_duel_start(official_names:list[str], game_version:str="FC26", team_mode:str="clubs"):
     st.markdown("### ⚔️ Mecz 1 vs 1")
     st.caption("Ręczny wybór graczy i drużyn. 1v1 liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów ani statystyk turniejowych.")
-    team_options=list(dict.fromkeys(fixed_teams_for_version(game_version) + db.wildcard_team_suggestions(game_version) + ["Real Madryt"]))
+    team_mode=effective_team_mode(game_version,team_mode)
+    team_options=list(dict.fromkeys(
+        fixed_teams_for_version(game_version,team_mode)
+        + db.wildcard_team_suggestions(game_version,team_mode)
+        
+    ))
+    if real_helper_available(game_version,team_mode) and "Real Madryt" not in team_options:
+        team_options.append("Real Madryt")
     with st.form("create_duel_form"):
         c1,c2=st.columns(2)
         with c1:
@@ -479,7 +509,7 @@ def render_duel_start(official_names:list[str], game_version:str="FC26"):
         go=st.form_submit_button("⚔️ UTWÓRZ MECZ 1 VS 1",type="primary",use_container_width=True)
     if go:
         try:
-            db.create_duel([p1,p2],[t1,t2],False,stake,[cash1,cash2],game_version)
+            db.create_duel([p1,p2],[t1,t2],False,stake,[cash1,cash2],game_version,team_mode)
             st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
 
@@ -534,6 +564,10 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
     # Nie dokładamy osobnej warstwy nawigacji tylko po to, żeby wybrać liczbę graczy.
     game_version=st.segmented_control("Wersja gry",list(GAME_VERSIONS),default="FC26",key=f"game_version_{int(force_test)}") or "FC26"
     game_version=normalize_game_version(game_version)
+    configured_team_mode=db.team_mode_setting()
+    team_mode=effective_team_mode(game_version,configured_team_mode)
+    if configured_team_mode=="national" and game_version=="FC26":
+        st.caption("🏳️ Reprezentacje są dostępne tylko w EA FC 27. Dla EA FC 26 używamy klubów.")
     default_count=db.last_player_count()
     if default_count not in (3,4,5,6,7,8,9,10):default_count=6
     variant_key=f"fifa_variant_{int(force_test)}"
@@ -551,7 +585,7 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
         key=variant_key,
     ) or str(st.session_state.get(variant_key) or variant_default)
     if variant=="1 vs 1":
-        render_duel_start(official_names,game_version)
+        render_duel_start(official_names,game_version,team_mode)
         return
 
     if not db.is_postgres:st.warning("Tryb lokalny SQLite. Na Streamlit Cloud podłącz DATABASE_URL z Neon.")
@@ -583,14 +617,20 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
                 names.append(st.selectbox(f"Gracz {i+1}",official_names,index=None,key=f"p_{count}_{i}",placeholder="Wpisz nick lub wybierz z listy",accept_new_options=True))
             with c_cash:
                 cash_flags.append(st.checkbox("💰 Gra za kasę",value=True,key=f"cash_{count}_{i}"))
-        teams=allowed_teams(count,game_version)
-        fixed=fixed_teams_for_version(game_version)
+        teams=allowed_teams(count,game_version,team_mode)
+        fixed=fixed_teams_for_version(game_version,team_mode)
+        mode_label="reprezentacje" if team_mode=="national" else "kluby"
         if count in (3,4):
-            st.markdown("**Wybór drużyn:** losujemy kolejność, potem każdy wybiera klub z puli normalnej albo dostępny Wild Card.")
+            st.markdown(f"**Wybór drużyn:** losujemy kolejność, potem każdy wybiera {'reprezentację' if team_mode=='national' else 'klub'} z puli normalnej albo dostępny Wild Card.")
         else:
             wc=max(0,count-len(fixed))
-            st.markdown(f"**Koło fortuny drużyn:** {len(fixed)} normalnych drużyn" + (f" + {wc} Wild Card" if wc else " • bez Wild Cardów"))
-        st.caption(f"{game_version}: normalne drużyny: " + " • ".join(fixed) + ". Real Madryt nie jest częścią koła/Wild Cardu; może być pomocą wyłącznie dla osoby grającej bez kasy.")
+            st.markdown(f"**Koło fortuny:** {len(fixed)} normalnych {mode_label}" + (f" + {wc} Wild Card" if wc else " • bez Wild Cardów"))
+        if team_mode=="national":
+            st.caption(f"{game_version} • Reprezentacje: " + " • ".join(fixed) + ". Francja jest banned i nie trafia na koło ani Wild Card.")
+        elif game_version=="FC26":
+            st.caption(f"{game_version} • Kluby: " + " • ".join(fixed) + ". Real Madryt jest poza kołem/Wild Cardem i może być pomocą wyłącznie dla osoby grającej bez kasy.")
+        else:
+            st.caption(f"{game_version} • Kluby: " + " • ".join(fixed) + ". Real Madryt jest normalnie na kole; Manchester City jest Wild Cardem.")
         stake=st.number_input("💰 Stawka na osobę (zł)",min_value=0.0,step=5.0,format="%.2f",key="stake_per_player")
         jackpot=db.current_jackpot_cents()
         if jackpot>0:st.warning(f"🎰 Aktualny jackpot do przejęcia przez kolejnego uprawnionego mistrza: **{pln_cents(jackpot)} zł**")
@@ -603,7 +643,7 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
         go=st.form_submit_button("🎮 UTWÓRZ TURNIEJ",type="primary",use_container_width=True)
     if go:
         try:
-            db.create_tournament(names,count,fmt,teams,test,stake,cash_flags,game_version)
+            db.create_tournament(names,count,fmt,teams,test,stake,cash_flags,game_version,team_mode)
             st.session_state.pop("last_spin",None);rr()
         except ValueError as e:st.error(str(e))
 
@@ -734,8 +774,9 @@ def team_draft(tid:str):
         wildcard=st.selectbox("Wild Card — wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
                               placeholder="np. Arsenal",accept_new_options=True,key=f"wild_{tid}_{current['player_id']}")
         ok=st.form_submit_button("✅ WYBIERAM",type="primary",use_container_width=True)
-    cash_ids=set(str(x) for x in ((b["meta"].get("extra") or {}).get("cash_player_ids") or []))
-    if str(current["player_id"]) not in cash_ids:
+    draft_extra=b["meta"].get("extra") or {}
+    cash_ids=set(str(x) for x in (draft_extra.get("cash_player_ids") or []))
+    if real_helper_available(draft_extra.get("game_version") or "FC26",draft_extra.get("team_mode") or "clubs") and str(current["player_id"]) not in cash_ids:
         if st.button("🤍 REAL MADRYT — POMOC",use_container_width=True,key=f"real_draft_{tid}_{current['player_id']}"):
             try: db.assign_real_helper(tid,current["player_id"]);rf()
             except ValueError as e: st.error(str(e))
@@ -849,8 +890,9 @@ def team_draw(tid:str):
         title_slot=st.empty();title_slot.subheader(f"🎡 Następny: {nxt['name']}")
         action_slot=st.empty()
         with action_slot.container():
-            cash_ids=set(str(x) for x in ((meta.get("extra") or {}).get("cash_player_ids") or []))
-            if str(nxt["player_id"]) not in cash_ids and st.button("🤍 REAL MADRYT — POMOC",use_container_width=True,key=f"real_wheel_{tid}_{nxt['player_id']}"):
+            wheel_extra=meta.get("extra") or {}
+            cash_ids=set(str(x) for x in (wheel_extra.get("cash_player_ids") or []))
+            if real_helper_available(wheel_extra.get("game_version") or "FC26",wheel_extra.get("team_mode") or "clubs") and str(nxt["player_id"]) not in cash_ids and st.button("🤍 REAL MADRYT — POMOC",use_container_width=True,key=f"real_wheel_{tid}_{nxt['player_id']}"):
                 db.assign_real_helper(tid,nxt["player_id"]);rf()
             spin=st.button("🎰 ZAKRĘĆ KOŁEM",type="primary",use_container_width=True,key=f"spin_{nxt['player_id']}")
         if spin:

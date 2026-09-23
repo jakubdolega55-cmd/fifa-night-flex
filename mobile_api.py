@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field
 from database import Database, MatchAlreadyDecidedError
 from logic import (
     FORMAT_LABELS, FORMAT_MATCH_COUNTS, FIXED_TEAMS, BASE_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS,
-    WILDCARD_TEAM_SUGGESTIONS, GAME_VERSIONS, REAL_HELPER_TEAM, normalize_game_version, fixed_teams_for_version, wildcard_suggestions_for_version, allowed_teams,
+    WILDCARD_TEAM_SUGGESTIONS, GAME_VERSIONS, TEAM_MODES, REAL_HELPER_TEAM, normalize_game_version, normalize_team_mode, effective_team_mode,
+    fixed_teams_for_version, wildcard_suggestions_for_version, real_helper_available, allowed_teams,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 
@@ -216,6 +217,10 @@ class CreateDuelPayload(BaseModel):
 
 class TestModePayload(BaseModel):
     is_test: bool
+
+
+class TeamModePayload(BaseModel):
+    team_mode: str
 
 
 class DraftPickPayload(BaseModel):
@@ -1374,6 +1379,16 @@ def auth_me(_claims: dict[str, Any] = Depends(require_controller)) -> dict[str, 
     return {"controller": True}
 
 
+@app.post("/api/v1/settings/team-mode")
+def set_team_mode(payload: TeamModePayload, _claims: dict[str, Any] = Depends(require_controller)) -> dict[str, Any]:
+    mode=db.set_team_mode(payload.team_mode)
+    return {
+        "team_mode":mode,
+        "team_mode_effective_by_version":{v:effective_team_mode(v,mode) for v in GAME_VERSIONS},
+        "national_mode_available_versions":["FC27"],
+    }
+
+
 def _special_event_payload(tid: str, fmt: str) -> dict[str, Any] | None:
     """Return one normalized in-tournament draw/reveal card for the mobile clients."""
     try:
@@ -1424,10 +1439,16 @@ def _setup_payload(tid: str) -> dict[str, Any]:
     try:
         wildcard_suggestions = db.available_wildcard_suggestions(tid)
     except Exception:
-        wildcard_suggestions = list(WILDCARD_TEAM_SUGGESTIONS)
+        wildcard_suggestions = db.wildcard_team_suggestions(
+            normalize_game_version(t.get("game_version")),
+            effective_team_mode(t.get("game_version"),extra.get("team_mode") or "clubs"),
+        )
     tournament_payload = {
         "id": tid, "status": t.get("status"), "phase": t.get("phase"),
-        "is_test": bool(int(t.get("is_test") or 0)), "game_version": normalize_game_version(t.get("game_version")), "player_count": int(meta.get("player_count") or len(players)),
+        "is_test": bool(int(t.get("is_test") or 0)), "game_version": normalize_game_version(t.get("game_version")),
+        "team_mode": effective_team_mode(t.get("game_version"),extra.get("team_mode") or "clubs"),
+        "real_helper_available": real_helper_available(t.get("game_version"),extra.get("team_mode") or "clubs"),
+        "player_count": int(meta.get("player_count") or len(players)),
         "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt),
         "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
         "stake_per_player": float(extra.get("stake_per_player") or 0),
@@ -1527,7 +1548,10 @@ def live_payload() -> dict[str, Any]:
         "server_time": utc_now(), "api_version": API_VERSION,
         "tournament": {
             "id": tid, "status": tournament.get("status"), "phase": tournament.get("phase"),
-            "is_test": bool(int(tournament.get("is_test") or 0)), "game_version": normalize_game_version(tournament.get("game_version")), "player_count": int(meta.get("player_count") or tournament.get("player_count") or 0),
+            "is_test": bool(int(tournament.get("is_test") or 0)), "game_version": normalize_game_version(tournament.get("game_version")),
+            "team_mode": effective_team_mode(tournament.get("game_version"),extra.get("team_mode") or "clubs"),
+            "real_helper_available": real_helper_available(tournament.get("game_version"),extra.get("team_mode") or "clubs"),
+            "player_count": int(meta.get("player_count") or tournament.get("player_count") or 0),
             "format_key": fmt, "format_label": FORMAT_LABELS.get(fmt, fmt), "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
             "created_at": tournament.get("created_at"), "completed_at": tournament.get("completed_at"),
             "players": [{"player_id":p.get("player_id"),"name":p.get("name"),"team":p.get("team"),"group_name":p.get("group_name")} for p in (bundle.get("players") or [])],
@@ -1578,6 +1602,7 @@ def get_config() -> dict[str, Any]:
     for count, keys in format_keys.items():
         formats[str(count)] = [{"key": k, "label": FORMAT_LABELS.get(k, k), "matches": FORMAT_MATCH_COUNTS.get(k, "")} for k in keys]
     official_names=db.official_player_names()
+    team_mode=db.team_mode_setting()
     return {
         "api_version": API_VERSION,
         "players": official_names,
@@ -1587,11 +1612,16 @@ def get_config() -> dict[str, Any]:
         "last_stake": db.last_stake(),
         "jackpot_cents": db.current_jackpot_cents(),
         "game_versions": list(GAME_VERSIONS),
-        "fixed_teams": list(FIXED_TEAMS),
-        "team_pools": {v:{str(n):allowed_teams(n,v) for n in range(3,11)} for v in GAME_VERSIONS},
-        "wildcard_suggestions_by_version": {v:db.wildcard_team_suggestions(v) for v in GAME_VERSIONS},
-        "wildcard_suggestions": db.wildcard_team_suggestions("FC26"),
+        "team_mode": team_mode,
+        "team_modes": list(TEAM_MODES),
+        "team_mode_effective_by_version": {v:effective_team_mode(v,team_mode) for v in GAME_VERSIONS},
+        "national_mode_available_versions": ["FC27"],
+        "fixed_teams": fixed_teams_for_version("FC26",team_mode),
+        "team_pools": {v:{str(n):allowed_teams(n,v,team_mode) for n in range(3,11)} for v in GAME_VERSIONS},
+        "wildcard_suggestions_by_version": {v:db.wildcard_team_suggestions(v,team_mode) for v in GAME_VERSIONS},
+        "wildcard_suggestions": db.wildcard_team_suggestions("FC26",team_mode),
         "real_helper_team": REAL_HELPER_TEAM,
+        "real_helper_available_by_version": {v:real_helper_available(v,team_mode) for v in GAME_VERSIONS},
         "formats": formats,
         "format_labels": FORMAT_LABELS,
         "format_match_counts": FORMAT_MATCH_COUNTS,
@@ -1603,8 +1633,9 @@ def create_tournament(payload: CreateTournamentPayload, authorization: str | Non
     _ensure_can_start(bool(payload.is_test), authorization)
     try:
         game_version=normalize_game_version(payload.game_version)
-        teams=allowed_teams(int(payload.player_count),game_version)
-        tid=db.create_tournament(payload.player_names,int(payload.player_count),payload.format_key,teams,bool(payload.is_test),float(payload.stake_per_player),payload.cash_flags or None,game_version)
+        team_mode=db.team_mode_setting()
+        teams=allowed_teams(int(payload.player_count),game_version,team_mode)
+        tid=db.create_tournament(payload.player_names,int(payload.player_count),payload.format_key,teams,bool(payload.is_test),float(payload.stake_per_player),payload.cash_flags or None,game_version,team_mode)
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return {"id":tid,"live":live_payload()}
 
@@ -1614,7 +1645,7 @@ def create_duel(payload: CreateDuelPayload) -> dict[str, Any]:
     current=db.current_tournament()
     if current and str(current.get("status") or "") == "active": raise HTTPException(409,"Najpierw zakończ albo zresetuj bieżący FIFA Night.")
     if current: db.start_new()
-    try: tid=db.create_duel(payload.player_names,payload.team_names,False,float(payload.stake_per_player),payload.cash_flags or None,payload.game_version)
+    try: tid=db.create_duel(payload.player_names,payload.team_names,False,float(payload.stake_per_player),payload.cash_flags or None,payload.game_version,db.team_mode_setting())
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return {"id":tid,"live":live_payload()}
 
