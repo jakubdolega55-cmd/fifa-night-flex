@@ -30,8 +30,10 @@ assert state.get('categories_snapshot') and state.get('base_meta')
 def explode(_year):raise AssertionError('annual_awards called during running gala')
 db.annual_awards=explode
 for _ in range(5):
-    out=db.awards_gala_status(2026);assert out['display_phase']=='intro'
+    out=db.awards_gala_status(2026);assert out['display_phase']=='intro_pending'
+out=db.mark_awards_gala_tv_ready(2026,0);assert out['display_phase']=='intro'
 state=db._gala_load_state(2026);state['category_started_at']=(datetime.now(timezone.utc)-timedelta(seconds=40)).isoformat();db._gala_save_state(2026,state)
 out=db.advance_awards_gala(2026)
-assert out['current_index']==1 and out['display_phase']=='intro'
+assert out['current_index']==1 and out['display_phase']=='intro_pending'
+out=db.mark_awards_gala_tv_ready(2026,1);assert out['display_phase']=='intro'
 print('GALA SYNC SNAPSHOT SMOKE PASS')

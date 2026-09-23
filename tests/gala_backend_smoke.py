@@ -52,10 +52,11 @@ assert started['current_category']['key']=='superscorer'
 assert started['current_category']['winner']['id']=='superscorer-2'
 nom_ids=[x['id'] for x in started['current_category']['nominees']]
 assert sorted(nom_ids)==sorted([f'superscorer-{j}' for j in range(1,4)])
-assert started['display_phase']=='intro'
+assert started['display_phase']=='intro_pending'
+ready=db.mark_awards_gala_tv_ready(2026,0);assert ready['display_phase']=='intro'
 
 state=db._gala_load_state(2026)
-state['category_started_at']=(datetime.now(timezone.utc)-timedelta(seconds=7)).isoformat();db._gala_save_state(2026,state)
+state['category_started_at']=(datetime.now(timezone.utc)-timedelta(seconds=10)).isoformat();db._gala_save_state(2026,state)
 nom=db.awards_gala_status(2026)
 assert nom['display_phase']=='nominees' and nom['nominees_revealed']>=1
 
@@ -71,14 +72,16 @@ assert hold['current_category']['winner']['id']=='superscorer-2'
 
 # Replay is also only legal after reveal and restarts the complete automatic cycle.
 replayed=db.replay_awards_gala_category(2026)
-assert replayed['display_phase']=='intro' and replayed['current_index']==0
+assert replayed['display_phase']=='intro_pending' and replayed['current_index']==0
+db.mark_awards_gala_tv_ready(2026,0)
 force_hold()
 
 # Full 1 -> 18 run. Every category must reach HOLD before NEXT is accepted.
 for expected_index in range(1,18):
     nxt=db.advance_awards_gala(2026)
     assert nxt['current_index']==expected_index and nxt['current_category']['key']==GALA_AWARD_ORDER[expected_index]
-    assert nxt['display_phase']=='intro' and nxt['can_advance'] is False
+    assert nxt['display_phase']=='intro_pending' and nxt['can_advance'] is False
+    ready=db.mark_awards_gala_tv_ready(2026,expected_index);assert ready['display_phase']=='intro'
     force_hold()
 last=db.awards_gala_status(2026)
 assert last['current_index']==17 and last['next_label']=='ZAKOŃCZ GALĘ'
