@@ -133,6 +133,7 @@ export const api = {
     return d;
   },
   me:()=>jsonRequest<any>('/api/v1/auth/me'),
+  setTeamMode:(team_mode:string)=>jsonRequest<any>('/api/v1/settings/team-mode',{method:'POST',body:JSON.stringify({team_mode})}),
   logout:()=>deleteStoredItem(TOKEN_KEY),
   hasToken:async()=>Boolean(await getStoredItem(TOKEN_KEY)),
   token:()=>getStoredItem(TOKEN_KEY),

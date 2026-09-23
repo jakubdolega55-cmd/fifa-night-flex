@@ -32,6 +32,8 @@ export type LiveTournament = {
   phase:string;
   is_test:boolean;
   game_version?:string;
+  team_mode?:string;
+  real_helper_available?:boolean;
   player_count:number;
   format_key:string;
   format_label:string;
