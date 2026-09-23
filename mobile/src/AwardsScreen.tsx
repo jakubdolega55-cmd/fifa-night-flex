@@ -5,7 +5,7 @@ import {getPng} from './export';
 import {colors} from './theme';
 import {Btn,Card,Chip,ErrorBox,HScroll,Metric,Muted,Pill} from './ui';
 
-type Mode='awards'|'classifications'|'milestones';
+type Mode='awards'|'classifications'|'milestones'|'gala';
 const fmtDay=(v:any)=>{const s=String(v||'');if(!s)return 'Bez daty';const d=s.slice(0,10).split('-');return d.length===3?`${d[2]}-${d[1]}-${d[0]}`:s.slice(0,10)};
 const AWARD_QUIPS:Record<string,string>={
   player_year:'Tu wymówki kończą się na wejściu.',
@@ -52,6 +52,31 @@ function AwardsYear({year,mode}:{year:number;mode:'awards'|'classifications'}){
   </>:<Text style={s.reason}>Ładowanie…</Text>}</View>;
 }
 
+function GalaControl({year}:{year:number}){
+  const [d,setD]=useState<any>(null),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
+  const load=async()=>{try{setErr('');setD(await api.gala(year))}catch(e:any){setErr(e?.message||String(e))}};
+  useEffect(()=>{setD(null);void load();const t=setInterval(()=>void load(),1000);return()=>clearInterval(t)},[year]);
+  const act=async(fn:()=>Promise<any>)=>{if(busy)return;setBusy(true);try{setErr('');setD(await fn())}catch(e:any){setErr(e?.message||String(e))}finally{setBusy(false)}};
+  const status=String(d?.status||'idle'),phase=String(d?.display_phase||status);
+  const current=d?.current_category;
+  const idx=Number(d?.current_index??-1);
+  const total=Number(d?.total_categories||18);
+  const hold=phase==='winner_hold';
+  const canMain=status==='idle'||status==='finished'||status==='finale'||hold;
+  const mainTitle=status==='idle'||status==='finished'?'▶ START GALI':status==='finale'?(d?.next_label||'ZAMKNIJ GALĘ'):hold?(d?.next_label||'NASTĘPNA KATEGORIA'):'PREZENTACJA W TOKU…';
+  const phaseLabel=phase==='intro'?'Zapowiedź kategorii':phase==='nominees'?`Nominowani ${d?.nominees_revealed||0}/3`:phase==='suspense'?'Chwila napięcia…':phase==='winner_animation'?'Odsłaniamy laureata…':phase==='winner_hold'?'Laureat na ekranie TV':status==='finale'?'Finał gali':status==='finished'?'Gala zakończona':'Gala gotowa do startu';
+  const main=()=>status==='idle'||status==='finished'?act(()=>api.galaStart(year)):act(()=>api.galaNext(year));
+  return <View style={{gap:10}}>{err?<ErrorBox message={err}/>:null}{!d?<Text style={s.reason}>Ładowanie sterowania gali…</Text>:<>
+    <Card style={s.galaHero}><View style={s.between}><Pill text={`GALA ${year}`} tone="amber"/><Pill text={d.test_mode?'TRYB TESTOWY':d.ready?'GOTOWA':'OCZEKUJE'} tone={d.test_mode?'purple':d.ready?'green':'muted'}/></View><Text style={s.heroTitle}>🎬 Pilot Gali Awards</Text><Muted>Telefon tylko uruchamia kolejną kategorię. Zapowiedź, TOP3, suspense i reveal lecą automatycznie na telewizorze.</Muted><Text style={s.reason}>{Number(d.selected_count||0)} / {Number(d.required_count||18)} laureatów wybranych{(d.unavailable||[]).length?` • ${(d.unavailable||[]).length} kategorii bez kandydatów`:''}</Text>{d.test_mode&&((d.missing_selection_details||[]).length||(d.unavailable||[]).length)?<Text style={s.galaTestNote}>Próba techniczna: brakujące wybory dostają zamrożonego lidera rankingu, a kategorie bez kandydatów są pomijane.</Text>:null}</Card>
+    {status==='running'&&current?<Card><View style={s.between}><Pill text={`${idx+1} / ${total}`} tone="green"/><Text style={s.galaPhase}>{phaseLabel}</Text></View><Text style={s.galaCategory}>{current.title||current.key}</Text>{hold&&current.winner?<><Text style={s.galaWinnerLabel}>NA EKRANIE</Text><Text style={s.galaWinner}>{current.winner?.gala?.display_name||current.winner?.name||'—'}</Text></>:<Muted>{phase==='nominees'?`Pokazano ${d?.nominees_revealed||0} z 3 nominowanych.`:'Nie musisz nic klikać — czekamy na koniec cyklu.'}</Muted>}</Card>:null}
+    {status==='finale'?<Card><Text style={s.galaCategory}>🏆 Wszystkie 18 kategorii pokazane</Text><Muted>Na telewizorze trwa ekran finałowy. Zamknij galę, kiedy będziecie gotowi.</Muted></Card>:null}
+    {status==='finished'?<Card><Text style={s.galaCategory}>✅ Gala zakończona</Text><Muted>Możesz uruchomić ją od początku ponownie.</Muted></Card>:null}
+    <Btn title={busy?'CHWILA…':mainTitle} disabled={busy||!canMain||!d.available} onPress={main}/>
+    {status==='running'&&hold?<View style={s.rowWrap}><View style={s.half}><Btn title="↻ POWTÓRZ KATEGORIĘ" tone="secondary" small onPress={()=>void act(()=>api.galaReplay(year))}/></View><View style={s.half}><Btn title="🧹 RESET" tone="danger" small onPress={()=>Alert.alert('Reset gali','Wrócić do stanu przed startem gali?',[{text:'Anuluj',style:'cancel'},{text:'Resetuj',style:'destructive',onPress:()=>void act(()=>api.galaReset(year))}])}/></View></View>:null}
+    {!d.available?<Card><Muted>Gala jest zablokowana do czasu wybrania laureatów wszystkich wymaganych kategorii.</Muted></Card>:null}
+  </>}</View>;
+}
+
 function Milestones(){
   const [d,setD]=useState<any>(null),[err,setErr]=useState(''),[open,setOpen]=useState<Record<string,boolean>>({});
   useEffect(()=>{api.milestones().then(setD).catch(x=>setErr(x.message))},[]);
@@ -64,15 +89,18 @@ function Milestones(){
   </>:<Text style={s.reason}>Ładowanie…</Text>}</View>;
 }
 
-export default function AwardsScreen(){
+export default function AwardsScreen({controller=false}:{controller?:boolean}){
   const [mode,setMode]=useState<Mode>('awards');const [year,setYear]=useState(new Date().getFullYear());
+  const [galaVisible,setGalaVisible]=useState(false);
+  useEffect(()=>{let alive=true;if(!controller){setGalaVisible(false);return()=>{alive=false}};api.gala(year).then(x=>{if(alive)setGalaVisible(!!x.available)}).catch(()=>{if(alive)setGalaVisible(false)});return()=>{alive=false}},[controller,year]);
+  useEffect(()=>{if(mode==='gala'&&!galaVisible)setMode('awards')},[galaVisible,mode]);
   return <ScrollView contentContainerStyle={s.pad}>
     <View style={s.between}><Text style={s.pageTitle}>Awards</Text><View style={{flexDirection:'row',gap:5}}><Pressable style={s.yearBtn} onPress={()=>setYear(y=>y-1)}><Text style={s.yearText}>−</Text></Pressable><Text style={s.year}>{year}</Text><Pressable style={s.yearBtn} onPress={()=>setYear(y=>y+1)}><Text style={s.yearText}>+</Text></Pressable></View></View>
-    <HScroll><Chip label="🏆 AWARDS" active={mode==='awards'} onPress={()=>setMode('awards')}/><Chip label="🎯 KLASYFIKACJE" active={mode==='classifications'} onPress={()=>setMode('classifications')}/><Chip label="🏛️ KAMIENIE MILOWE" active={mode==='milestones'} onPress={()=>setMode('milestones')}/></HScroll>
-    {mode==='milestones'?<Milestones/>:<AwardsYear year={year} mode={mode}/>} 
+    <HScroll><Chip label="🏆 AWARDS" active={mode==='awards'} onPress={()=>setMode('awards')}/><Chip label="🎯 KLASYFIKACJE" active={mode==='classifications'} onPress={()=>setMode('classifications')}/><Chip label="🏛️ KAMIENIE MILOWE" active={mode==='milestones'} onPress={()=>setMode('milestones')}/>{controller&&galaVisible?<Chip label="🎬 GALA" active={mode==='gala'} onPress={()=>setMode('gala')}/>:null}</HScroll>
+    {mode==='gala'?<GalaControl year={year}/>:mode==='milestones'?<Milestones/>:<AwardsYear year={year} mode={mode}/>} 
   </ScrollView>;
 }
 
 const s=StyleSheet.create({
-  pad:{padding:15,paddingBottom:48,gap:11},between:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',gap:9},pageTitle:{color:colors.text,fontSize:27,fontWeight:'900'},year:{color:colors.text,fontSize:15,fontWeight:'900',alignSelf:'center'},yearBtn:{width:32,height:32,borderRadius:10,backgroundColor:colors.panel,alignItems:'center',justifyContent:'center'},yearText:{color:colors.green,fontSize:20,fontWeight:'900'},hero:{backgroundColor:'#251f0c',borderColor:'#695a16'},classHero:{backgroundColor:'#25182f',borderColor:'#54316a'},heroTitle:{color:colors.text,fontSize:19,fontWeight:'900'},metrics:{flexDirection:'row',flexWrap:'wrap',gap:8},cardTitle:{color:colors.text,fontSize:15,fontWeight:'900',flex:1},engraving:{color:'#f0c85a',fontSize:10.5,fontWeight:'900',letterSpacing:.4,marginTop:2},candidate:{flexDirection:'row',gap:10,alignItems:'flex-start',paddingVertical:8,borderTopWidth:1,borderTopColor:'#182a3d'},pos:{color:colors.green,fontSize:18,fontWeight:'900',width:24},name:{color:colors.text,fontSize:13,fontWeight:'900'},reason:{color:colors.muted,fontSize:10,lineHeight:15,marginTop:2},quip:{color:'#d5dfeb',fontSize:10.5,fontStyle:'italic',lineHeight:15},secondary:{color:colors.muted,fontSize:10.5,lineHeight:16,borderTopWidth:1,borderTopColor:'#182a3d',paddingTop:8},rowWrap:{flexDirection:'row',flexWrap:'wrap',gap:8},half:{width:'48%'},kicker:{color:colors.green,fontSize:11,fontWeight:'900',letterSpacing:1.2},day:{color:colors.text,fontSize:15,fontWeight:'900'},arrow:{color:colors.muted,fontSize:21},timeline:{flexDirection:'row',gap:9,paddingVertical:8,borderTopWidth:1,borderTopColor:'#182a3d'},timelineIcon:{fontSize:20},empty:{color:colors.muted,fontSize:12,lineHeight:18,textAlign:'center'},
+  pad:{padding:15,paddingBottom:48,gap:11},between:{flexDirection:'row',alignItems:'center',justifyContent:'space-between',gap:9},pageTitle:{color:colors.text,fontSize:27,fontWeight:'900'},galaHero:{backgroundColor:'#22190b',borderColor:'#6f5518'},galaPhase:{color:colors.amber,fontSize:10,fontWeight:'900',textAlign:'right',flex:1},galaCategory:{color:colors.text,fontSize:20,fontWeight:'900',lineHeight:25},galaWinnerLabel:{color:colors.muted,fontSize:9,fontWeight:'900',letterSpacing:1.5,marginTop:5},galaWinner:{color:colors.green,fontSize:27,fontWeight:'900'},galaTestNote:{color:colors.amber,fontSize:10,lineHeight:15,marginTop:6},year:{color:colors.text,fontSize:15,fontWeight:'900',alignSelf:'center'},yearBtn:{width:32,height:32,borderRadius:10,backgroundColor:colors.panel,alignItems:'center',justifyContent:'center'},yearText:{color:colors.green,fontSize:20,fontWeight:'900'},hero:{backgroundColor:'#251f0c',borderColor:'#695a16'},classHero:{backgroundColor:'#25182f',borderColor:'#54316a'},heroTitle:{color:colors.text,fontSize:19,fontWeight:'900'},metrics:{flexDirection:'row',flexWrap:'wrap',gap:8},cardTitle:{color:colors.text,fontSize:15,fontWeight:'900',flex:1},engraving:{color:'#f0c85a',fontSize:10.5,fontWeight:'900',letterSpacing:.4,marginTop:2},candidate:{flexDirection:'row',gap:10,alignItems:'flex-start',paddingVertical:8,borderTopWidth:1,borderTopColor:'#182a3d'},pos:{color:colors.green,fontSize:18,fontWeight:'900',width:24},name:{color:colors.text,fontSize:13,fontWeight:'900'},reason:{color:colors.muted,fontSize:10,lineHeight:15,marginTop:2},quip:{color:'#d5dfeb',fontSize:10.5,fontStyle:'italic',lineHeight:15},secondary:{color:colors.muted,fontSize:10.5,lineHeight:16,borderTopWidth:1,borderTopColor:'#182a3d',paddingTop:8},rowWrap:{flexDirection:'row',flexWrap:'wrap',gap:8},half:{width:'48%'},kicker:{color:colors.green,fontSize:11,fontWeight:'900',letterSpacing:1.2},day:{color:colors.text,fontSize:15,fontWeight:'900'},arrow:{color:colors.muted,fontSize:21},timeline:{flexDirection:'row',gap:9,paddingVertical:8,borderTopWidth:1,borderTopColor:'#182a3d'},timelineIcon:{fontSize:20},empty:{color:colors.muted,fontSize:12,lineHeight:18,textAlign:'center'},
 });

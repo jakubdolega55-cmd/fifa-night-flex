@@ -120,11 +120,6 @@ export const api = {
   settlement:(ids:string[])=>jsonRequest<any>('/api/v1/finance/settlement',{method:'POST',body:JSON.stringify({tournament_ids:ids})}),
   markSettled:(ids:string[],settled=true)=>jsonRequest<any>('/api/v1/finance/settled',{method:'POST',body:JSON.stringify({tournament_ids:ids,settled})}),
   awards:(year:number)=>jsonRequest<any>(`/api/v1/awards/${year}`),
-  gala:(year:number)=>jsonRequest<any>(`/api/v1/gala/${year}`),
-  galaStart:(year:number)=>jsonRequest<any>(`/api/v1/gala/${year}/start`,{method:'POST'}),
-  galaNext:(year:number)=>jsonRequest<any>(`/api/v1/gala/${year}/next`,{method:'POST'}),
-  galaReplay:(year:number)=>jsonRequest<any>(`/api/v1/gala/${year}/replay`,{method:'POST'}),
-  galaReset:(year:number)=>jsonRequest<any>(`/api/v1/gala/${year}/reset`,{method:'POST'}),
   milestones:()=>jsonRequest<any>('/api/v1/milestones'),
 
   login:async(password:string)=>{
