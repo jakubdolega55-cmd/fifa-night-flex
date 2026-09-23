@@ -18,7 +18,7 @@ def main():
     tid=db.create_tournament(names,10,'double10',allowed_teams(10,'FC27'),True,0,[True]*10,'FC27')
     initial=db.remaining_wheel_pool(tid)
     assert len(initial)==10, initial
-    assert db.available_wildcard_suggestions(tid)[0]=='Liverpool', db.available_wildcard_suggestions(tid)[:5]
+    assert db.available_wildcard_suggestions(tid)[0]=='Manchester City', db.available_wildcard_suggestions(tid)[:5]
     used=[]
     for remaining in range(10,0,-1):
         before=db.remaining_wheel_pool(tid)

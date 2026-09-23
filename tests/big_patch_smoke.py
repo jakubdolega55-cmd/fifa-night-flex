@@ -56,7 +56,7 @@ def play_all(db,tid):
     raise AssertionError('play loop')
 
 def main():
-    assert allowed_teams(5,'FC27')==['PSG','Bayern Monachium','FC Barcelona','Arsenal','Manchester City']
+    assert allowed_teams(5,'FC27')==['Real Madryt','PSG','Bayern Monachium','FC Barcelona','Arsenal']
     assert sum('Dowolna drużyna' in x for x in allowed_teams(10,'FC27'))==5
     assert sum('Dowolna drużyna' in x for x in allowed_teams(10,'FC26'))==6
 
@@ -74,11 +74,11 @@ def main():
         db=Database();db.init_schema();names=[f'{fmt}_{i+1}' for i in range(n)]
         tid=db.create_tournament(names,n,fmt,allowed_teams(n,'FC27'),True,0,[False]+[True]*(n-1),'FC27')
         assert db.setup_bundle(tid)['tournament']['game_version']=='FC27'
-        # Real helper: cash-opt-out first player can take it, cash player cannot.
-        b=db.setup_bundle(tid); cash_ids=set((b['meta']['extra'].get('cash_player_ids') or [])); first=next(p for p in b['players'] if p['player_id'] not in cash_ids); second=next(p for p in b['players'] if p['player_id'] in cash_ids)
-        db.assign_real_helper(tid,first['player_id'])
-        assert next(p for p in db.setup_bundle(tid)['players'] if p['player_id']==first['player_id'])['team']=='Real Madryt'
-        try: db.assign_real_helper(tid,second['player_id']);raise AssertionError('cash Real accepted')
+        # FC27: Real is a normal wheel club, never the FC26 helper.
+        b=db.setup_bundle(tid)
+        assert b['meta']['extra'].get('team_mode','clubs')=='clubs'
+        try:
+            db.assign_real_helper(tid,b['players'][0]['player_id']);raise AssertionError('FC27 helper Real accepted')
         except ValueError: pass
         drive_setup(db,tid)
         done,_=play_all(db,tid)
@@ -86,7 +86,6 @@ def main():
         assert played==expected,(fmt,played,expected)
         assert len(done['matches'])==expected,(fmt,len(done['matches']))
         assert done['tournament']['status']=='completed'
-        assert all(r.get('team')!='Real Madryt' for r in db.team_stats())
         print('PASS',fmt,played)
     print('BIG PATCH BACKEND SMOKE PASS',len(EXPECTED),'formats')
 

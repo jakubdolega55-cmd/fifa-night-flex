@@ -79,9 +79,9 @@ def rating_test(db):
 
     add_match(db,'FC27','PSG','Real Madryt',2,1,999)
     rows={x['team']:x for x in db.live_team_ratings('FC27')}
-    assert 'Real Madryt' not in rows
+    assert rows['Real Madryt']['matches']==1,rows.get('Real Madryt')
     assert rows['PSG']['matches']==6
-    print('PASS Real excluded from rating table; opponent match still counts')
+    print('PASS FC27 Real is a normal rated club')
 
 
 def alias_test(db):
@@ -107,7 +107,7 @@ def alias_test(db):
         real_rows=db._fetchall(c,"SELECT game_version,COUNT(*) AS c FROM footballer_rosters WHERE normalized_team=? GROUP BY game_version",(db._norm_team_name('Real Madryt'),))
     counts={r['game_version']:int(r['c']) for r in real_rows}
     assert counts.get('FC26',0)>=5 and counts.get('FC27',0)>=5,counts
-    print('PASS Real helper has explicit local roster baseline for FC26 and FC27')
+    print('PASS Real roster baseline exists for FC26 helper and FC27 normal club')
 
 
 
@@ -152,7 +152,7 @@ def continuous_history_and_wc_test(db):
     print('PASS global WC milestone respects each tournament game version')
 
     # Annual Awards: three Arsenal FC27 matches do not count as WC; three Liverpool
-    # FC27 matches do. Real helper is excluded from Team of Year even with 5+ matches.
+    # FC27 matches do. Real is a normal FC27 wheel club and can enter Team of Year.
     for i in range(3):
         add_official_event(db,f'aw_a{i}','FC27','award','ao','Arsenal','PSG',f'2026-03-0{i+1}T12:00:00+00:00')
     for i in range(3):
@@ -164,8 +164,8 @@ def continuous_history_and_wc_test(db):
     wcand=next(x for x in cats['wildcards']['candidates'] if x['id']=='award')
     assert 'WC: 3/3 W' in wcand['reason'],wcand
     team_names={x['name'] for x in cats['team_best']['candidates']}
-    assert 'Real Madryt' not in team_names,team_names
-    print('PASS Awards stay cross-version while WC classification is version-aware and Real is excluded')
+    assert 'Real Madryt' in team_names,team_names
+    print('PASS Awards stay cross-version while WC classification is version-aware and FC27 Real is normal')
 
 
 def main():

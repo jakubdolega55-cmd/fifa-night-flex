@@ -16,24 +16,25 @@ from database import Database
 from logic import fixed_teams_for_version,wildcard_suggestions_for_version,weighted_team_assignments
 
 fixed=fixed_teams_for_version('FC27')
-assert fixed==['PSG','Bayern Monachium','FC Barcelona','Arsenal','Manchester City'],fixed
+assert fixed==['Real Madryt','PSG','Bayern Monachium','FC Barcelona','Arsenal'],fixed
 wc=wildcard_suggestions_for_version('FC27')
-assert wc==['Atletico','Liverpool','Man United','Inter','BVB','Napoli','Chelsea','Tottenham','AC Milan'],wc
-assert all(x.casefold() not in {'real madrid','real madryt'} for x in wc)
+assert wc==['Manchester City','Atletico','Liverpool','Man United','Inter','BVB','Napoli','Chelsea','Tottenham','AC Milan'],wc
 assert not ({x.casefold() for x in fixed}&{x.casefold() for x in wc})
-print('PASS FC27 fixed five + ranked Wild Card list')
+print('PASS FC27 fixed five incl Real + ranked Wild Card list incl Man City')
 
-counts={pid:0 for pid in ['champ','runner','third','p4','p5']}
+players=['champ','runner','third','p4','p5']
+counts={team:{pid:0 for pid in players} for team in ('PSG','Real Madryt')}
 placements={'champ':1,'runner':2,'third':3,'p4':4,'p5':5}
 rng=random.Random(20260923)
 for _ in range(2400):
-    out=weighted_team_assignments(list(counts),fixed,placements,rng,team_ratings={t:50 for t in fixed},previous_team_by_player_id={})
+    out=weighted_team_assignments(players,fixed,placements,rng,team_ratings={t:50 for t in fixed},previous_team_by_player_id={},game_version='FC27',team_mode='clubs')
     for pid,team in out.items():
-        if team=='PSG':counts[pid]+=1
-assert counts['champ']<counts['third'],counts
-assert counts['runner']<counts['third'],counts
-assert counts['champ']<counts['runner'],counts
-print('PASS PSG is softer for previous champion/finalist',counts)
+        if team in counts:counts[team][pid]+=1
+for team,c in counts.items():
+    assert c['champ']<c['third'],(team,c)
+    assert c['runner']<c['third'],(team,c)
+    assert c['champ']<c['runner'],(team,c)
+print('PASS PSG + Real are softer for previous champion/finalist',counts)
 
 db=Database();db.init_schema()
 db.set_award_selection(2026,'player_year','p1','P1')
