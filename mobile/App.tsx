@@ -59,6 +59,8 @@ function SettingsScreen({
   setKeepAwake,
   connectionError,
   onRefresh,
+  teamMode,
+  onOptionsRefresh,
 }: {
   controller:boolean;
   setController:(v:boolean)=>void;
@@ -66,6 +68,8 @@ function SettingsScreen({
   setKeepAwake:(v:boolean)=>void;
   connectionError:string;
   onRefresh:()=>Promise<void>;
+  teamMode:string;
+  onOptionsRefresh:()=>Promise<void>;
 }) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -94,6 +98,16 @@ function SettingsScreen({
     setKeepAwake(value);
     await setStoredItem(KEEP_AWAKE_KEY, value ? '1' : '0');
   };
+  const changeTeamMode = async (value:boolean) => {
+    if(!controller)return;
+    setBusy(true); setMessage('');
+    try{
+      await api.setTeamMode(value?'national':'clubs');
+      await onOptionsRefresh();
+      setMessage(value?'Nowe turnieje FC27: reprezentacje. FC26 nadal używa klubów.':'Nowe turnieje: kluby.');
+    }catch(e:any){Alert.alert('Nie udało się zmienić trybu drużyn',e?.message??String(e))}
+    finally{setBusy(false)}
+  };
 
   return (
     <ScrollView contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
@@ -120,6 +134,17 @@ function SettingsScreen({
           <Btn title={busy ? 'WŁĄCZAM…' : '🎮 WŁĄCZ STEROWANIE'} disabled={busy || !password.trim()} onPress={login}/>
         </> : <Btn title="WYŁĄCZ STEROWANIE NA TYM URZĄDZENIU" tone="secondary" onPress={logout}/>}        
         {message ? <Text style={s.ok}>{message}</Text> : null}
+      </Card>
+
+      <Card>
+        <Text style={s.cardTitle}>🏳️ Tryb drużyn</Text>
+        <Muted>Domyślnie używamy klubów. Reprezentacje działają tylko w EA FC 27; EA FC 26 zawsze pozostaje klubowy.</Muted>
+        <ToggleRow
+          label="Reprezentacje dla nowych turniejów FC27"
+          sub={controller?'Zmiana zapisuje się wspólnie dla PWA i Streamlit.':'Włącz sterowanie, aby zmienić tę opcję.'}
+          value={teamMode==='national'}
+          onChange={changeTeamMode}
+        />
       </Card>
 
       <Card>
@@ -236,7 +261,7 @@ export default function App() {
         ) : tab === 'awards' ? (
           <AwardsScreen controller={controller}/>
         ) : (
-          <SettingsScreen controller={controller} setController={setController} keepAwake={keepAwake} setKeepAwake={setKeepAwake} connectionError={connectionError} onRefresh={refresh}/>
+          <SettingsScreen controller={controller} setController={setController} keepAwake={keepAwake} setKeepAwake={setKeepAwake} connectionError={connectionError} onRefresh={refresh} teamMode={String(options?.team_mode||'clubs')} onOptionsRefresh={loadOptions}/>
         )}
         {busy ? <View style={s.busyOverlay}><View style={s.busyBox}><ActivityIndicator color={colors.green}/><Text style={s.busyText}>Chwila…</Text></View></View> : null}
       </View>
