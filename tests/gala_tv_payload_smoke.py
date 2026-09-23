@@ -13,8 +13,8 @@ except ModuleNotFoundError:
 from database import Database, GALA_AWARD_ORDER
 
 SAMPLES={
-    'superscorer':{'name':'Haaland','goals':31,'fifa_night_players':4,'hattricks':3,'goal_progress':[0,2,2,5,31]},
-    'team_best':{'name':'Liverpool','matches':22,'titles':3,'wins':14,'draws':4,'losses':4,'win_pct':63.6,'gf':61,'ga':43,'gd':18},
+    'superscorer':{'name':'Haaland','goals':31,'scoring_matches':14,'fifa_night_players':4,'hattricks':3,'goal_progress':[0,2,2,5,31]},
+    'team_best':{'name':'Liverpool','matches':22,'finals':5,'titles':3,'wins':14,'draws':4,'losses':4,'win_pct':63.6,'gf':61,'ga':43,'gd':18},
     'finance':{'name':'Kubsi','won_pln':424,'paid_pln':240,'balance_pln':184},
     'debut':{'name':'Mati','matches':10,'w':6,'d':1,'l':3,'win_pct':60,'points_per_match':1.9,'gf':27,'ga':19,'gd':8,'finals':2,'titles':1},
     'progress':{'name':'A','matches':31,'win_pct':55,'early_points_per_match':1.08,'late_points_per_match':2.04,'early_gd_per_match':-.46,'late_gd_per_match':.62},
@@ -45,8 +45,8 @@ for key in GALA_AWARD_ORDER:
 def teaser(key):
     return " | ".join(Database._gala_candidate_presentation(key,SAMPLES[key])['teaser_lines']).lower()
 
-assert 'goli' in teaser('superscorer') and 'graczy fifa night' in teaser('superscorer') and 'hat-trick' in teaser('superscorer')
-assert 'bramki' not in teaser('team_best') and '% w' not in teaser('team_best')
+assert 'goli' not in teaser('superscorer') and 'meczów z golem' in teaser('superscorer') and 'graczy fifa night' in teaser('superscorer') and 'hat-trick' in teaser('superscorer')
+assert 'bramki' not in teaser('team_best') and '% w' not in teaser('team_best') and 'tytu' not in teaser('team_best') and 'fina' in teaser('team_best')
 assert 'wpłat' not in teaser('finance') and 'bilans' not in teaser('finance')
 assert 'fina' not in teaser('debut') and 'tytu' not in teaser('debut') and 'pkt/mecz' not in teaser('debut')
 assert '→' not in teaser('progress') and 'pkt/mecz' not in teaser('progress') and 'bilans bramek/mecz' not in teaser('progress')
