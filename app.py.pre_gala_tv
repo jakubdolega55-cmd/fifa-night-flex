@@ -17,8 +17,7 @@ from database import (
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, allowed_teams, fixed_teams_for_version
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
-                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw,
-                render_awards_gala_tv)
+                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw)
 
 
 
@@ -608,28 +607,18 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
         except ValueError as e:st.error(str(e))
 
 
-def gala_nav_visible(year:int|None=None) -> bool:
-    try:return bool(db.awards_gala_nav_visible(int(year or datetime.now().year)))
-    except Exception:return False
-
 def render_start(public_mode:bool=False):
     state_key="public_view" if public_mode else "start_view"
     current=st.session_state.get(state_key,"fifa")
-    gala_visible=gala_nav_visible()
-    if current=="gala" and not gala_visible:
-        current="awards";st.session_state[state_key]=current
     subtitles={
         "fifa":"Wybierz wariant FIFA Night i rozpocznij rozgrywkę.",
         "stats":"Ranking, profile, drużyny, strzelcy, rozliczenia i historia.",
         "awards":"FIFA Night Awards i kamienie milowe.",
-        "gala":"FIFA Night Awards — telewizyjna gala laureatów.",
         "settings":"Sterowanie i ustawienia dostępu.",
     }
     hero(subtitles.get(current,subtitles["fifa"]))
-    nav=[("fifa","🎮 FIFA NIGHT"),("stats","📊 STATYSTYKI"),("awards","🏆 AWARDS")]
-    if gala_visible:nav.append(("gala","🎬 GALA"))
-    nav.append(("settings","⚙️ USTAWIENIA"))
-    cols=st.columns(len(nav))
+    cols=st.columns(4)
+    nav=[("fifa","🎮 FIFA NIGHT"),("stats","📊 STATYSTYKI"),("awards","🏆 AWARDS"),("settings","⚙️ USTAWIENIA")]
     for col,(key,label) in zip(cols,nav):
         with col:
             if st.button(label,type="primary" if current==key else "secondary",use_container_width=True,key=f"{'public' if public_mode else 'start'}_nav_{key}"):
@@ -639,7 +628,6 @@ def render_start(public_mode:bool=False):
     render_pending_goal_milestones(compact=current not in ("fifa","stats"))
     if current=="stats":render_stats(readonly=public_mode);return
     if current=="awards":render_awards(readonly=public_mode);return
-    if current=="gala":render_gala_mode(readonly=public_mode);return
     if current=="settings":render_access_settings();return
     render_fifa_night_setup(official_player_names_cached(),force_test=public_mode)
 
@@ -3114,38 +3102,6 @@ def render_tournament_archive(readonly:bool=True):
                     except ValueError as e: st.error(str(e))
 
 
-def render_gala_mode(readonly: bool = False):
-    year=datetime.now().year
-    status=db.awards_gala_status(year)
-    st.markdown("<style>.block-container{max-width:1500px!important;padding-top:.55rem!important}</style>",unsafe_allow_html=True)
-    render_awards_gala_tv(status,fifa_night_api_url(),year)
-    if status.get("test_mode") and controller_access() and not readonly:
-        with st.expander("🧪 Sterowanie testowe gali",expanded=False):
-            st.caption("Tylko na czas budowy modułu. Docelowo galą steruje wyłącznie telefon, a zakładka pojawi się dopiero po kompletnym wyborze laureatów.")
-            st.caption(f"Gotowość: {int(status.get('selected_count') or 0)}/{int(status.get('required_count') or 18)} laureatów.")
-            missing=status.get("missing_selection_details") or []
-            unavailable=status.get("unavailable") or []
-            if missing:st.warning("Brak wyboru: " + " • ".join(str(x.get('label') or x.get('key')) for x in missing))
-            if unavailable:st.warning("Brak kandydatów — w próbie kategorie zostaną pominięte: " + " • ".join(str(x.get('label') or x.get('key')) for x in unavailable))
-            c1,c2,c3=st.columns(3)
-            with c1:
-                if st.button("▶️ START / OD NOWA",use_container_width=True,key=f"gala_test_start_{year}"):
-                    try:db.start_awards_gala(year);rr()
-                    except ValueError as e:st.error(str(e))
-            with c2:
-                if st.button("⏭️ NASTĘPNA",use_container_width=True,key=f"gala_test_next_{year}"):
-                    try:db.advance_awards_gala(year);rr()
-                    except ValueError as e:st.error(str(e))
-            with c3:
-                if st.button("↻ POWTÓRZ",use_container_width=True,key=f"gala_test_replay_{year}",disabled=not bool(status.get("can_replay"))):
-                    try:db.replay_awards_gala_category(year);rr()
-                    except ValueError as e:st.error(str(e))
-            if st.button("🧹 RESET GALI",use_container_width=True,key=f"gala_test_reset_{year}"):
-                db.reset_awards_gala(year);rr()
-    elif not status.get("available"):
-        st.info("Gala pojawi się tutaj po wybraniu laureatów wszystkich kategorii.")
-
-
 def render_public_start():
     render_start(public_mode=True)
 
@@ -3361,17 +3317,12 @@ def render_tv_screen(tid:str):
 def render_viewer_live(t):
     title="1 vs 1" if t.get("format_key")=="duel1v1" else f"{t['player_count']} graczy"
     hero(f"{title} • {FORMAT_LABELS[t['format_key']]}")
-    gala_visible=gala_nav_visible()
-    if not gala_visible and st.session_state.get("viewer_view")=="🎬 GALA":st.session_state["viewer_view"]="📺 LIVE"
-    opts=["📺 LIVE","📅 Terminarz","📊 Statystyki","🏆 AWARDS"]
-    if gala_visible:opts.append("🎬 GALA")
-    opts.append("⚙️ Ustawienia")
+    opts=["📺 LIVE","📅 Terminarz","📊 Statystyki","🏆 AWARDS","⚙️ Ustawienia"]
     view=st.segmented_control("Widok",opts,default=opts[0],key="viewer_view",label_visibility="collapsed") or opts[0]
-    if view=="📺 LIVE":render_tv_screen(t["id"])
-    elif view=="📅 Terminarz":render_schedule(t)
-    elif view=="📊 Statystyki":render_stats(t,readonly=True)
-    elif view=="🏆 AWARDS":render_awards(readonly=True)
-    elif view=="🎬 GALA":render_gala_mode(readonly=True)
+    if view==opts[0]:render_tv_screen(t["id"])
+    elif view==opts[1]:render_schedule(t)
+    elif view==opts[2]:render_stats(t,readonly=True)
+    elif view==opts[3]:render_awards(readonly=True)
     else:render_access_settings()
 
 def reset_controls(t,loc):
@@ -3409,18 +3360,12 @@ def render_live(t,public_test:bool=False):
     st.markdown(f'<span class="status-chip">{"🧪 TEST" if t["is_test"] else "🏆 OFICJALNY"}</span>',unsafe_allow_html=True)
     render_tournament_status_control(t,"live")
     if not int(t.get("is_test") or 0):render_pending_goal_milestones(compact=True)
-    gala_visible=gala_nav_visible()
-    if not gala_visible and st.session_state.get("view")=="🎬 GALA":st.session_state["view"]="🏠 Ekran główny"
-    opts=["🏠 Ekran główny","📺 TV","📅 Terminarz","📊 Statystyki","🏆 AWARDS"]
-    if gala_visible:opts.append("🎬 GALA")
-    opts.append("⚙️ Ustawienia")
-    view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
-    if view=="🏠 Ekran główny":live(t["id"]);reset_controls(t,"live")
-    elif view=="📺 TV":render_tv_screen(t["id"])
-    elif view=="📅 Terminarz":render_schedule(t)
-    elif view=="📊 Statystyki":render_stats(t,readonly=public_test)
-    elif view=="🏆 AWARDS":render_awards(readonly=public_test)
-    elif view=="🎬 GALA":render_gala_mode(readonly=public_test)
+    opts=["🏠 Ekran główny","📺 TV","📅 Terminarz","📊 Statystyki","🏆 AWARDS","⚙️ Ustawienia"];view=st.segmented_control("Widok",opts,default=opts[0],key="view",label_visibility="collapsed") or opts[0]
+    if view==opts[0]:live(t["id"]);reset_controls(t,"live")
+    elif view==opts[1]:render_tv_screen(t["id"])
+    elif view==opts[2]:render_schedule(t)
+    elif view==opts[3]:render_stats(t,readonly=public_test)
+    elif view==opts[4]:render_awards(readonly=public_test)
     else:render_access_settings()
 
 

@@ -1,14 +1,14 @@
-# FIFA Night Flex 1.1.0 — BIG PATCH
+# FIFA Night Flex 1.1.2 — FULL FINAL
 
 Responsywna aplikacja FIFA Night: Streamlit laptop/TV + FastAPI/Render + Neon PostgreSQL + Android APK / iPhone PWA. Aktualny release obsługuje 1 VS 1 oraz turnieje dla 3–10 graczy.
 
-> Aktualne informacje o BIG PATCH 1.1.0: `BIG_PATCH_RELEASE_1_1_0.md`. Instrukcja wdrożenia: `DEPLOYMENT_1_1_0.md`.
+> Aktualne zmiany: `RELEASE_1_1_2.md`. Szybki start: `START_HERE.txt`.
 
-## Mobile / PWA / API 1.1.0
+## Mobile / PWA / API 1.1.2
 
 Architektura: `Android APK / iPhone PWA -> FastAPI na Render -> Neon PostgreSQL <- Streamlit laptop/TV`. Telefon jest kontrolerem i widokiem LIVE; Streamlit pozostaje głównym ekranem laptop/TV.
 
-Release 1.1.0 dodaje FC26/FC27, nowe formaty 8/9/10, version-aware Live Team Rating, Real helper, resolver nazwisk piłkarzy, smart scheduler i ujednolicone visible draws/reveals.
+Bazą 1.1.2 pozostają FC26/FC27, formaty 8/9/10, version-aware Live Team Rating, Real helper, resolver nazwisk, smart scheduler i widoczne draw/reveal. Nowości 1.1.2 są opisane w `RELEASE_1_1_2.md`.
 
 ## Formaty
 

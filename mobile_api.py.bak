@@ -425,169 +425,6 @@ MATCH_EVENT_SCAN_SCHEMA["required"] += [
 ]
 
 
-SUMMARY_PARSER_VERSION = "summary-v1-internet-layout"
-
-AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "screens": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "image_index": {"type": "integer", "minimum": 1},
-                    "screen_type": {"type": "string", "enum": ["events", "summary", "other_stats", "unknown"]},
-                    "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-                },
-                "required": ["image_index", "screen_type", "confidence"],
-            },
-        },
-        "summary": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "present": {"type": "boolean"},
-                "source_image_indices": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-                "left_label": {"type": ["string", "null"]},
-                "right_label": {"type": ["string", "null"]},
-                "left_participant_slot": {"type": "string", "enum": ["home", "away", "unknown"]},
-                "right_participant_slot": {"type": "string", "enum": ["home", "away", "unknown"]},
-                "mapping_confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-                "summary_confidence": {"type": "string", "enum": ["high", "medium", "low"]},
-                "expected_goals_left": {"type": ["number", "null"]},
-                "expected_goals_right": {"type": ["number", "null"]},
-                "possession_left": {"type": ["number", "null"]},
-                "possession_right": {"type": ["number", "null"]},
-                "shots_left": {"type": ["integer", "null"], "minimum": 0},
-                "shots_right": {"type": ["integer", "null"], "minimum": 0},
-                "shots_on_target_left": {"type": ["integer", "null"], "minimum": 0},
-                "shots_on_target_right": {"type": ["integer", "null"], "minimum": 0},
-                "passes_left": {"type": ["integer", "null"], "minimum": 0},
-                "passes_right": {"type": ["integer", "null"], "minimum": 0},
-                "pass_accuracy_left": {"type": ["number", "null"]},
-                "pass_accuracy_right": {"type": ["number", "null"]},
-                "tackles_left": {"type": ["integer", "null"], "minimum": 0},
-                "tackles_right": {"type": ["integer", "null"], "minimum": 0},
-                "tackles_won_left": {"type": ["integer", "null"], "minimum": 0},
-                "tackles_won_right": {"type": ["integer", "null"], "minimum": 0},
-                "interceptions_left": {"type": ["integer", "null"], "minimum": 0},
-                "interceptions_right": {"type": ["integer", "null"], "minimum": 0},
-                "saves_left": {"type": ["integer", "null"], "minimum": 0},
-                "saves_right": {"type": ["integer", "null"], "minimum": 0},
-                "fouls_left": {"type": ["integer", "null"], "minimum": 0},
-                "fouls_right": {"type": ["integer", "null"], "minimum": 0},
-                "offsides_left": {"type": ["integer", "null"], "minimum": 0},
-                "offsides_right": {"type": ["integer", "null"], "minimum": 0},
-                "corners_left": {"type": ["integer", "null"], "minimum": 0},
-                "corners_right": {"type": ["integer", "null"], "minimum": 0},
-                "raw_metrics": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "label": {"type": "string"},
-                            "left_value": {"type": ["string", "null"]},
-                            "right_value": {"type": ["string", "null"]},
-                        },
-                        "required": ["label", "left_value", "right_value"],
-                    },
-                },
-                "notes": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": [
-                "present", "source_image_indices", "left_label", "right_label",
-                "left_participant_slot", "right_participant_slot", "mapping_confidence", "summary_confidence",
-                "expected_goals_left", "expected_goals_right", "possession_left", "possession_right",
-                "shots_left", "shots_right", "shots_on_target_left", "shots_on_target_right",
-                "passes_left", "passes_right", "pass_accuracy_left", "pass_accuracy_right",
-                "tackles_left", "tackles_right", "tackles_won_left", "tackles_won_right",
-                "interceptions_left", "interceptions_right", "saves_left", "saves_right",
-                "fouls_left", "fouls_right", "offsides_left", "offsides_right", "corners_left", "corners_right",
-                "raw_metrics", "notes"
-            ],
-        },
-    },
-    "required": ["screens", "summary"],
-}
-
-
-def _summary_classifier_prompt(context: dict[str, Any]) -> str:
-    participants=context.get("participants") or []
-    home=next((p for p in participants if p.get("slot")=="home"),{})
-    away=next((p for p in participants if p.get("slot")=="away"),{})
-    return f"""You classify EA Sports FC post-match screenshots and extract the Summary tab when present.
-All images belong to ONE FIFA Night match. The game version from the app is {context.get('game_version','unknown')}.
-
-AUTHORITATIVE FIFA NIGHT CONTEXT:
-- HOME bracket slot: player {home.get('player_name','')}; assigned club/team {home.get('team','')}.
-- AWAY bracket slot: player {away.get('player_name','')}; assigned club/team {away.get('team','')}.
-
-For every image return one classification:
-- events = the Events timeline tab is selected / visible
-- summary = the Summary tab is selected / visible
-- other_stats = another post-match tab such as Possession, Shooting, Passing or Defending is selected
-- unknown = none can be established reliably
-
-SUMMARY RULES:
-- Extract statistics ONLY from images where the Summary tab itself is selected. Do not copy values from Passing/Shooting/Defending tabs into Summary.
-- Layout may differ between FC26 and FC27. Extract only facts actually visible. Never infer a missing value.
-- Use the visible club/team labels or badges and the authoritative assigned teams above to map physical LEFT/RIGHT to internal HOME/AWAY. Never assume LEFT=HOME.
-- Standardized fields are optional in reality: return null when not clearly visible. Percent values should be returned as numbers without the percent sign.
-- expected_goals means xG / Expected Goals. shots_on_target must be null if Summary does not visibly show it.
-- fouls should be extracted when visible because FIFA Night uses them as a small Fair Play component.
-- raw_metrics should preserve every clearly visible Summary row as label + left/right display strings, even when no standardized field exists.
-- If more than one Summary screenshot is supplied, merge only consistent visible values; if they conflict, prefer the clearest image and mention the conflict in notes.
-- If there is no Summary image, set summary.present=false and all standardized fields to null/empty.
-"""
-
-
-def _summary_to_storage(summary: dict[str, Any], context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    left_slot=str(summary.get("left_participant_slot") or "unknown")
-    right_slot=str(summary.get("right_participant_slot") or "unknown")
-    mapping_ok=left_slot in {"home","away"} and right_slot in {"home","away"} and left_slot!=right_slot
-    fields=[
-        "expected_goals","possession","shots","shots_on_target","passes","pass_accuracy",
-        "tackles","tackles_won","interceptions","saves","fouls","offsides","corners"
-    ]
-    home_stats={};away_stats={}
-    if mapping_ok:
-        for field in fields:
-            lv=summary.get(f"{field}_left");rv=summary.get(f"{field}_right")
-            if left_slot=="home": home_stats[field]=lv;away_stats[field]=rv
-            else: home_stats[field]=rv;away_stats[field]=lv
-    else:
-        home_stats={field:None for field in fields};away_stats={field:None for field in fields}
-    stats={
-        "home":home_stats,"away":away_stats,
-        "usable_for_awards":bool(mapping_ok),
-        "source_image_indices":sorted({int(x) for x in (summary.get("source_image_indices") or []) if str(x).isdigit()}),
-        "raw":{
-            "left_label":summary.get("left_label"),"right_label":summary.get("right_label"),
-            "left_participant_slot":left_slot,"right_participant_slot":right_slot,
-            "raw_metrics":summary.get("raw_metrics") or [],"notes":summary.get("notes") or [],
-        },
-    }
-    confidence={
-        "summary":summary.get("summary_confidence") or "low",
-        "mapping":summary.get("mapping_confidence") or "low",
-        "mapping_ok":mapping_ok,
-    }
-    return stats,confidence
-
-
-def _empty_event_scan_result(context: dict[str, Any]) -> dict[str, Any]:
-    blank={
-        "left_label":None,"right_label":None,"score_left":None,"score_right":None,"match_clock":None,
-        "score_confidence":"low","events":[],"event_list_complete":False,"needs_more_images":True,"notes":["Brak zdjęcia zakładki Events w tej paczce."],
-        "left_participant_slot":"unknown","right_participant_slot":"unknown","mapping_confidence":"low",
-        "shootout_left":None,"shootout_right":None,
-    }
-    return _map_scan_to_fifa_context(blank,context)
-
-
 def _match_event_scan_prompt(context: dict[str, Any]) -> str:
     participants = context.get("participants") or []
     home = next((p for p in participants if p.get("slot") == "home"), {})
@@ -875,53 +712,6 @@ def _extract_openai_output_text(payload: dict[str, Any]) -> str:
                 if text:
                     return text
     return ""
-
-
-async def _openai_structured_vision(
-    prepared: list[dict[str, Any]],
-    prompt: str,
-    schema: dict[str, Any],
-    schema_name: str,
-    *,
-    timeout_seconds: float = 75.0,
-) -> tuple[dict[str, Any], dict[str, Any], int]:
-    api_key=_openai_api_key()
-    if not api_key:
-        raise HTTPException(503,"Odczyt zdjęć jest chwilowo niedostępny na serwerze.")
-    content: list[dict[str, Any]]=[{"type":"input_text","text":prompt}]
-    for item in prepared:
-        encoded=base64.b64encode(item["normalized"]).decode("ascii")
-        content.append({"type":"input_text","text":f"IMAGE {item['image_index']}"})
-        content.append({"type":"input_image","image_url":f"data:image/jpeg;base64,{encoded}","detail":"high"})
-    body={
-        "model":"gpt-5.6-luna",
-        "store":False,
-        "reasoning":{"effort":"low"},
-        "input":[{"role":"user","content":content}],
-        "text":{"verbosity":"low","format":{"type":"json_schema","name":schema_name,"strict":True,"schema":schema}},
-    }
-    started=time.perf_counter()
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
-            response=await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"},
-                json=body,
-            )
-    except httpx.TimeoutException as exc:
-        raise HTTPException(504,"Odczyt zdjęć nie odpowiedział w wymaganym czasie. Spróbuj ponownie.") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(502,"Nie udało się połączyć z usługą odczytu zdjęć. Spróbuj ponownie.") from exc
-    elapsed_ms=round((time.perf_counter()-started)*1000)
-    try: payload=response.json()
-    except Exception: payload={}
-    if response.status_code>=400:
-        raise HTTPException(502,"Usługa odczytu zdjęć zwróciła błąd. Spróbuj ponownie.")
-    raw_text=_extract_openai_output_text(payload)
-    try: result=json.loads(raw_text)
-    except Exception as exc:
-        raise HTTPException(502,"Odczyt zdjęć zwrócił niepełne dane. Spróbuj ponownie.") from exc
-    return result,payload,elapsed_ms
 
 
 def _extract_gemini_output_text(payload: dict[str, Any]) -> str:
@@ -1255,107 +1045,101 @@ async def match_scan_preview(
     authorization: str | None = Header(default=None),
     x_admin_password: str | None = Header(default=None, alias="X-Admin-Password"),
 ) -> dict[str, Any]:
-    """Mixed Events + Summary scan for one real FIFA Night match.
-
-    Event rows remain preview-only until the existing result confirmation flow saves
-    them. A parsed Summary snapshot is upserted immediately but stays inactive for
-    Awards until the match has a real, non-forfeit result.
-    """
+    """Context-aware OpenAI scan for one real FIFA Night match. Never writes to Neon."""
+    # Streamlit can keep using X-Admin-Password. The APK uses its controller token;
+    # public test tournaments and 1 VS 1 are intentionally controllable without it.
     admin_ok=bool(x_admin_password and _admin_password() and hmac.compare_digest(str(x_admin_password), _admin_password()))
     if not admin_ok:
         _require_game_control(tournament_id, authorization)
     if not images:
         raise HTTPException(422, "Dodaj co najmniej jedno zdjęcie.")
     try:
-        context=db.match_ai_context(tournament_id,int(match_no))
+        context = db.match_ai_context(tournament_id, int(match_no))
     except ValueError as exc:
-        raise HTTPException(404,str(exc)) from exc
+        raise HTTPException(404, str(exc)) from exc
 
-    prepared: list[dict[str, Any]]=[]
-    for index,image in enumerate(images,start=1):
-        content_type=str(image.content_type or "").lower()
+    prepared: list[dict[str, Any]] = []
+    for index, image in enumerate(images, start=1):
+        content_type = str(image.content_type or "").lower()
         if content_type not in VISION_ALLOWED_TYPES:
-            raise HTTPException(415,f"Zdjęcie {index}: obsługiwane są JPG, PNG i WEBP.")
-        raw=await image.read()
+            raise HTTPException(415, f"Zdjęcie {index}: obsługiwane są JPG, PNG i WEBP.")
+        raw = await image.read()
         if not raw:
-            raise HTTPException(422,f"Zdjęcie {index} jest puste.")
-        if len(raw)>VISION_MAX_IMAGE_BYTES:
-            raise HTTPException(413,f"Zdjęcie {index} ma więcej niż 12 MB.")
-        normalized,normalized_type,width,height=_normalize_image_for_google(raw,index)
+            raise HTTPException(422, f"Zdjęcie {index} jest puste.")
+        if len(raw) > VISION_MAX_IMAGE_BYTES:
+            raise HTTPException(413, f"Zdjęcie {index} ma więcej niż 12 MB.")
+        normalized, normalized_type, width, height = _normalize_image_for_google(raw, index)
         prepared.append({
-            "image_index":index,"filename":image.filename or f"image_{index}","content_type":content_type,"bytes":len(raw),
-            "normalized":normalized,"normalized_content_type":normalized_type,"normalized_bytes":len(normalized),"width":width,"height":height,
+            "image_index": index,
+            "filename": image.filename or f"image_{index}",
+            "content_type": content_type,
+            "bytes": len(raw),
+            "normalized": normalized,
+            "normalized_content_type": normalized_type,
+            "normalized_bytes": len(normalized),
+            "width": width,
+            "height": height,
         })
 
-    total_started=time.perf_counter()
-    summary_saved=False
-    summary_meta: dict[str, Any]={"detected":False,"saved":False,"usable_for_awards":False,"parser_version":SUMMARY_PARSER_VERSION}
-    classifier_usage: dict[str, Any]={}
-    classifier_elapsed=0
-    event_prepared=prepared
-
-    # First pass: classify every screenshot and extract Summary only. If this
-    # auxiliary pass ever fails, keep the old Events scanner working by falling
-    # back to all images instead of breaking result entry.
+    api_key = _openai_api_key()
+    if not api_key:
+        raise HTTPException(503, "Odczyt zdjęć jest chwilowo niedostępny na serwerze.")
+    content: list[dict[str, Any]] = [{"type": "input_text", "text": _match_event_scan_prompt(context)}]
+    for item in prepared:
+        encoded = base64.b64encode(item["normalized"]).decode("ascii")
+        content.append({"type": "input_text", "text": f"IMAGE {item['image_index']}"})
+        content.append({"type": "input_image", "image_url": f"data:image/jpeg;base64,{encoded}", "detail": "high"})
+    body = {
+        "model": "gpt-5.6-luna",
+        "store": False,
+        "reasoning": {"effort": "low"},
+        "input": [{"role": "user", "content": content}],
+        "text": {
+            "verbosity": "low",
+            "format": {"type": "json_schema", "name": "ea_fc_match_scan", "strict": True, "schema": MATCH_EVENT_SCAN_SCHEMA},
+        },
+    }
+    started = time.perf_counter()
     try:
-        classified,classifier_payload,classifier_elapsed=await _openai_structured_vision(
-            prepared,_summary_classifier_prompt(context),AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA,"ea_fc_screen_classifier_summary",timeout_seconds=60.0
-        )
-        classifier_usage=classifier_payload.get("usage") or {}
-        screen_types={}
-        for row in classified.get("screens") or []:
-            if not isinstance(row,dict):continue
-            try:idx=int(row.get("image_index"))
-            except Exception:continue
-            screen_types[idx]=str(row.get("screen_type") or "unknown")
-        # Unknown remains in the Events pass as a conservative fallback. Confirmed
-        # Summary/other-stat tabs are kept away from the Events timeline parser.
-        event_prepared=[x for x in prepared if screen_types.get(int(x["image_index"]),"unknown") in {"events","unknown"}]
-        summary=classified.get("summary") or {}
-        if bool(summary.get("present")):
-            summary_meta["detected"]=True
-            stats,confidence=_summary_to_storage(summary,context)
-            db.upsert_match_summary_stats(
-                tournament_id,int(match_no),str(context.get("game_version") or "FC26"),SUMMARY_PARSER_VERSION,stats,confidence
+        async with httpx.AsyncClient(timeout=httpx.Timeout(75.0)) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=body,
             )
-            summary_saved=True
-            summary_meta.update({
-                "saved":True,"usable_for_awards":bool(stats.get("usable_for_awards")),
-                "source_image_indices":stats.get("source_image_indices") or [],
-                "mapping_confidence":confidence.get("mapping"),"summary_confidence":confidence.get("summary"),
-            })
-    except HTTPException as exc:
-        summary_meta["warning"]="Klasyfikacja Summary nie powiodła się; Events zeskanowano w trybie zgodności."
-        summary_meta["classifier_status_code"]=exc.status_code
-        event_prepared=prepared
-
-    event_payload: dict[str, Any]={}
-    event_elapsed=0
-    if event_prepared:
-        event_result,event_payload,event_elapsed=await _openai_structured_vision(
-            event_prepared,_match_event_scan_prompt(context),MATCH_EVENT_SCAN_SCHEMA,"ea_fc_match_scan",timeout_seconds=75.0
-        )
-        event_result=_map_scan_to_fifa_context(event_result,context)
-        event_result=_resolve_scan_footballer_names(event_result,context)
-    else:
-        event_result=_empty_event_scan_result(context)
-
-    event_usage=event_payload.get("usage") or {}
-    input_tokens=int(classifier_usage.get("input_tokens") or 0)+int(event_usage.get("input_tokens") or 0)
-    output_tokens=int(classifier_usage.get("output_tokens") or 0)+int(event_usage.get("output_tokens") or 0)
-    total_tokens=int(classifier_usage.get("total_tokens") or 0)+int(event_usage.get("total_tokens") or 0)
-    if total_tokens<=0: total_tokens=input_tokens+output_tokens
-    estimated_cost=input_tokens*0.20/1_000_000+output_tokens*1.20/1_000_000
-    elapsed_ms=round((time.perf_counter()-total_started)*1000)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(504, "Odczyt zdjęć nie odpowiedział w wymaganym czasie. Spróbuj ponownie.") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Nie udało się połączyć z usługą odczytu zdjęć. Spróbuj ponownie.") from exc
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+    if response.status_code >= 400:
+        message = ((payload.get("error") or {}).get("message") if isinstance(payload, dict) else None) or response.text[:800]
+        raise HTTPException(502, "Usługa odczytu zdjęć zwróciła błąd. Spróbuj ponownie.")
+    raw_text = _extract_openai_output_text(payload)
+    try:
+        result = json.loads(raw_text)
+    except Exception as exc:
+        raise HTTPException(502, "Odczyt zdjęć zwrócił niepełne dane. Spróbuj ponownie.") from exc
+    result = _map_scan_to_fifa_context(result, context)
+    result = _resolve_scan_footballer_names(result, context)
+    usage = payload.get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    estimated_cost = input_tokens * 0.20 / 1_000_000 + output_tokens * 1.20 / 1_000_000
     return {
-        "provider":"openai_luna","model":"gpt-5.6-luna","processing_time_ms":elapsed_ms,"image_count":len(prepared),
-        "context":context,"result":event_result,
-        "usage":{"input_tokens":input_tokens,"output_tokens":output_tokens,"total_tokens":total_tokens},
-        "estimated_cost_usd":round(estimated_cost,8),
-        "saved_to_database":False,
-        "summary_scan":summary_meta,
-        "summary_saved_to_database":summary_saved,
-        "phase_times_ms":{"classify_summary":classifier_elapsed,"events":event_elapsed},
+        "provider": "openai_luna",
+        "model": "gpt-5.6-luna",
+        "processing_time_ms": elapsed_ms,
+        "image_count": len(prepared),
+        "context": context,
+        "result": result,
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": int(usage.get("total_tokens") or input_tokens + output_tokens)},
+        "estimated_cost_usd": round(estimated_cost, 8),
+        "saved_to_database": False,
     }
 
 @app.post("/api/v1/auth/controller")
@@ -1820,39 +1604,6 @@ def get_player_profile(player_id: str) -> dict[str, Any]:
 def get_awards(year: int) -> dict[str, Any]:
     if year < 2020 or year > 2100: raise HTTPException(422, "Nieprawidłowy rok.")
     return db.annual_awards(int(year))
-
-
-@app.get("/api/v1/gala/{year}")
-def get_awards_gala(year: int) -> dict[str, Any]:
-    if year < 2020 or year > 2100: raise HTTPException(422, "Nieprawidłowy rok.")
-    return db.awards_gala_status(int(year))
-
-
-@app.post("/api/v1/gala/{year}/start")
-def start_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    try:return db.start_awards_gala(int(year))
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-
-
-@app.post("/api/v1/gala/{year}/next")
-def next_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    try:return db.advance_awards_gala(int(year))
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-
-
-@app.post("/api/v1/gala/{year}/replay")
-def replay_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    try:return db.replay_awards_gala_category(int(year))
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-
-
-@app.post("/api/v1/gala/{year}/reset")
-def reset_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    return db.reset_awards_gala(int(year))
 
 
 @app.get("/api/v1/milestones")

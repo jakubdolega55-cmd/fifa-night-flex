@@ -1,0 +1,29 @@
+FIFA NIGHT — CHECKPOINT GALA DATA + FX PASS
+Date: 2026-09-23
+
+This checkpoint continues from GALA FLOW PASS.
+
+Changes:
+- full agreed TOP3 mystery rules covered by dedicated smoke assertions for all 18 gala categories;
+- Player of the Year TOP3 now exposes season context except titles: tournaments, matches, finals, W-D-L, W%, goals and clutch;
+- Player of the Year winner hero metric: "X TYTUŁY Z Y FINAŁÓW";
+- Rivalry winner card discloses deeper tiebreak reason only when H2H wins did not decide it;
+- Most Improved BEFORE -> AFTER effect enters sequentially;
+- Financial Shark equation enters sequentially;
+- Player of the Year hero metric gets a dedicated reveal animation;
+- previously agreed Superscorer goal progression, Last Minute King clock, Rivalry/Match VS layouts remain in place.
+
+Tests PASS:
+- py_compile app.py database.py logic.py mobile_api.py ui.py scorer_seeds.py export_utils.py
+- gala_tv_payload_smoke.py
+- gala_tv_fx_source_smoke.py
+- gala_backend_smoke.py
+- gala_mobile_controller_smoke.py
+- mobile_api_smoke.py = 51/51
+- audit_regression_smoke.py
+- group_tiebreak_smoke.py
+
+Not physically tested:
+- real browser/TV rendering,
+- real phone/APK controller,
+- production Render/Neon synchronization.

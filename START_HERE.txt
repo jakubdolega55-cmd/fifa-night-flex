@@ -1,3 +1,19 @@
-Release: FIFA Night Flex 1.1.0 BIG PATCH
-Built: 2026-09-15
-Start with: DEPLOYMENT_1_1_0.md
+FIFA NIGHT FLEX 1.1.2 — FULL FINAL
+
+To jest pełny projekt: backend API + Streamlit + mobile/PWA + testy.
+
+NAJWAŻNIEJSZE:
+1. Na GitHub wrzuć ZAWARTOŚĆ tego folderu do właściwych miejsc repo (z zachowaniem katalogów).
+2. Render API: backend korzysta z API_VERSION 1.1.2.
+3. Mobile: wersja 1.1.2, Android versionCode 7, package pl.fifanight.flex.
+4. APK buduj z folderu mobile albo użyj BUILD_APK_WINDOWS.cmd.
+
+Windows / APK:
+  cd mobile
+  npm.cmd install
+  npm.cmd run check
+  npx.cmd expo-doctor
+  npx.cmd eas-cli@latest whoami
+  npx.cmd eas-cli@latest build --platform android --profile preview
+
+Nie zmieniaj Android package. Ta paczka ma aktualizować istniejącą aplikację.

@@ -1,0 +1,21 @@
+FIFA NIGHT — CHECKPOINT GALA FLOW PASS — 2026-09-23
+
+Zakres:
+- pełny przebieg Gali Awards 1 -> 18 -> finał -> finished sprawdzony testem,
+- NEXT jest teraz blokowane po stronie backendu do fazy winner_hold,
+- REPLAY jest blokowane do winner_hold,
+- can_advance/can_replay w payloadzie odzwierciedlają realny stan,
+- losowa kolejność TOP3 pozostaje zapisana w stanie gali,
+- telefon nadal pokazuje prosty pilot; zabezpieczenie backendu zapobiega przypadkowemu skipowi także poza UI.
+
+Testy PASS:
+- python py_compile: database.py mobile_api.py app.py ui.py
+- tests/gala_backend_smoke.py
+- tests/gala_tv_payload_smoke.py
+- tests/gala_mobile_controller_smoke.py
+- tests/mobile_api_smoke.py = 51/51
+
+Nie testowano fizycznie:
+- realnego telefonu / APK,
+- produkcyjnego Render + Neon,
+- realnego TV/browsera podczas 18 kategorii.

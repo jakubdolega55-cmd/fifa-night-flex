@@ -1,0 +1,34 @@
+FIFA Night Flex — Gala Awards closeout checkpoint
+Date: 2026-09-23
+
+STATUS: CODE + TARGETED TESTS PASS
+Not physically tested on TV/APK/production Render.
+
+Changes in this checkpoint:
+- Gala rehearsal/final availability gate completed.
+- FIFA_GALA_TEST_MODE env switch: default 1 for current testing; set to 0 for final behavior.
+- When final mode is enabled, Gala navigation is hidden until all 18 valid laureate selections exist.
+- Backend validates stale/invalid winner selections, not only non-empty IDs.
+- Start freezes the winner IDs and nominee order for the whole ceremony.
+- Rehearsal skips categories with no candidates instead of showing empty screens.
+- Rehearsal freezes the statistical leader for categories whose laureate is not selected yet.
+- Readiness payload now includes selected/required counts and human-readable missing/unavailable categories.
+- Streamlit main/live/viewer navigation follows the Gala gate.
+- Mobile GALA tab follows the same availability flag.
+- TV idle screen shows readiness; final screen polished.
+- Existing 18-category automatic flow, HOLD behavior, timings and effects retained.
+
+Tests run after changes:
+- py_compile app.py/database.py/ui.py: PASS
+- gala_backend_smoke.py: PASS
+- gala_closeout_smoke.py: PASS
+- gala_tv_payload_smoke.py: PASS
+- gala_tv_fx_source_smoke.py: PASS
+- gala_mobile_controller_smoke.py: PASS
+- audit_regression_smoke.py: PASS
+- group_tiebreak_smoke.py: PASS
+- AwardsScreen.tsx + api.ts TypeScript syntax parse: PASS
+- mobile_api_smoke.py 51/51: PASS earlier in this same checkpoint before the final navigation/snapshot micro-fix; affected Gala-only code is covered by the dedicated Gala tests above.
+
+Final activation after testing:
+Set FIFA_GALA_TEST_MODE=0 in the deployed environment. No Gala logic rewrite is needed.

@@ -1822,39 +1822,6 @@ def get_awards(year: int) -> dict[str, Any]:
     return db.annual_awards(int(year))
 
 
-@app.get("/api/v1/gala/{year}")
-def get_awards_gala(year: int) -> dict[str, Any]:
-    if year < 2020 or year > 2100: raise HTTPException(422, "Nieprawidłowy rok.")
-    return db.awards_gala_status(int(year))
-
-
-@app.post("/api/v1/gala/{year}/start")
-def start_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    try:return db.start_awards_gala(int(year))
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-
-
-@app.post("/api/v1/gala/{year}/next")
-def next_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    try:return db.advance_awards_gala(int(year))
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-
-
-@app.post("/api/v1/gala/{year}/replay")
-def replay_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    try:return db.replay_awards_gala_category(int(year))
-    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
-
-
-@app.post("/api/v1/gala/{year}/reset")
-def reset_awards_gala(year: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _require_controller_header(authorization)
-    return db.reset_awards_gala(int(year))
-
-
 @app.get("/api/v1/milestones")
 def get_milestones() -> dict[str, Any]:
     return db.global_milestones()
