@@ -15,9 +15,16 @@ REAL_HELPER_TEAM = "Real Madryt"
 FC26_FIXED_TEAMS = ["Bayern Monachium", "FC Barcelona", "PSG", "Liverpool"]
 FC26_WILDCARD_SUGGESTIONS = WILDCARD_TEAM_SUGGESTIONS.copy()
 FC27_FIXED_TEAMS = ["PSG", "Bayern Monachium", "FC Barcelona", "Arsenal", "Manchester City"]
+# FC27 strength order from the approved Top 15 review. Real Madrid is banned and
+# the five strongest non-Real clubs are already the fixed wheel pool, so Wild Card
+# suggestions continue with the remaining ranked clubs in order.
 FC27_WILDCARD_SUGGESTIONS = [
-    "Liverpool", "Atletico", "Juventus", "Man United", "Chelsea", "Napoli", "BVB", "Roma", "Tottenham", "Aston Villa",
+    "Atletico", "Liverpool", "Man United", "Inter", "BVB", "Napoli", "Chelsea", "Tottenham", "AC Milan",
 ]
+
+# Extra soft handicap inside the five fixed FC27 clubs. PSG remains possible for
+# everybody, but the previous champion/finalist are less likely to receive it.
+PSG_TOP_FINISHER_MULTIPLIER = {1: 0.50, 2: 0.70}
 
 # Backwards-compatible aliases used by existing screens. FC26 remains legacy/default.
 FIXED_TEAMS = FC26_FIXED_TEAMS
@@ -181,11 +188,12 @@ def _weighted_choice_pairs(options: list[tuple[object,float]], rng: random.Rando
 def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], placement_by_player_id: dict[str,int] | None,
                                  team_ratings: dict[str,float] | None, previous_team_by_player_id: dict[str,str] | None,
                                  rng: random.Random) -> dict[str,str]:
-    """Assign the four fixed clubs with soft live-strength handicap + anti-repeat.
+    """Assign fixed clubs with soft live-strength handicap + anti-repeat.
 
-    All 4! permutations remain possible. Previous champions/finalists are gently nudged
-    toward currently weaker clubs. Repeating exactly the same club as the immediately
-    previous tournament keeps 35% of normal weight, never zero.
+    Every permutation remains possible. Previous top finishers are gently nudged
+    toward currently weaker clubs; in FC27 the previous champion/finalist also have
+    an extra soft reduction for PSG (x0.50 / x0.70). Repeating exactly the same club
+    as the immediately previous tournament keeps 35% of normal weight, never zero.
     """
     import itertools, math
     pids=[str(x) for x in player_ids]
@@ -205,6 +213,9 @@ def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], 
             w*=math.exp((50.0-rating)*coef)
             if previous.get(pid) and previous.get(pid).casefold()==str(team).casefold():
                 w*=0.35
+            team_key=" ".join(str(team or "").strip().casefold().replace("-"," ").split())
+            if team_key in {"psg","paris saint germain"}:
+                w*=PSG_TOP_FINISHER_MULTIPLIER.get(placements.get(pid),1.0)
         opts.append((perm,w))
     chosen=_weighted_choice_pairs(opts,rng)
     return dict(zip(pids,chosen))

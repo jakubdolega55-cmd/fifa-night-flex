@@ -5410,6 +5410,17 @@ class Database:
                 self._setting_set_conn(conn,f"flex_award_selections_{int(year)}",json.dumps(data,ensure_ascii=False))
         return existed
 
+    def clear_all_award_selections_for_test(self, year: int) -> int:
+        """TEST MODE only: clear all annual laureate choices and reset gala state."""
+        if not GALA_TEST_MODE:
+            raise ValueError("Reset wszystkich laureatów jest dostępny tylko w trybie testowym gali.")
+        data=self.award_selections(year)
+        count=len(data)
+        with self.connect() as conn:
+            self._setting_set_conn(conn,f"flex_award_selections_{int(year)}","{}")
+        self.reset_awards_gala(year)
+        return count
+
     def _gala_state_key(self, year: int) -> str:
         return f"flex_awards_gala_{int(year)}"
 

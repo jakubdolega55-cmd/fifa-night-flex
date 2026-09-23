@@ -12,7 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from database import (
-    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, TROPHY_NOMINATION_KEYS,
+    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, TROPHY_NOMINATION_KEYS, GALA_TEST_MODE,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, allowed_teams, fixed_teams_for_version
@@ -3011,6 +3011,19 @@ def render_awards(readonly:bool=False):
                     db.set_award_selection(year,cat["key"],str(cand.get("id")),str(cand.get("name")))
                     st.success(f"Zapisano: {cat['title']} — {cand.get('name')}");rr()
             st.divider()
+        if GALA_TEST_MODE:
+            with st.expander("🧪 Testy gali — reset laureatów",expanded=False):
+                st.caption("Tylko na czas prób. Czyści wszystkie zapisane wybory laureatów tego roku i resetuje stan gali. Rankingi, mecze i statystyki zostają bez zmian.")
+                with st.form(f"awards_reset_all_test_{year}"):
+                    confirm=st.text_input("Wpisz RESET, aby potwierdzić",key=f"awards_reset_all_confirm_{year}")
+                    wipe=st.form_submit_button("🗑️ RESETUJ WSZYSTKICH LAUREATÓW",use_container_width=True)
+                if wipe:
+                    if str(confirm or "").strip().upper()!="RESET":
+                        st.error("Wpisz RESET, aby potwierdzić.")
+                    else:
+                        removed=db.clear_all_award_selections_for_test(year)
+                        st.success(f"Wyczyszczono {removed} wyborów laureatów. Gala wróciła do stanu przed startem.")
+                        rr()
         if st.button("🔒 Zablokuj wybór laureatów",use_container_width=True,key="awards_lock"):
             st.session_state.awards_admin_ok=False;rr()
 

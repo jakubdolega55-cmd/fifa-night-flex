@@ -1,0 +1,17 @@
+FIFA Night checkpoint 2026-09-23
+
+Changes:
+- FC27 fixed wheel stays at 5 clubs: PSG, Bayern, Barcelona, Arsenal, Manchester City.
+- Real Madrid remains banned as a normal/Wild Card team.
+- FC27 curated Wild Card ranking now follows the approved Top 15 review after removing Real + the five fixed clubs:
+  Atletico, Liverpool, Man United, Inter, BVB, Napoli, Chelsea, Tottenham, AC Milan.
+- Previous champion has PSG assignment weight x0.50; previous finalist x0.70. PSG remains possible.
+- Added TEST-MODE-only bulk reset of all annual laureate selections; it also resets gala state and leaves rankings/matches/stats untouched.
+- Reset-all UI is only visible while FIFA_GALA_TEST_MODE is on.
+
+Validation:
+- py_compile PASS
+- club_pool_and_test_reset_smoke PASS
+- versioning_alias_smoke PASS
+- gala_closeout_smoke PASS
+- mobile_api_smoke 51/51 PASS
