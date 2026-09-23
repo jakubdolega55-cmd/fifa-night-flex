@@ -234,7 +234,7 @@ export default function App() {
         ) : tab === 'stats' ? (
           <StatsScreen controller={controller}/>
         ) : tab === 'awards' ? (
-          <AwardsScreen/>
+          <AwardsScreen controller={controller}/>
         ) : (
           <SettingsScreen controller={controller} setController={setController} keepAwake={keepAwake} setKeepAwake={setKeepAwake} connectionError={connectionError} onRefresh={refresh}/>
         )}
