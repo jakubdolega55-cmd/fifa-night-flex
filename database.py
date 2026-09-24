@@ -146,7 +146,7 @@ GALA_TIMING = {
 # selections exist. In the final deployment set FIFA_GALA_TEST_MODE=0. The same
 # readiness check then becomes the gate and the Gala navigation is hidden until
 # every required laureate is selected.
-GALA_TEST_MODE = str(os.getenv("FIFA_GALA_TEST_MODE", "1")).strip().lower() not in {"0", "false", "no", "off"}
+GALA_TEST_MODE = str(os.getenv("FIFA_GALA_TEST_MODE", "0")).strip().lower() not in {"0", "false", "no", "off"}
 GALA_AWARD_LABELS = {
     "superscorer": "Supersnajper Roku", "team_best": "Drużyna Roku", "finance": "Rekin Finansowy",
     "debut": "Debiut Roku", "progress": "Największy Progres", "outsider": "Najlepszy spoza dominatorów",

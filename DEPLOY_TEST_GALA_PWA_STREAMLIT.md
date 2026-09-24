@@ -32,7 +32,7 @@ Zachowaj istniejące sekrety/zmienne:
 - `GOOGLE_VISION_API_KEY` jeśli używasz
 
 Na czas testów:
-- `FIFA_GALA_TEST_MODE=1`
+- `FIFA_GALA_TEST_MODE=0`
 
 W `render.yaml` tej paczki tryb testowy jest wpisany jawnie jako `1`.
 
@@ -53,7 +53,7 @@ Main file: `app.py`.
 
 Na czas testu Gala ma działać w test mode. Kod domyślnie używa `1`; jeśli na hostingu ustawiasz własne env/secrets, ustaw także:
 
-`FIFA_GALA_TEST_MODE = "1"`
+`FIFA_GALA_TEST_MODE = "0"`
 
 ## 5. Pierwszy test bez wybierania laureatów
 

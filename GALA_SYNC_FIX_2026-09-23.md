@@ -18,3 +18,7 @@ Tests PASS:
 - audit_regression_smoke
 - mobile_api_smoke 51/51
 - group_tiebreak_smoke
+
+
+## TV-ready handshake v2
+START/NEXT/REPLAY no longer starts the category timer immediately. The TV renders the category intro first, acknowledges `/tv-ready`, and only then does the backend start the clock. Timing is now intro 9s, nominees 11s, nominee reveal interval 2.5s. This prevents network/render delays from eating the opening quote.
