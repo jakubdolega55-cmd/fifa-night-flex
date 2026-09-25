@@ -5795,7 +5795,13 @@ class Database:
             teaser=[f"{int(c.get('matches') or 0)} meczów • {int(c.get('big_wins') or 0)} wysokich zwycięstw 3+"]
             winner=[f"{num(c.get('goals_per_match'),2)} gola/mecz • {int(c.get('goals') or 0)} goli",f"{int(c.get('big_wins') or 0)} zwycięstw 3+ • największa wygrana +{int(c.get('max_margin') or 0)}"]
             if c.get("xg_per_match") is not None:winner.append(f"xG {num(c.get('xg_per_match'),2)}/mecz")
-            if c.get("shots_per_match") is not None or c.get("sot_per_match") is not None:winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celne {num(c.get('sot_per_match'),1)}/mecz")
+            if c.get("shots_per_match") is not None:
+                if c.get("sot_per_match") is not None:
+                    winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celne {num(c.get('sot_per_match'),1)}/mecz")
+                elif c.get("shot_accuracy_pct") is not None:
+                    winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celność {num(c.get('shot_accuracy_pct'),1)}%")
+                else:
+                    winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz")
         elif key=="player_year":
             teaser=[f"{int(c.get('starts') or 0)} turniejów • {int(c.get('matches') or 0)} meczów • {int(c.get('finals') or 0)} finałów",
                     f"{int(c.get('wins') or 0)} W • {int(c.get('draws') or 0)} R • {int(c.get('losses') or 0)} P • {pct(c.get('win_pct'))} W",
@@ -6011,6 +6017,7 @@ class Database:
             "xg_for":0.0,"xg_against":0.0,"xg_n":0,
             "shots_for":0.0,"shots_against":0.0,"shots_n":0,
             "sot_for":0.0,"sot_against":0.0,"sot_n":0,
+            "shot_accuracy_sum":0.0,"shot_accuracy_n":0,
             "fouls":0.0,"fouls_n":0,
             "spectacle_bonus_sum":0.0,"spectacle_n":0,
         })
@@ -6119,6 +6126,11 @@ class Database:
                     _sof=_num(_mine.get("shots_on_target"));_soa=_num(_opp.get("shots_on_target"))
                     if _sof is not None and _soa is not None:
                         _sp["sot_for"]+=_sof;_sp["sot_against"]+=_soa;_sp["sot_n"]+=1;_any=True
+                    _shot_acc=_num(_mine.get("shot_accuracy"))
+                    # Use percentage only for layouts/matches where a real SOT count is absent.
+                    # This keeps FC26 direct counts and FC27 percentages from double-counting the same match.
+                    if _shot_acc is not None and (_sof is None or _soa is None):
+                        _sp["shot_accuracy_sum"]+=max(0.0,min(100.0,_shot_acc));_sp["shot_accuracy_n"]+=1;_any=True
                     _fouls=_num(_mine.get("fouls"))
                     if _fouls is not None:
                         _sp["fouls"]+=_fouls;_sp["fouls_n"]+=1;_any=True
@@ -6570,21 +6582,29 @@ class Database:
             base=(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2
             score=base;reason=f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+"
             sp=summary_ps.get(pid) or {}
-            xn=int(sp.get("xg_n") or 0);shn=int(sp.get("shots_n") or 0);son=int(sp.get("sot_n") or 0)
+            xn=int(sp.get("xg_n") or 0);shn=int(sp.get("shots_n") or 0);son=int(sp.get("sot_n") or 0);san=int(sp.get("shot_accuracy_n") or 0)
             if xn>0:
                 xgpm=float(sp.get("xg_for") or 0)/xn;score+=min(xgpm,4.0)*1.5*_summary_strength(pid,xn);reason+=f" • xG {xgpm:.2f}/m"
             if shn>0:
                 shpm=float(sp.get("shots_for") or 0)/shn;score+=min(shpm,20.0)*.12*_summary_strength(pid,shn);reason+=f" • strzały {shpm:.1f}/m"
             if son>0:
+                # Keep direct SOT support for layouts/versions that actually show a count.
                 sopm=float(sp.get("sot_for") or 0)/son;score+=min(sopm,10.0)*.15*_summary_strength(pid,son);reason+=f" • celne {sopm:.1f}/m"
+            if san>0:
+                # FC27 Summary exposes shot accuracy as a percentage, not SOT count.
+                # These samples are stored only where direct SOT was absent, so mixed FC26/FC27 seasons stay fair.
+                sapct=float(sp.get("shot_accuracy_sum") or 0)/san
+                score+=min(max(sapct,0.0),100.0)*.015*_summary_strength(pid,san)
+                reason+=f" • celność strzałów {sapct:.0f}%"
             items.append(cand(pid,score,reason,
                 matches=int(v["m"]),goals=int(v["gf"]),goals_per_match=round(v["gf"]/v["m"],2),
                 big_wins=int(v["big_wins"]),max_margin=int(v["max_margin"]),
                 xg_per_match=(round(float(sp.get("xg_for") or 0)/xn,2) if xn>0 else None),
                 shots_per_match=(round(float(sp.get("shots_for") or 0)/shn,1) if shn>0 else None),
-                sot_per_match=(round(float(sp.get("sot_for") or 0)/son,1) if son>0 else None)
+                sot_per_match=(round(float(sp.get("sot_for") or 0)/son,1) if son>0 else None),
+                shot_accuracy_pct=(round(float(sp.get("shot_accuracy_sum") or 0)/san,1) if san>0 else None)
             ))
-        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Rdzeń to gole i wysokie zwycięstwa; Summary dodaje kontrolowany bonus za xG i aktywność strzelecką. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Rdzeń to gole i wysokie zwycięstwa; Summary dodaje kontrolowany bonus za xG, liczbę strzałów i — gdy FC27 pokazuje tylko procent — celność strzałów. Minimum 5 oficjalnych meczów turniejowych.",items)
 
         items=[]
         for pid,v in ps.items():

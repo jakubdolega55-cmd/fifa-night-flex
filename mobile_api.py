@@ -430,7 +430,7 @@ MATCH_EVENT_SCAN_SCHEMA["required"] += [
 ]
 
 
-SUMMARY_PARSER_VERSION = "summary-v1-internet-layout"
+SUMMARY_PARSER_VERSION = "summary-v2-fc27-real-layout"
 
 AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -465,10 +465,16 @@ AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA: dict[str, Any] = {
                 "expected_goals_right": {"type": ["number", "null"]},
                 "possession_left": {"type": ["number", "null"]},
                 "possession_right": {"type": ["number", "null"]},
+                "ball_recovery_time_left": {"type": ["number", "null"], "minimum": 0},
+                "ball_recovery_time_right": {"type": ["number", "null"], "minimum": 0},
                 "shots_left": {"type": ["integer", "null"], "minimum": 0},
                 "shots_right": {"type": ["integer", "null"], "minimum": 0},
                 "shots_on_target_left": {"type": ["integer", "null"], "minimum": 0},
                 "shots_on_target_right": {"type": ["integer", "null"], "minimum": 0},
+                "shot_accuracy_left": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+                "shot_accuracy_right": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+                "dribble_success_left": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+                "dribble_success_right": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
                 "passes_left": {"type": ["integer", "null"], "minimum": 0},
                 "passes_right": {"type": ["integer", "null"], "minimum": 0},
                 "pass_accuracy_left": {"type": ["number", "null"]},
@@ -506,7 +512,9 @@ AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA: dict[str, Any] = {
                 "present", "source_image_indices", "left_label", "right_label",
                 "left_participant_slot", "right_participant_slot", "mapping_confidence", "summary_confidence",
                 "expected_goals_left", "expected_goals_right", "possession_left", "possession_right",
+                "ball_recovery_time_left", "ball_recovery_time_right",
                 "shots_left", "shots_right", "shots_on_target_left", "shots_on_target_right",
+                "shot_accuracy_left", "shot_accuracy_right", "dribble_success_left", "dribble_success_right",
                 "passes_left", "passes_right", "pass_accuracy_left", "pass_accuracy_right",
                 "tackles_left", "tackles_right", "tackles_won_left", "tackles_won_right",
                 "interceptions_left", "interceptions_right", "saves_left", "saves_right",
@@ -537,11 +545,17 @@ For every image return one classification:
 - unknown = none can be established reliably
 
 SUMMARY RULES:
-- Extract statistics ONLY from images where the Summary tab itself is selected. Do not copy values from Passing/Shooting/Defending tabs into Summary.
+- Extract statistics ONLY from images where the Summary tab itself is selected. Do not copy values from Possession/Shooting/Passing/Defending tabs into Summary.
 - Layout may differ between FC26 and FC27. Extract only facts actually visible. Never infer a missing value.
-- Use the visible club/team labels or badges and the authoritative assigned teams above to map physical LEFT/RIGHT to internal HOME/AWAY. Never assume LEFT=HOME.
+- Use the visible club/team labels or badges and the authoritative assigned teams above to map physical LEFT/RIGHT to internal HOME/AWAY. Never assume LEFT=HOME. A team label may be visually truncated; use the badge + readable label + authoritative assignment together.
 - Standardized fields are optional in reality: return null when not clearly visible. Percent values should be returned as numbers without the percent sign.
-- expected_goals means xG / Expected Goals. shots_on_target must be null if Summary does not visibly show it.
+
+VERIFIED EA FC 27 SUMMARY LAYOUT (Polish UI, real FIFA Night screenshot):
+- Center rows can include: "Posiadanie piłki", "Czas odzyskania piłki (sek.)", "Strzały", "Oczekiwane bramki", "Podania", "Odbiory", "Udane odbiory", "Przechwyty", "Obrony", "Popełnione faule", "Spalone", "Rzuty rożne", "Rzuty wolne", "Rzuty karne", "Żółte kartki" and, lower down, "Czerwone kartki".
+- Map them as follows when clearly visible: possession, ball_recovery_time, shots, expected_goals, passes, tackles, tackles_won, interceptions, saves, fouls, offsides, corners. Free kicks / penalties / cards may remain only in raw_metrics because FIFA Night gets discipline/cards from Events.
+- Side circular metrics can include: "SKUTECZNOŚĆ DRIBLINGÓW" -> dribble_success, "CELNOŚĆ STRZAŁÓW" -> shot_accuracy, "DOKŁADNOŚĆ PODAŃ" -> pass_accuracy.
+- IMPORTANT: "CELNOŚĆ STRZAŁÓW" is a PERCENTAGE, not a shot-on-target count. Never derive shots_on_target from shots × shot_accuracy. shots_on_target must be null unless an actual count is explicitly visible.
+- expected_goals means xG / Oczekiwane bramki. Decimal commas such as 2,06 mean 2.06.
 - fouls should be extracted when visible because FIFA Night uses them as a small Fair Play component.
 - raw_metrics should preserve every clearly visible Summary row as label + left/right display strings, even when no standardized field exists.
 - If more than one Summary screenshot is supplied, merge only consistent visible values; if they conflict, prefer the clearest image and mention the conflict in notes.
@@ -554,7 +568,8 @@ def _summary_to_storage(summary: dict[str, Any], context: dict[str, Any]) -> tup
     right_slot=str(summary.get("right_participant_slot") or "unknown")
     mapping_ok=left_slot in {"home","away"} and right_slot in {"home","away"} and left_slot!=right_slot
     fields=[
-        "expected_goals","possession","shots","shots_on_target","passes","pass_accuracy",
+        "expected_goals","possession","ball_recovery_time","shots","shots_on_target",
+        "shot_accuracy","dribble_success","passes","pass_accuracy",
         "tackles","tackles_won","interceptions","saves","fouls","offsides","corners"
     ]
     home_stats={};away_stats={}
