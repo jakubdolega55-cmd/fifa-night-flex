@@ -377,13 +377,20 @@ EA FC icon rules confirmed for FIFA Night from real EA FC event screens:
 - plain WHITE football/ball icon = normal_goal
 - GOAL/NET icon with a small CHECK/TICK badge at the bottom = penalty_goal (a scored penalty during normal/extra time)
 - GOAL/NET icon with an X badge at the bottom = penalty_miss (a missed penalty during normal/extra time; it is NOT a goal)
+- IMPORTANT FC27 real-screen distinction: a penalty_miss icon can look like a small PALE/WHITE circular goal/net symbol with a tiny X/cross badge next to the player's name. This is NOT an injury icon. If you can see a goal/net/circular football-style outline plus an X badge, classify penalty_miss even when the icon is small or blurred.
+- Never classify the goal/net-with-X symbol as injury just because the X resembles a medical cross. Injury requires a distinctly MEDICAL pictogram (bandage/plaster, ambulance/medical symbol), not a goal/net/ball-style circle.
 - RED football/ball-style icon = own_goal. It is NOT a missed penalty.
 - yellow rectangular card = yellow_card
+- IMPORTANT FC27 second-yellow layout: when the SAME footballer appears twice in one match with two separate yellow-card rows (for example 30' and 39'), extract BOTH rows as yellow_card. EA FC may not show a separate red-card icon for the resulting dismissal; do not invent a red_card row. FIFA Night's backend derives the second-yellow dismissal from the two yellow events.
 - red rectangular card = red_card
 - player names with green up / red down arrows = substitution, NOT a goal
 - for substitution events, set player = the footballer COMING ON (green/up arrow) and related_player = the footballer GOING OFF (red/down arrow). side = that team's visible side; credited_side = unknown. Never swap these roles.
 - injury/medical event = injury. FIFA Night treats all injury severities identically. EA FC may show more than one injury symbol, including a bandage/plaster-style medical icon with a plus/cross or an ambulance/medical icon with a plus/cross. If either medical injury icon is visibly present, classify it as injury. If the symbol is ambiguous, use unknown rather than guessing.
 - if an icon cannot be identified reliably, use unknown
+- tie-breaker for a blurry icon: if the only ambiguity is penalty_miss vs injury, choose penalty_miss ONLY when the symbol has the EA FC goal/net/ball-style circular structure with an X badge; choose injury ONLY when a clearly medical bandage/ambulance-style pictogram is visible; otherwise use unknown.
+
+REAL FC27 EXAMPLE CONFIRMED BY FIFA NIGHT:
+- An event row showing E. Haaland on the RIGHT at about 90' with the small pale goal/net-with-X icon is penalty_miss for E. Haaland, NOT injury. This visual pattern should be treated as the canonical missed-penalty example.
 
 VERY IMPORTANT OWN-GOAL LAYOUT RULE:
 EA FC displays an own-goal event on the SAME physical side/team as the footballer who committed the own goal. The match goal, however, belongs to the OPPOSING team. Do not infer own-goal credit from the side where the event row is drawn.
@@ -403,6 +410,7 @@ A red card or injury is only an extracted event. FIFA Night's backend decides an
 Different events can occur in the same minute on opposite sides.
 Return each visible event once. If the same event appears on overlapping screenshots, merge it and include all matching image_indices.
 Preserve player names as displayed. Do not guess full names.
+Preserve stoppage time exactly when visible: 45+2 must be minute=45, stoppage=2, minute_label="45+2"; 90+6 must be minute=90, stoppage=6, minute_label="90+6". Never truncate 90+6 to 90.
 
 The complete list of ALL events (cards/substitutions) is less important than the complete list of GOALS.
 If the screenshots omit some cards or substitutions but all goals can still be accounted for, do not invent those missing events.
@@ -465,16 +473,10 @@ AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA: dict[str, Any] = {
                 "expected_goals_right": {"type": ["number", "null"]},
                 "possession_left": {"type": ["number", "null"]},
                 "possession_right": {"type": ["number", "null"]},
-                "ball_recovery_time_left": {"type": ["number", "null"], "minimum": 0},
-                "ball_recovery_time_right": {"type": ["number", "null"], "minimum": 0},
                 "shots_left": {"type": ["integer", "null"], "minimum": 0},
                 "shots_right": {"type": ["integer", "null"], "minimum": 0},
                 "shots_on_target_left": {"type": ["integer", "null"], "minimum": 0},
                 "shots_on_target_right": {"type": ["integer", "null"], "minimum": 0},
-                "shot_accuracy_left": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
-                "shot_accuracy_right": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
-                "dribble_success_left": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
-                "dribble_success_right": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
                 "passes_left": {"type": ["integer", "null"], "minimum": 0},
                 "passes_right": {"type": ["integer", "null"], "minimum": 0},
                 "pass_accuracy_left": {"type": ["number", "null"]},
@@ -512,9 +514,7 @@ AI_SCREEN_CLASSIFY_SUMMARY_SCHEMA: dict[str, Any] = {
                 "present", "source_image_indices", "left_label", "right_label",
                 "left_participant_slot", "right_participant_slot", "mapping_confidence", "summary_confidence",
                 "expected_goals_left", "expected_goals_right", "possession_left", "possession_right",
-                "ball_recovery_time_left", "ball_recovery_time_right",
                 "shots_left", "shots_right", "shots_on_target_left", "shots_on_target_right",
-                "shot_accuracy_left", "shot_accuracy_right", "dribble_success_left", "dribble_success_right",
                 "passes_left", "passes_right", "pass_accuracy_left", "pass_accuracy_right",
                 "tackles_left", "tackles_right", "tackles_won_left", "tackles_won_right",
                 "interceptions_left", "interceptions_right", "saves_left", "saves_right",
@@ -545,20 +545,17 @@ For every image return one classification:
 - unknown = none can be established reliably
 
 SUMMARY RULES:
-- Extract statistics ONLY from images where the Summary tab itself is selected. Do not copy values from Possession/Shooting/Passing/Defending tabs into Summary.
+- Extract statistics ONLY from images where the Summary tab itself is selected. Do not copy values from Passing/Shooting/Defending tabs into Summary.
+- FC27 REAL SUMMARY LAYOUT: the central table can contain rows such as Possession / Posiadanie piłki, Ball Recovery Time / Czas odzyskania piłki, Shots / Strzały, Expected Goals / Oczekiwane bramki, Passes / Podania, Tackles / Odbiory, Tackles Won / Udane odbiory, Interceptions / Przechwyty, Saves / Obrony, Fouls / Popełnione faule, Offsides / Spalone, Corners / Rzuty rożne, Free Kicks / Rzuty wolne, Penalties / Rzuty karne and Yellow Cards / Żółte kartki. Side circles may show Dribble Success, Shot Accuracy and Pass Accuracy.
 - Layout may differ between FC26 and FC27. Extract only facts actually visible. Never infer a missing value.
-- Use the visible club/team labels or badges and the authoritative assigned teams above to map physical LEFT/RIGHT to internal HOME/AWAY. Never assume LEFT=HOME. A team label may be visually truncated; use the badge + readable label + authoritative assignment together.
+- Use the visible club/team labels or badges and the authoritative assigned teams above to map physical LEFT/RIGHT to internal HOME/AWAY. Never assume LEFT=HOME.
 - Standardized fields are optional in reality: return null when not clearly visible. Percent values should be returned as numbers without the percent sign.
-
-VERIFIED EA FC 27 SUMMARY LAYOUT (Polish UI, real FIFA Night screenshot):
-- Center rows can include: "Posiadanie piłki", "Czas odzyskania piłki (sek.)", "Strzały", "Oczekiwane bramki", "Podania", "Odbiory", "Udane odbiory", "Przechwyty", "Obrony", "Popełnione faule", "Spalone", "Rzuty rożne", "Rzuty wolne", "Rzuty karne", "Żółte kartki" and, lower down, "Czerwone kartki".
-- Map them as follows when clearly visible: possession, ball_recovery_time, shots, expected_goals, passes, tackles, tackles_won, interceptions, saves, fouls, offsides, corners. Free kicks / penalties / cards may remain only in raw_metrics because FIFA Night gets discipline/cards from Events.
-- Side circular metrics can include: "SKUTECZNOŚĆ DRIBLINGÓW" -> dribble_success, "CELNOŚĆ STRZAŁÓW" -> shot_accuracy, "DOKŁADNOŚĆ PODAŃ" -> pass_accuracy.
-- IMPORTANT: "CELNOŚĆ STRZAŁÓW" is a PERCENTAGE, not a shot-on-target count. Never derive shots_on_target from shots × shot_accuracy. shots_on_target must be null unless an actual count is explicitly visible.
-- expected_goals means xG / Oczekiwane bramki. Decimal commas such as 2,06 mean 2.06.
-- fouls should be extracted when visible because FIFA Night uses them as a small Fair Play component.
-- raw_metrics should preserve every clearly visible Summary row as label + left/right display strings, even when no standardized field exists.
-- If more than one Summary screenshot is supplied, merge only consistent visible values; if they conflict, prefer the clearest image and mention the conflict in notes.
+- expected_goals means xG / Expected Goals / Oczekiwane bramki.
+- shots_on_target must be null unless Summary visibly gives an explicit NUMBER of shots on target. Never derive it from Shot Accuracy / Celność strzałów (for example, 57% of 7 shots).
+- pass_accuracy may be read from the side Pass Accuracy / Dokładność podań percentage when clearly visible. Do not turn Dribble Success or Shot Accuracy into another standardized field; preserve them in raw_metrics.
+- fouls should be extracted when visible because FIFA Night uses them as a small Fair Play component. Cards are still authoritative from Events, so Summary yellow/red-card rows should be preserved in raw_metrics but must not create match events.
+- raw_metrics should preserve every clearly visible Summary row and side-circle metric as label + left/right display strings, even when no standardized field exists (including recovery time, free kicks, penalties and card totals).
+- If more than one Summary screenshot is supplied, merge only consistent visible values; if they conflict, prefer the clearest image and mention the conflict in notes. One complete FC27 Summary screen is normally sufficient.
 - If there is no Summary image, set summary.present=false and all standardized fields to null/empty.
 """
 
@@ -568,8 +565,7 @@ def _summary_to_storage(summary: dict[str, Any], context: dict[str, Any]) -> tup
     right_slot=str(summary.get("right_participant_slot") or "unknown")
     mapping_ok=left_slot in {"home","away"} and right_slot in {"home","away"} and left_slot!=right_slot
     fields=[
-        "expected_goals","possession","ball_recovery_time","shots","shots_on_target",
-        "shot_accuracy","dribble_success","passes","pass_accuracy",
+        "expected_goals","possession","shots","shots_on_target","passes","pass_accuracy",
         "tackles","tackles_won","interceptions","saves","fouls","offsides","corners"
     ]
     home_stats={};away_stats={}

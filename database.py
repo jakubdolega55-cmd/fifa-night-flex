@@ -408,6 +408,34 @@ class Database:
         raw=" ".join(str(value or "").strip().casefold().split())
         return "".join(ch for ch in unicodedata.normalize("NFKD",raw) if not unicodedata.combining(ch))
 
+    def _seed_canonical_scorer_name(self, team_name: str, raw_name: str) -> str | None:
+        """Resolve common EA/manual abbreviations against the curated scorer seed.
+
+        This deliberately uses only an unambiguous match inside one club, so e.g.
+        ``B. Saka`` -> ``Bukayo Saka`` and ``H. Kane`` -> ``Harry Kane`` while
+        ambiguous initials are left untouched.
+        """
+        team_norm=self._norm_team_name(team_name)
+        seed_names=[]
+        for seed_team,names in SCORER_SEEDS.items():
+            if self._norm_team_name(seed_team)==team_norm:
+                seed_names=list(names);break
+        raw=" ".join(str(raw_name or "").strip().split())
+        if not raw or not seed_names:return None
+        nr=self._norm_scorer_name(raw)
+        exact=[n for n in seed_names if self._norm_scorer_name(n)==nr]
+        if len(exact)==1:return exact[0]
+        parts=[x for x in self._plain_name(raw).replace(".","").split() if x]
+        if not parts:return None
+        surname=parts[-1]; first=parts[0]
+        candidates=[]
+        for n in seed_names:
+            nparts=[x for x in self._plain_name(n).replace(".","").split() if x]
+            if not nparts:continue
+            if nparts[-1]!=surname:continue
+            if len(parts)==1 or nparts[0].startswith(first[:1]):candidates.append(n)
+        return candidates[0] if len(candidates)==1 else None
+
     def remember_footballer_alias(self, game_version: str, team_name: str, alias_name: str, canonical_name: str) -> None:
         version=normalize_game_version(game_version); team=" ".join(str(team_name or "").strip().split())
         alias=" ".join(str(alias_name or "").strip().split()); canonical=" ".join(str(canonical_name or "").strip().split())
@@ -1581,24 +1609,26 @@ class Database:
                 WHERE tp.tournament_id=? AND tp.team_revealed=0
                 ORDER BY tp.team_reveal_order LIMIT 1""",(tid,))
             if not row: return None
+            remaining=self._fetchone(conn,"SELECT COUNT(*) AS c FROM tournament_players WHERE tournament_id=? AND team_revealed=0",(tid,)) or {}
+            last_assignment=int(remaining.get("c") or 0)==1
             extra=json.loads(row.get("extra_json") or "{}")
             # Snapshot the wheel *before* this reveal. This is the exact set of
             # sectors shown on phone + TV for this spin. After a confirmed pick
             # the selected slot disappears from the next snapshot.
             pool=self._remaining_wheel_pool_conn(conn,tid)
             pending=extra.get("pending_wildcard")
-            if pending: return {**pending,"wheel_team":pending.get("team"),"pool":pool,"wildcard":True}
+            if pending: return {**pending,"wheel_team":pending.get("team"),"pool":pool,"wildcard":True,"auto_assigned":last_assignment}
             if is_wildcard_slot(row.get("team")):
                 pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
                 extra["pending_wildcard"]=pending
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
-                payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":"🃏 Wild Card","pool":pool,"wildcard":True}
-                self._publish_live_event_conn(conn,tid,"team_wheel",payload)
-                return {**pending,"wheel_team":row["team"],"pool":pool,"wildcard":True}
+                payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":"🃏 Wild Card","pool":pool,"wildcard":True,"auto_assigned":last_assignment}
+                self._publish_live_event_conn(conn,tid,"team_auto_wildcard" if last_assignment else "team_wheel",payload)
+                return {**pending,"wheel_team":row["team"],"pool":pool,"wildcard":True,"auto_assigned":last_assignment}
             conn.execute(self._sql("UPDATE tournament_players SET team_revealed=1 WHERE tournament_id=? AND player_id=?"),(tid,row["player_id"]))
-            payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":row["team"],"pool":pool,"wildcard":False}
-            self._publish_live_event_conn(conn,tid,"team_wheel",payload)
-            return {"player_id":row["player_id"],"name":row["name"],"team":row["team"],"wheel_team":row["team"],"pool":pool,"wildcard":False}
+            payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":row["team"],"pool":pool,"wildcard":False,"auto_assigned":last_assignment}
+            self._publish_live_event_conn(conn,tid,"team_auto_assign" if last_assignment else "team_wheel",payload)
+            return {"player_id":row["player_id"],"name":row["name"],"team":row["team"],"wheel_team":row["team"],"pool":pool,"wildcard":False,"auto_assigned":last_assignment}
 
     def pending_wildcard(self, tid: str) -> dict | None:
         with self.connect() as conn:
@@ -3036,19 +3066,23 @@ class Database:
             """),(int(match_no),now_iso(),tid,pid,int(match_no)))
 
     def _sync_absences_from_events_conn(self, conn, tid: str, match_no: int, events: list[dict] | None) -> None:
-        """Create next-match absences from red cards and injuries detected in this match."""
+        """Create next-match absences from reds, injuries, second-yellow reds and yellow accumulation."""
         # Re-saving/replacing a scan for the same match must not duplicate sanctions.
         conn.execute(self._sql("DELETE FROM tournament_absences WHERE tournament_id=? AND source_match_no=?"),(tid,int(match_no)))
         seen=set()
+        yellow_rows: dict[tuple[str,str], list[str]] = defaultdict(list)
         for e in events or []:
             et=str(e.get("event_type") or "")
-            if et not in {"red_card","injury"}:
-                continue
             pid=str(e.get("actor_player_id") or "").strip()
             footballer=" ".join(str(e.get("footballer_name") or "").strip().split())
             if not pid or not footballer:
                 continue
             norm=self._norm_scorer_name(footballer)
+            if et=="yellow_card":
+                yellow_rows[(pid,norm)].append(footballer)
+                continue
+            if et not in {"red_card","injury"}:
+                continue
             reason="red_card" if et=="red_card" else "injury"
             key=(pid,norm,reason)
             if key in seen:
@@ -3060,6 +3094,57 @@ class Database:
                     source_match_no,served_match_no,created_at,served_at
                 ) VALUES (?,?,?,?,?,?,?,?,?,?)
             """),(str(uuid.uuid4()),tid,pid,footballer,norm,reason,int(match_no),None,now_iso(),None))
+
+        # EA FC 27 may show a dismissal for two yellows as two yellow rows only.
+        # Treat that as ONE next-match suspension and do not also issue yellow-accumulation
+        # for the same pair. The visible yellow events remain stored for statistics/history.
+        second_yellow_keys=set()
+        for (pid,norm),names in yellow_rows.items():
+            if len(names)<2:
+                continue
+            footballer=names[-1]
+            second_yellow_keys.add((pid,norm))
+            conn.execute(self._sql("""
+                INSERT INTO tournament_absences (
+                    id,tournament_id,player_id,footballer_name,normalized_footballer,reason,
+                    source_match_no,served_match_no,created_at,served_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """),(str(uuid.uuid4()),tid,pid,footballer,norm,"second_yellow_red",int(match_no),None,now_iso(),None))
+
+        # Tournament rule: every second yellow collected across DIFFERENT matches by
+        # the same footballer produces a one-match suspension. Same-match double yellow
+        # is handled above as a sending-off and must not create a second punishment.
+        for (pid,norm),names in yellow_rows.items():
+            if (pid,norm) in second_yellow_keys:
+                continue
+            footballer=names[-1]
+            row=self._fetchone(conn,"""
+                SELECT COUNT(*) AS c FROM match_events
+                WHERE tournament_id=? AND actor_player_id=? AND normalized_footballer=? AND event_type='yellow_card'
+            """,(tid,pid,norm)) or {}
+            yellow_total=int(row.get("c") or 0)
+            second_yellow_matches=self._fetchone(conn,"""
+                SELECT COUNT(DISTINCT match_no) AS c FROM (
+                    SELECT match_no FROM match_events
+                    WHERE tournament_id=? AND actor_player_id=? AND normalized_footballer=? AND event_type='yellow_card'
+                    GROUP BY match_no HAVING COUNT(*)>=2
+                ) q
+            """,(tid,pid,norm)) or {}
+            # Remove yellow cards already consumed by same-match second-yellow dismissals.
+            eligible_yellows=max(0,yellow_total-2*int(second_yellow_matches.get("c") or 0))
+            sanctions=self._fetchone(conn,"""
+                SELECT COUNT(*) AS c FROM tournament_absences
+                WHERE tournament_id=? AND player_id=? AND normalized_footballer=? AND reason='yellow_accumulation'
+            """,(tid,pid,norm)) or {}
+            consumed_pairs=int(sanctions.get("c") or 0)
+            if eligible_yellows < 2*(consumed_pairs+1):
+                continue
+            conn.execute(self._sql("""
+                INSERT INTO tournament_absences (
+                    id,tournament_id,player_id,footballer_name,normalized_footballer,reason,
+                    source_match_no,served_match_no,created_at,served_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            """),(str(uuid.uuid4()),tid,pid,footballer,norm,"yellow_accumulation",int(match_no),None,now_iso(),None))
 
     def active_absences(self, tid: str) -> list[dict]:
         """Unserved tournament-only absences, enriched with FIFA Night player/team."""
@@ -3283,20 +3368,45 @@ class Database:
                              (str(uuid.uuid4()),tid,match_no,side,team,nt,name,ns,goals))
 
     def scorer_stats(self) -> list[dict]:
+        """Official scorer ranking with team-roster alias merging.
+
+        Historical manual entries such as ``B. Saka`` / ``Bukayo Saka`` or
+        ``H. Kane`` / ``Harry Kane`` are resolved against the roster of the team and
+        EA FC version before aggregation, so old manual data does not split one player
+        into multiple rows. Ambiguous abbreviations stay separate instead of guessing.
+        """
         with self.connect() as conn:
-            rows=self._fetchall(conn,"""SELECT ms.normalized_scorer,MIN(ms.scorer_name) AS scorer_name,SUM(ms.goals) AS goals,
-                    COUNT(DISTINCT ms.tournament_id||':'||ms.match_no) AS matches_scored
+            rows=self._fetchall(conn,"""SELECT ms.scorer_name,ms.team_name,ms.goals,ms.tournament_id,ms.match_no,t.game_version
                 FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
-                GROUP BY ms.normalized_scorer ORDER BY goals DESC,matches_scored DESC,scorer_name""")
-            teams=self._fetchall(conn,"""SELECT ms.normalized_scorer,ms.team_name,SUM(ms.goals) AS goals
-                FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
-                GROUP BY ms.normalized_scorer,ms.team_name ORDER BY goals DESC""")
-        by=defaultdict(list)
-        for r in teams: by[r["normalized_scorer"]].append((r["team_name"],int(r["goals"])))
-        return [{"name":r["scorer_name"],"goals":int(r["goals"]),"matches_scored":int(r["matches_scored"]),
-                 "teams":", ".join(x[0] for x in by[r["normalized_scorer"]])} for r in rows]
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
+        agg={}
+        for r in rows:
+            raw=" ".join(str(r.get("scorer_name") or "").strip().split())
+            team=" ".join(str(r.get("team_name") or "").strip().split())
+            version=normalize_game_version(r.get("game_version"))
+            seed_canonical=self._seed_canonical_scorer_name(team,raw) if raw and team else None
+            if seed_canonical:
+                canonical=seed_canonical
+            else:
+                resolved=self.resolve_footballer_name(version,team,raw) if raw and team else {"name":raw,"status":"unresolved"}
+                canonical=str(resolved.get("name") or raw) if resolved.get("status") in {"remembered","exact","auto"} else raw
+            key=self._norm_scorer_name(canonical)
+            if not key: continue
+            item=agg.setdefault(key,{"name":canonical,"goals":0,"matches":set(),"teams":defaultdict(int)})
+            goals=int(r.get("goals") or 0)
+            item["goals"]+=goals
+            item["matches"].add(f"{r.get('tournament_id')}:{r.get('match_no')}")
+            if team:item["teams"][team]+=goals
+            # Prefer the roster's canonical full name over an abbreviation already seen.
+            if canonical and ('.' not in canonical or '.' in str(item.get("name") or "")):
+                item["name"]=canonical
+        out=[]
+        for item in agg.values():
+            teams_sorted=sorted(item["teams"].items(),key=lambda kv:(-kv[1],kv[0]))
+            out.append({"name":item["name"],"goals":int(item["goals"]),"matches_scored":len(item["matches"]),
+                        "teams":", ".join(x[0] for x in teams_sorted)})
+        out.sort(key=lambda x:(-int(x["goals"]),-int(x["matches_scored"]),self._plain_name(x["name"])))
+        return out
 
     def _official_matches_conn(self, conn, exclude_tid: str | None = None) -> list[dict]:
         sql="""SELECT m.*,t.completed_at,t.created_at,t.game_version,fm.format_key,hp.name home_name,ap.name away_name,htp.team home_team,atp.team away_team
@@ -5795,13 +5905,7 @@ class Database:
             teaser=[f"{int(c.get('matches') or 0)} meczów • {int(c.get('big_wins') or 0)} wysokich zwycięstw 3+"]
             winner=[f"{num(c.get('goals_per_match'),2)} gola/mecz • {int(c.get('goals') or 0)} goli",f"{int(c.get('big_wins') or 0)} zwycięstw 3+ • największa wygrana +{int(c.get('max_margin') or 0)}"]
             if c.get("xg_per_match") is not None:winner.append(f"xG {num(c.get('xg_per_match'),2)}/mecz")
-            if c.get("shots_per_match") is not None:
-                if c.get("sot_per_match") is not None:
-                    winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celne {num(c.get('sot_per_match'),1)}/mecz")
-                elif c.get("shot_accuracy_pct") is not None:
-                    winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celność {num(c.get('shot_accuracy_pct'),1)}%")
-                else:
-                    winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz")
+            if c.get("shots_per_match") is not None or c.get("sot_per_match") is not None:winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celne {num(c.get('sot_per_match'),1)}/mecz")
         elif key=="player_year":
             teaser=[f"{int(c.get('starts') or 0)} turniejów • {int(c.get('matches') or 0)} meczów • {int(c.get('finals') or 0)} finałów",
                     f"{int(c.get('wins') or 0)} W • {int(c.get('draws') or 0)} R • {int(c.get('losses') or 0)} P • {pct(c.get('win_pct'))} W",
@@ -6017,7 +6121,6 @@ class Database:
             "xg_for":0.0,"xg_against":0.0,"xg_n":0,
             "shots_for":0.0,"shots_against":0.0,"shots_n":0,
             "sot_for":0.0,"sot_against":0.0,"sot_n":0,
-            "shot_accuracy_sum":0.0,"shot_accuracy_n":0,
             "fouls":0.0,"fouls_n":0,
             "spectacle_bonus_sum":0.0,"spectacle_n":0,
         })
@@ -6126,11 +6229,6 @@ class Database:
                     _sof=_num(_mine.get("shots_on_target"));_soa=_num(_opp.get("shots_on_target"))
                     if _sof is not None and _soa is not None:
                         _sp["sot_for"]+=_sof;_sp["sot_against"]+=_soa;_sp["sot_n"]+=1;_any=True
-                    _shot_acc=_num(_mine.get("shot_accuracy"))
-                    # Use percentage only for layouts/matches where a real SOT count is absent.
-                    # This keeps FC26 direct counts and FC27 percentages from double-counting the same match.
-                    if _shot_acc is not None and (_sof is None or _soa is None):
-                        _sp["shot_accuracy_sum"]+=max(0.0,min(100.0,_shot_acc));_sp["shot_accuracy_n"]+=1;_any=True
                     _fouls=_num(_mine.get("fouls"))
                     if _fouls is not None:
                         _sp["fouls"]+=_fouls;_sp["fouls_n"]+=1;_any=True
@@ -6582,29 +6680,21 @@ class Database:
             base=(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2
             score=base;reason=f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+"
             sp=summary_ps.get(pid) or {}
-            xn=int(sp.get("xg_n") or 0);shn=int(sp.get("shots_n") or 0);son=int(sp.get("sot_n") or 0);san=int(sp.get("shot_accuracy_n") or 0)
+            xn=int(sp.get("xg_n") or 0);shn=int(sp.get("shots_n") or 0);son=int(sp.get("sot_n") or 0)
             if xn>0:
                 xgpm=float(sp.get("xg_for") or 0)/xn;score+=min(xgpm,4.0)*1.5*_summary_strength(pid,xn);reason+=f" • xG {xgpm:.2f}/m"
             if shn>0:
                 shpm=float(sp.get("shots_for") or 0)/shn;score+=min(shpm,20.0)*.12*_summary_strength(pid,shn);reason+=f" • strzały {shpm:.1f}/m"
             if son>0:
-                # Keep direct SOT support for layouts/versions that actually show a count.
                 sopm=float(sp.get("sot_for") or 0)/son;score+=min(sopm,10.0)*.15*_summary_strength(pid,son);reason+=f" • celne {sopm:.1f}/m"
-            if san>0:
-                # FC27 Summary exposes shot accuracy as a percentage, not SOT count.
-                # These samples are stored only where direct SOT was absent, so mixed FC26/FC27 seasons stay fair.
-                sapct=float(sp.get("shot_accuracy_sum") or 0)/san
-                score+=min(max(sapct,0.0),100.0)*.015*_summary_strength(pid,san)
-                reason+=f" • celność strzałów {sapct:.0f}%"
             items.append(cand(pid,score,reason,
                 matches=int(v["m"]),goals=int(v["gf"]),goals_per_match=round(v["gf"]/v["m"],2),
                 big_wins=int(v["big_wins"]),max_margin=int(v["max_margin"]),
                 xg_per_match=(round(float(sp.get("xg_for") or 0)/xn,2) if xn>0 else None),
                 shots_per_match=(round(float(sp.get("shots_for") or 0)/shn,1) if shn>0 else None),
-                sot_per_match=(round(float(sp.get("sot_for") or 0)/son,1) if son>0 else None),
-                shot_accuracy_pct=(round(float(sp.get("shot_accuracy_sum") or 0)/san,1) if san>0 else None)
+                sot_per_match=(round(float(sp.get("sot_for") or 0)/son,1) if son>0 else None)
             ))
-        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Rdzeń to gole i wysokie zwycięstwa; Summary dodaje kontrolowany bonus za xG, liczbę strzałów i — gdy FC27 pokazuje tylko procent — celność strzałów. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Rdzeń to gole i wysokie zwycięstwa; Summary dodaje kontrolowany bonus za xG i aktywność strzelecką. Minimum 5 oficjalnych meczów turniejowych.",items)
 
         items=[]
         for pid,v in ps.items():
