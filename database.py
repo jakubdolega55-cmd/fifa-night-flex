@@ -3296,10 +3296,14 @@ class Database:
             "penalties_missed":int(actor.get("penalties_missed") or 0),
             "own_goals":int(actor.get("own_goals") or 0),
             "detailed_goals":len(goals),
-            "goals_90_plus":sum(1 for g in goals if int(g.get("minute") or 0)==90 and int(g.get("stoppage") or 0)>0),
+            # EA FC can display every stoppage-time goal simply as 90'. Treat this
+            # as a coarse "marked 90" counter, never as exact 90+X chronology.
+            "goals_90_plus":sum(1 for g in goals if int(g.get("minute") or 0)==90),
             "extra_time_goals":sum(1 for g in goals if int(g.get("minute") or 0)>90),
             "fastest_goal":goal_desc(fastest),
-            "latest_goal":goal_desc(latest),
+            # Exact latest-goal ranking is intentionally disabled: FC27 source data
+            # does not reliably expose the +X part of stoppage time.
+            "latest_goal":None,
         })
         out["cards_total"]=out["yellow_cards"]+out["red_cards"]
         return out
@@ -3651,9 +3655,10 @@ class Database:
                 hat_groups[(mk[0],mk[1],item["player_id"],norm)].append(item)
         if goal_candidates:
             fastest=min(goal_candidates,key=lambda x:(x["minute_value"],x["event_order"]))
-            latest=max(goal_candidates,key=lambda x:(x["minute_value"],-x["event_order"]))
             detailed_records["fastest_goal"]={k:v for k,v in fastest.items() if k not in ("event_order","tournament_id","match_no")}
-            detailed_records["latest_goal"]={k:v for k,v in latest.items() if k not in ("event_order","tournament_id","match_no")}
+            # No "latest goal" record: FC27 may collapse 90+1 and 90+6 to the
+            # same visible 90' marker, so such a record would pretend to know more
+            # than the source screen actually provides.
         best_hat=None
         for _key,goals in hat_groups.items():
             goals=sorted(goals,key=lambda x:(x["event_order"],x["minute_value"]))
@@ -5858,15 +5863,17 @@ class Database:
             winner=[f"{int(c.get('teams_count') or 0)} różnych drużyn • {int(c.get('successful_teams') or 0)} z sukcesem",
                     f"{int(c.get('starts') or 0)} turniejów • {pct(c.get('win_pct'))} W"]
         elif key=="comeback_king":
-            teaser=[f"{int(c.get('comeback_wins') or 0)} wygranych comebacków"]
-            winner=[f"{int(c.get('comeback_wins') or 0)} wygranych comebacków • {int(c.get('comeback_points') or 0)} pkt comebacku"]
+            _cw=int(c.get('comeback_wins') or 0); _cd=int(c.get('comeback_draws') or 0); _cp=float(c.get('comeback_points') or 0)
+            _cp_txt=(str(int(_cp)) if _cp.is_integer() else str(_cp).replace('.',','))
+            teaser=[f"{_cw} pełnych comebacków"+(f" • {_cd} do remisu" if _cd else "")]
+            winner=[f"{_cw} pełnych • {_cd} do remisu • {_cp_txt} pkt comebacku"]
             if c.get("best_comeback_from") and c.get("best_comeback_final"):winner.append(f"największy comeback: {c.get('best_comeback_from')} → {c.get('best_comeback_final')}")
             bd=c.get("comeback_breakdown") or {}
             if bd:winner.append(" • ".join(f"z -{k}: {v}×" for k,v in sorted(bd.items(),key=lambda kv:int(kv[0]))))
         elif key=="late_king":
-            teaser=[f"{int(c.get('matches') or 0)} rozegrane mecze",f"najpóźniejszy gol: {c.get('latest_goal') or '—'}"]
-            winner=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} gole 90+ • najpóźniejszy {c.get('latest_goal') or '—'}"]
-            special={"type":"late_clock","latest":c.get("latest_goal")}
+            teaser=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
+            winner=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
+            special={"type":"late_clock","latest":None}
         elif key=="spectacle":
             teaser=[f"{int(c.get('matches') or 0)} meczów",f"{num(c.get('avg_goals'),2)} gola/mecz w jego spotkaniach"]
             winner=[f"{num(c.get('avg_goals'),2)} gola/mecz w jego spotkaniach",f"{int(c.get('spectacular_matches') or 0)}/{int(c.get('matches') or 0)} bardzo widowiskowych",
@@ -6468,9 +6475,22 @@ class Database:
             scorer=" ".join(str(r.get("scorer_name") or "").split())
             goals=int(r.get("goals") or 0)
             if not scorer or goals<=0:continue
-            sn=scorer.casefold()
+            side=str(r.get("side") or "")
+            side_team=m.get("home_team") if side=="home" else m.get("away_team")
+            side_team=" ".join(str(side_team or "").split())
+            version=normalize_game_version((event_by.get(str(r["tournament_id"])) or {}).get("game_version"))
+            canonical=self._seed_canonical_scorer_name(side_team,scorer) if side_team else None
+            if not canonical and side_team:
+                resolved=self.resolve_footballer_name(version,side_team,scorer)
+                if resolved.get("status") in {"remembered","exact","auto"}:
+                    canonical=str(resolved.get("name") or scorer)
+            canonical=canonical or scorer
+            sn=self._norm_scorer_name(canonical)
             scorer_totals[sn]+=goals
-            scorer_display.setdefault(sn,scorer)
+            # Prefer a canonical full roster name over a historical abbreviation.
+            old_display=scorer_display.get(sn)
+            if old_display is None or ('.' in str(old_display) and '.' not in canonical):
+                scorer_display[sn]=canonical
             scorer_goals_by_match[sn][(str(r["tournament_id"]),int(r["match_no"]))]+=goals
             if goals>=3:scorer_hattricks[sn]+=1
             if str(r["tournament_id"]) in tournament_ids:
@@ -6480,7 +6500,7 @@ class Database:
                     scorer_players[sn].add(pid)
                     pair_key=(pid,sn)
                     scorer_by_player[pair_key]+=goals
-                    scorer_pair_display.setdefault(pair_key,scorer)
+                    scorer_pair_display.setdefault(pair_key,canonical)
                     side_team=m.get("home_team") if str(r.get("side"))=="home" else m.get("away_team")
                     side_team=" ".join(str(side_team or "").split())
                     if side_team:
@@ -6538,7 +6558,10 @@ class Database:
         # event timeline are used, so older matches are never silently treated as
         # zero cards / zero late goals.
         discipline=defaultdict(lambda:{"yellow":0,"red":0,"points":0})
-        late_stats=defaultdict(lambda:{"late_goals":0,"goals_90plus":0,"latest_value":0,"latest_label":""})
+        # EA FC 27 can collapse stoppage-time goals to a plain 90' marker on the
+        # Events screen.  Therefore Król Końcówek must not rank players by a
+        # supposedly exact 90+X minute that the source screen may not expose.
+        late_stats=defaultdict(lambda:{"late_goals":0,"goals_90_marked":0})
         detailed_match_keys=set()
         detailed_events_by_match=defaultdict(list)
         for e in detailed_event_rows:
@@ -6564,11 +6587,9 @@ class Database:
                 if minute>=85:
                     ls=late_stats[credited]
                     ls["late_goals"]+=1
-                    if minute>=90: ls["goals_90plus"]+=1
-                    value=minute*100+stoppage
-                    if value>ls["latest_value"]:
-                        ls["latest_value"]=value
-                        ls["latest_label"]=str(e.get("minute_label") or (f"{minute}+{stoppage}'" if stoppage else f"{minute}'"))
+                    # Count only rows displayed as minute 90. Extra-time goals at
+                    # 105/120 are not "90+" goals. Exact +X is intentionally ignored.
+                    if minute==90: ls["goals_90_marked"]+=1
 
         # Number of detailed matches per participant, needed for a fair Fair Play
         # denominator. A detailed match counts for both players even when one of
@@ -6580,49 +6601,60 @@ class Database:
             for pid in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")):
                 if pid: detailed_matches_by_player[pid]+=1
 
-        # Comeback King. For every fully reconstructed detailed match we replay the
-        # goal timeline and measure the largest deficit overcome by the eventual
-        # winner. Scoring uses a gentler progressive scale agreed for FIFA Night:
-        # 1 goal = 1 pt, 2 = 2 pts, 3 = 4 pts, 4 = 7 pts, 5 = 11 pts, etc.
-        comeback_stats=defaultdict(lambda:{"wins":0,"points":0,"max_deficit":0,"from_deficits":defaultdict(int),"best_from_score":None,"best_final_score":None,"best_match_id":None})
+        # Comeback King. Replay every fully reconstructed goal timeline for BOTH
+        # participants. A comeback that ends in an on-pitch win gets full points.
+        # Recovering to a draw gets half points; if that draw is then won on
+        # penalties, the shoot-out winner gets full points while the loser keeps
+        # the half-point comeback credit. This makes 0:2 -> 2:2 meaningful without
+        # treating it exactly like 0:2 -> 3:2.
+        comeback_stats=defaultdict(lambda:{"wins":0,"draw_comebacks":0,"points":0.0,"max_deficit":0,"from_deficits":defaultdict(int),"best_from_score":None,"best_final_score":None,"best_match_id":None})
         goal_types={"normal_goal","penalty_goal","own_goal"}
+        def _comeback_base_points(deficit:int)->float:
+            # 1,2,4,7,11... for a full comeback; draw credit is exactly 50%.
+            return float(1+(deficit*(deficit-1))//2)
         for mk,evs in detailed_events_by_match.items():
             m=match_map.get(mk)
             if not m: continue
-            winner=str(m.get("winner_player_id") or "")
-            if not winner: continue
             h=str(m.get("home_player_id") or ""); a=str(m.get("away_player_id") or "")
-            if winner not in (h,a): continue
+            if not h or not a: continue
             hs,ass=_awards_real_score(m)
             goals=[e for e in evs if str(e.get("event_type") or "") in goal_types
                    and not int(e.get("synthetic_de") or 0) and str(e.get("credited_player_id") or "")]
-            # Do not infer missing goals. Comeback is calculated only when the
-            # detailed REAL timeline accounts for the on-pitch score. The technical
-            # Winners Bracket +1 in a DE final is never a comeback goal.
+            # Never infer missing goals from the final score.
             if len(goals)!=(hs+ass): continue
             goals=sorted(goals,key=lambda e:(int(e.get("event_order") or 10**9),int(e.get("minute") or 0),int(e.get("stoppage") or 0)))
-            score={h:0,a:0}; max_deficit=0; max_deficit_score=None
-            other=a if winner==h else h
+            score={h:0,a:0}
+            max_deficit={h:0,a:0}; max_deficit_score={h:None,a:None}
             for e in goals:
                 pid=str(e.get("credited_player_id") or "")
                 if pid in score: score[pid]+=1
-                deficit=score.get(other,0)-score.get(winner,0)
-                if deficit>max_deficit:
-                    max_deficit=deficit
-                    # Winner-first display: e.g. 1:4 -> 5:4, regardless of HOME/AWAY side.
-                    max_deficit_score=(score.get(winner,0),score.get(other,0))
-            if max_deficit>0:
-                cs=comeback_stats[winner]
-                # Sequence 1,2,4,7,11... (increments grow by 1 each level).
-                comeback_points=1+(max_deficit*(max_deficit-1))//2
-                cs["wins"]+=1;cs["points"]+=comeback_points
-                if max_deficit>int(cs.get("max_deficit") or 0):
-                    cs["max_deficit"]=max_deficit
-                    wf=hs if winner==h else ass;lf=ass if winner==h else hs
-                    cs["best_from_score"]=(f"{max_deficit_score[0]}:{max_deficit_score[1]}" if max_deficit_score else None)
-                    cs["best_final_score"]=f"{wf}:{lf}"
+                for pid0,other in ((h,a),(a,h)):
+                    deficit=score.get(other,0)-score.get(pid0,0)
+                    if deficit>max_deficit[pid0]:
+                        max_deficit[pid0]=deficit
+                        max_deficit_score[pid0]=(score.get(pid0,0),score.get(other,0))
+            shootout_winner=str(m.get("winner_player_id") or "") if hs==ass else ""
+            for pid0,other in ((h,a),(a,h)):
+                deficit=int(max_deficit.get(pid0) or 0)
+                if deficit<=0: continue
+                on_pitch_win=(hs>ass if pid0==h else ass>hs)
+                on_pitch_draw=(hs==ass)
+                if not on_pitch_win and not on_pitch_draw:
+                    continue
+                full=on_pitch_win or (on_pitch_draw and shootout_winner==pid0)
+                multiplier=1.0 if full else 0.5
+                pts=_comeback_base_points(deficit)*multiplier
+                cs=comeback_stats[pid0]
+                cs["points"]+=pts
+                if full: cs["wins"]+=1
+                else: cs["draw_comebacks"]+=1
+                cs["from_deficits"][deficit]+=1
+                if deficit>int(cs.get("max_deficit") or 0):
+                    cs["max_deficit"]=deficit
+                    pf=hs if pid0==h else ass;of=ass if pid0==h else hs
+                    cs["best_from_score"]=(f"{max_deficit_score[pid0][0]}:{max_deficit_score[pid0][1]}" if max_deficit_score[pid0] else None)
+                    cs["best_final_score"]=f"{pf}:{of}"
                     cs["best_match_id"]=f"{mk[0]}:{mk[1]}"
-                cs["from_deficits"][max_deficit]+=1
 
         def pc(pid,v):return round(v["w"]/v["m"]*100,1) if v["m"] else 0.0
         def _summary_strength(pid: str, metric_n: int) -> float:
@@ -6791,29 +6823,30 @@ class Database:
             items.append({
                 "id":str(pid),"name":name_by.get(str(pid),"?"),
                 "score":float(v["late_goals"]),
-                "_sort":(int(v["late_goals"]),int(v["goals_90plus"]),int(v["latest_value"])),
-                "reason":f"{v['late_goals']} goli od 85. minuty • {v['goals_90plus']} od 90. minuty • najpóźniejszy {v['latest_label'] or '—'}",
+                "_sort":(int(v["late_goals"]),int(v["goals_90_marked"])),
+                "reason":f"{v['late_goals']} goli od 85. minuty • {v['goals_90_marked']} oznaczonych jako 90'",
                 "matches":int(ps.get(pid,{}).get("m") or 0),"late_goals":int(v["late_goals"]),
-                "goals_90plus":int(v["goals_90plus"]),"latest_goal":v.get("latest_label")
+                "goals_90plus":int(v["goals_90_marked"]),"latest_goal":None
             })
         add("late_king","⏰ Król Końcówek","Od 85. minuty zaczyna się jego ulubiona część meczu. Im później boli rywala, tym lepiej.",items)
 
         items=[]
         for pid,v in comeback_stats.items():
-            if v["wins"]<=0: continue
+            if float(v["points"])<=0: continue
             breakdown=", ".join(f"-{d}: {n}×" for d,n in sorted(v["from_deficits"].items(),reverse=True))
             best_transition=(f"{v.get('best_from_score')} → {v.get('best_final_score')}" if v.get("best_from_score") and v.get("best_final_score") else "—")
+            points=float(v["points"]); points_txt=(str(int(points)) if points.is_integer() else str(points).replace('.',','))
             items.append({
-                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":float(v["points"]),
-                "_sort":(int(v["points"]),int(v["max_deficit"]),int(v["wins"])),
-                "reason":f"{v['wins']} comeback win • {v['points']} pkt comebacku • największy comeback {best_transition}"+(f" • {breakdown}" if breakdown else ""),
-                "comeback_wins":int(v["wins"]),"comeback_points":int(v["points"]),
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":points,
+                "_sort":(points,int(v["max_deficit"]),int(v["wins"]),int(v["draw_comebacks"])),
+                "reason":f"{v['wins']} pełnych comebacków • {v['draw_comebacks']} odrobionych do remisu • {points_txt} pkt comebacku • największy comeback {best_transition}"+(f" • {breakdown}" if breakdown else ""),
+                "comeback_wins":int(v["wins"]),"comeback_draws":int(v["draw_comebacks"]),"comeback_points":points,
                 "best_comeback_from":v.get("best_from_score"),"best_comeback_final":v.get("best_final_score"),
                 "best_comeback_match_id":v.get("best_match_id"),
                 "comeback_breakdown":{str(k):int(n) for k,n in v["from_deficits"].items()},
                 "matches":int(ps.get(pid,{}).get("m") or 0),
             })
-        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie. Liczymy zwycięstwa, w których trzeba było naprawdę wracać z daleka.",items)
+        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie. Wygrany comeback dostaje pełną wartość; odrobienie do remisu połowę, a wygrana po karnych przywraca pełną wartość.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():

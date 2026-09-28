@@ -634,7 +634,23 @@ If a team mapping is genuinely unclear, return "unknown" and lower mapping_confi
 PENALTY SHOOT-OUT:
 If a post-match shoot-out result is explicitly visible, return only the final shoot-out tally in shootout_left/shootout_right.
 Do NOT add individual shoot-out kicks to events or goals.
-If no shoot-out tally is visible, return null for both.
+
+IMPORTANT REAL FC27 SHOOT-OUT LAYOUT:
+EA FC 27 can show penalty-shoot-out attempts inside the Events list as MANY rows all marked 120'.
+The top scoreboard can still show the drawn on-pitch score (for example 1:1), while the 120' rows show
+penalty icons with a CHECK/TICK for scored kicks and an X for missed kicks. In this layout those rows are
+POST-MATCH SHOOT-OUT KICKS, not penalty_goal / penalty_miss events from normal or extra time.
+Treat them as a shoot-out when the visual evidence forms a sequence of penalty attempts after a drawn
+120-minute match, especially when several 120' penalty rows are visible for both sides. Deduplicate rows
+that repeat across overlapping screenshots, count successful shoot-out kicks by LEFT/RIGHT side, and put
+that tally into shootout_left/shootout_right. Do not include those shoot-out attempts in events, scorer
+totals, normal goals, penalty-miss rankings, or Awards.
+
+If the supplied screenshots show only a PARTIAL shoot-out sequence and the final shoot-out tally cannot be
+determined reliably, keep shootout_left/shootout_right null and set needs_more_images=true rather than
+guessing. A single isolated penalty at 120' is not enough to infer a shoot-out because a real in-match
+penalty can occur in extra time.
+If no shoot-out tally or complete shoot-out sequence is visible, return null for both.
 {de_note}
 """
 

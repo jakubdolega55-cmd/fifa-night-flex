@@ -2385,9 +2385,6 @@ def render_stats(t=None,readonly:bool=False):
             fg=dr.get("fastest_goal")
             if fg:
                 detailed_rows.append({"Rekord":"⚡ Najszybszy gol","Wynik":f"{fg.get('minute_label')}′ — {fg.get('footballer')} ({fg.get('player_name')}) • {fg.get('match')}"})
-            lg=dr.get("latest_goal")
-            if lg:
-                detailed_rows.append({"Rekord":"⏱️ Najpóźniejszy gol","Wynik":f"{lg.get('minute_label')}′ — {lg.get('footballer')} ({lg.get('player_name')}) • {lg.get('match')}"})
             ht=dr.get("fastest_hat_trick")
             if ht:
                 detailed_rows.append({"Rekord":"🎩 Najszybszy hat-trick","Wynik":f"{ht.get('footballer')} ({ht.get('player_name')}) — {ht.get('duration')} min ({ht.get('from_label')}′ → {ht.get('to_label')}′) • {ht.get('match')}"})
@@ -2453,17 +2450,13 @@ def render_stats(t=None,readonly:bool=False):
                 ec5.metric("❌ Karne zmarnowane",int(event_stats.get("penalties_missed") or 0))
                 ec6.metric("↩️ Samobóje drużyny",int(event_stats.get("own_goals") or 0))
 
-                gr1,gr2,gr3,gr4=st.columns(4)
+                gr1,gr2,gr3=st.columns(3)
                 fastest=event_stats.get("fastest_goal")
-                latest=event_stats.get("latest_goal")
                 fastest_value=(f"{fastest.get('minute_label')}′" if fastest else "—")
                 fastest_help=(fastest.get("footballer_name") if fastest else None)
-                latest_value=(f"{latest.get('minute_label')}′" if latest else "—")
-                latest_help=(latest.get("footballer_name") if latest else None)
                 gr1.metric("⚡ Najszybszy gol",fastest_value,fastest_help)
-                gr2.metric("⏱️ Najpóźniejszy gol",latest_value,latest_help)
-                gr3.metric("🕘 Gole 90+",int(event_stats.get("goals_90_plus") or 0))
-                gr4.metric("➕ Gole w dogrywce",int(event_stats.get("extra_time_goals") or 0))
+                gr2.metric("🕘 Gole oznaczone jako 90′",int(event_stats.get("goals_90_plus") or 0))
+                gr3.metric("➕ Gole w dogrywce",int(event_stats.get("extra_time_goals") or 0))
             else:
                 st.caption("Brak jeszcze oficjalnych meczów tego gracza zapisanych ze szczegółowym przebiegiem.")
 
