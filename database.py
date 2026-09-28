@@ -1008,7 +1008,7 @@ class Database:
             LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-            WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
+            WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
               AND COALESCE(m.match_status,'played')<>'forfeit'
               AND COALESCE(t.game_version,'FC26')=?
         """,(game_version,))
@@ -1062,7 +1062,7 @@ class Database:
             SELECT tp.team,COUNT(*) AS c
             FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
             JOIN matches m ON m.tournament_id=t.id AND (m.home_player_id=tp.player_id OR m.away_player_id=tp.player_id)
-            WHERE COALESCE(t.game_version,'FC26')='FC27' AND t.is_test=0 AND t.status IN ('completed','abandoned')
+            WHERE COALESCE(t.game_version,'FC26')='FC27' AND t.is_test=0 AND t.status IN ('active','completed','abandoned')
               AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'
             GROUP BY tp.team
         """)
@@ -1086,7 +1086,7 @@ class Database:
                 LEFT JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
                 LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
                 LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL
                   AND COALESCE(m.match_status,'played')<>'forfeit'
                   AND COALESCE(t.game_version,'FC26')=?
             """,(game_version,))
@@ -3209,7 +3209,7 @@ class Database:
                 FROM players p
                 JOIN match_events me ON me.actor_player_id=p.id
                 JOIN tournaments t ON t.id=me.tournament_id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0
                 GROUP BY p.id,p.name ORDER BY p.name
             """)
         return [{**r,**{k:int(r.get(k) or 0) for k in ("yellows","reds","penalties_awarded","penalties_scored","penalties_missed","own_goals")}} for r in rows]
@@ -3236,7 +3236,7 @@ class Database:
                     FROM matches m
                     JOIN tournaments t ON t.id=m.tournament_id
                     JOIN match_events me ON me.tournament_id=m.tournament_id AND me.match_no=m.match_no
-                    WHERE t.is_test=0 AND t.status IN ('completed','abandoned')
+                    WHERE t.is_test=0 AND t.status IN ('active','completed','abandoned')
                       AND (m.home_player_id=? OR m.away_player_id=?)
                 ) x
             """,(pid,pid))
@@ -3250,14 +3250,14 @@ class Database:
                     SUM(CASE WHEN me.event_type='own_goal' AND COALESCE(me.synthetic_de,0)=0 THEN 1 ELSE 0 END) AS own_goals
                 FROM match_events me
                 JOIN tournaments t ON t.id=me.tournament_id
-                WHERE t.is_test=0 AND t.status IN ('completed','abandoned') AND me.actor_player_id=?
+                WHERE t.is_test=0 AND t.status IN ('active','completed','abandoned') AND me.actor_player_id=?
             """,(pid,)) or {}
             goals=self._fetchall(conn,"""
                 SELECT me.minute,me.stoppage,me.minute_label,me.footballer_name,me.credited_team_name,
                        me.event_type,me.created_at
                 FROM match_events me
                 JOIN tournaments t ON t.id=me.tournament_id
-                WHERE t.is_test=0 AND t.status IN ('completed','abandoned')
+                WHERE t.is_test=0 AND t.status IN ('active','completed','abandoned')
                   AND me.credited_player_id=?
                   AND me.event_type IN ('normal_goal','penalty_goal')
                   AND COALESCE(me.synthetic_de,0)=0
@@ -3370,6 +3370,10 @@ class Database:
     def scorer_stats(self) -> list[dict]:
         """Official scorer ranking with team-roster alias merging.
 
+        Played matches from the current active official tournament count immediately;
+        no polling or background recalculation is required.
+        
+
         Historical manual entries such as ``B. Saka`` / ``Bukayo Saka`` or
         ``H. Kane`` / ``Harry Kane`` are resolved against the roster of the team and
         EA FC version before aggregation, so old manual data does not split one player
@@ -3378,7 +3382,7 @@ class Database:
         with self.connect() as conn:
             rows=self._fetchall(conn,"""SELECT ms.scorer_name,ms.team_name,ms.goals,ms.tournament_id,ms.match_no,t.game_version
                 FROM match_scorers ms JOIN tournaments t ON t.id=ms.tournament_id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0""")
         agg={}
         for r in rows:
             raw=" ".join(str(r.get("scorer_name") or "").strip().split())
@@ -3415,7 +3419,7 @@ class Database:
             LEFT JOIN players hp ON hp.id=m.home_player_id LEFT JOIN players ap ON ap.id=m.away_player_id
             LEFT JOIN tournament_players htp ON htp.tournament_id=m.tournament_id AND htp.player_id=m.home_player_id
             LEFT JOIN tournament_players atp ON atp.tournament_id=m.tournament_id AND atp.player_id=m.away_player_id
-            WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'"""
+            WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'"""
         params=()
         if exclude_tid:
             sql += " AND m.tournament_id<>?"; params=(exclude_tid,)
@@ -6022,6 +6026,10 @@ class Database:
     def annual_awards(self, year: int) -> dict:
         """Live statistical TOP5 for the annual Awards screen.
 
+        Already-played matches from the current active official tournament are included
+        immediately. Tournament titles/final placements are still credited only after the
+        tournament reaches ``completed``; no polling or background job is introduced.
+
         Tournament-style individual awards deliberately ignore 1v1 matches. Duels are
         used only by shared H2H/rivalry/team context and the dedicated King 1v1 award.
         """
@@ -6030,7 +6038,7 @@ class Database:
         with self.connect() as conn:
             events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,t.game_version,fm.format_key
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""",(like,))
             if not events:
                 return {"year":year,"categories":[],"overview":{"tournaments":0,"duels":0,"matches":0,"goals":0,"players":0}}
@@ -6058,7 +6066,7 @@ class Database:
             first_dates=self._fetchall(conn,"""SELECT tp.player_id,MIN(COALESCE(t.completed_at,t.created_at)) AS first_date
                 FROM tournament_players tp JOIN tournaments t ON t.id=tp.tournament_id
                 JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 GROUP BY tp.player_id""")
             finance_ledger,finance_names,_jp=self._finance_ledger_conn(conn)
             placements={tid:self._placement_order_conn(conn,tid) for tid in tids}
@@ -7121,11 +7129,15 @@ class Database:
         return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year),"nomination_summary":nomination_summary}
 
     def all_time_stats(self) -> list[dict]:
-        """Shared official stats. Duels count as matches, never as tournament titles/finals."""
+        """Shared official stats, including already-played matches in an active event.
+
+        Duels count as matches, never as tournament titles/finals. Titles/finals remain
+        final-state achievements and are only awarded from completed tournaments.
+        """
         with self.connect() as conn:
             events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,fm.format_key
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status IN ('completed','abandoned') AND t.is_test=0""")
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0""")
             if not events: return []
             all_ids={str(r["id"]) for r in events}
             tournament_ids={str(r["id"]) for r in events if str(r.get("format_key") or "")!='duel1v1'}
