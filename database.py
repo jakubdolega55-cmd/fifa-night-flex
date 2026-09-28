@@ -5864,12 +5864,12 @@ class Database:
                     f"{int(c.get('starts') or 0)} turniejów • {pct(c.get('win_pct'))} W"]
         elif key=="comeback_king":
             _cw=int(c.get('comeback_wins') or 0); _cd=int(c.get('comeback_draws') or 0); _cp=float(c.get('comeback_points') or 0)
+            _cm=_cw+_cd
             _cp_txt=(str(int(_cp)) if _cp.is_integer() else str(_cp).replace('.',','))
-            teaser=[f"{_cw} pełnych comebacków"+(f" • {_cd} do remisu" if _cd else "")]
-            winner=[f"{_cw} pełnych • {_cd} do remisu • {_cp_txt} pkt comebacku"]
-            if c.get("best_comeback_from") and c.get("best_comeback_final"):winner.append(f"największy comeback: {c.get('best_comeback_from')} → {c.get('best_comeback_final')}")
-            bd=c.get("comeback_breakdown") or {}
-            if bd:winner.append(" • ".join(f"z -{k}: {v}×" for k,v in sorted(bd.items(),key=lambda kv:int(kv[0]))))
+            _best=(f"{c.get('best_comeback_from')} → {c.get('best_comeback_final')}" if c.get("best_comeback_from") and c.get("best_comeback_final") else "—")
+            # Gala TOP3 deliberately hides points; reveal them only for the laureate.
+            teaser=[f"{_cm} meczów z comebackiem",f"max: {_best}"]
+            winner=[f"{_cp_txt} pkt comebacku",f"{_cm} meczów z comebackiem",f"największy comeback: {_best}"]
         elif key=="late_king":
             teaser=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
             winner=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
@@ -6836,17 +6836,19 @@ class Database:
             breakdown=", ".join(f"-{d}: {n}×" for d,n in sorted(v["from_deficits"].items(),reverse=True))
             best_transition=(f"{v.get('best_from_score')} → {v.get('best_final_score')}" if v.get("best_from_score") and v.get("best_final_score") else "—")
             points=float(v["points"]); points_txt=(str(int(points)) if points.is_integer() else str(points).replace('.',','))
+            comeback_matches=int(v["wins"])+int(v["draw_comebacks"])
             items.append({
                 "id":str(pid),"name":name_by.get(str(pid),"?"),"score":points,
                 "_sort":(points,int(v["max_deficit"]),int(v["wins"]),int(v["draw_comebacks"])),
-                "reason":f"{v['wins']} pełnych comebacków • {v['draw_comebacks']} odrobionych do remisu • {points_txt} pkt comebacku • największy comeback {best_transition}"+(f" • {breakdown}" if breakdown else ""),
+                "reason":f"{points_txt} pkt • {comeback_matches} meczów z comebackiem • max: {best_transition}",
                 "comeback_wins":int(v["wins"]),"comeback_draws":int(v["draw_comebacks"]),"comeback_points":points,
+                "comeback_matches":comeback_matches,
                 "best_comeback_from":v.get("best_from_score"),"best_comeback_final":v.get("best_final_score"),
                 "best_comeback_match_id":v.get("best_match_id"),
                 "comeback_breakdown":{str(k):int(n) for k,n in v["from_deficits"].items()},
                 "matches":int(ps.get(pid,{}).get("m") or 0),
             })
-        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie. Wygrany comeback dostaje pełną wartość; odrobienie do remisu połowę, a wygrana po karnych przywraca pełną wartość.",items)
+        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
