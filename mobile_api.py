@@ -1538,7 +1538,18 @@ def live_payload() -> dict[str, Any]:
         try: current_context = db.match_context(current_raw["home_player_id"], current_raw["away_player_id"])
         except Exception: current_context = None
     current_no = int(current_raw.get("match_no") or 0) if current_raw else 0
-    next_raw = db.next_ready_match_from(matches, current_no, extra) if current_raw else None
+    if current_raw:
+        # In fixed-pairing stages the smart scheduler can change its preference as soon as
+        # the current result is saved, because those two players become the most-recently
+        # used pair.  Show the match the scheduler will actually choose *after* this game,
+        # not merely the second item in the pre-result ordering.
+        stage=str(current_raw.get("stage") or "").upper()
+        if stage in {"GROUP","LEAGUE"}:
+            next_raw = db.projected_next_match_from(matches, current_no, extra)
+        else:
+            next_raw = db.next_ready_match_from(matches, current_no, extra)
+    else:
+        next_raw = None
     group_tiebreak = {"required": False}
     if current_raw and str(current_raw.get("stage") or "")=="GROUP":
         try: group_tiebreak = db.group_match_tiebreak_context(tid,current_no)

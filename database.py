@@ -3933,6 +3933,33 @@ class Database:
                 return m
         return None
 
+    def projected_next_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
+        """Predict the next playable match *after* the current one is completed.
+
+        The smart scheduler depends on who played most recently.  Calling
+        ``next_ready_match_from`` while the current match is still pending can therefore
+        show a different match than the scheduler will actually pick a few seconds later
+        after the score is saved.  For already-resolved pairings (especially group/league
+        stages) we can project the post-match state without knowing the score: mark only
+        the current match as played in a shallow copy and run the same scheduler again.
+
+        This never changes pairings or the real tournament state.  Knockout matches that
+        become newly unlocked by the result still cannot be predicted before the winner is
+        known; callers may choose to use this helper only for stages with fixed pairings.
+        """
+        sim=[dict(m) for m in matches]
+        cur=next((m for m in sim if int(m.get("match_no") or 0)==int(current_no)),None)
+        if cur is None:
+            return self.next_ready_match_from(matches,current_no,extra)
+        # Any non-None score is enough for _ready_match_order to treat the match as played.
+        # played_at must sort after existing completed matches so the current players become
+        # the true 'last_players' for the scheduler's back-to-back avoidance rule.
+        cur["home_score"]=0
+        cur["away_score"]=0
+        cur["played_at"]="9999-12-31T23:59:59.999999+00:00"
+        ordered=self._ready_match_order(sim,extra)
+        return ordered[0] if ordered else None
+
     def live_schedule_from(self, matches: list[dict], extra: dict | None = None) -> list[dict]:
         """Return matches in the order useful during a live tournament.
 
