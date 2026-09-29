@@ -193,6 +193,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   const mounted = useRef(true);
+  const controllerRef = useRef(false);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -221,6 +222,8 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => { controllerRef.current = controller; }, [controller]);
+
   useEffect(() => {
     mounted.current = true;
     (async () => {
@@ -238,7 +241,13 @@ export default function App() {
         await refresh();
       }
     })();
-    const timer = setInterval(() => { void refresh(); }, 5000);
+    let pollTick = 0;
+    // Controller stays near-live (5 s). View-only devices request /live every 10 s
+    // to reduce needless backend/Neon traffic when several phones are connected.
+    const timer = setInterval(() => {
+      pollTick += 1;
+      if (controllerRef.current || pollTick % 2 === 0) void refresh();
+    }, 5000);
     return () => { mounted.current = false; clearInterval(timer); };
   }, [refresh, loadOptions]);
 
