@@ -934,7 +934,7 @@ class Database:
         max_no=max(int(m["match_no"]) for m in played)
 
         current_by_name={name:pid for name,pid in zip(current_names,current_pids)}
-        matched=[];priority={};placements={};previous_teams={};newcomers=[]
+        matched=[];priority={};placements={};previous_teams={};newcomers=[];previous_finalists=[]
         for name,pid in current_by_name.items():
             prev_pid=exact_prev.get(name)
             if not prev_pid:
@@ -943,6 +943,7 @@ class Database:
             wait=int(wait_by_pid.get(prev_pid,0))
             priority[pid]=wait
             if prev_pid in placement_prev: placements[pid]=int(placement_prev[prev_pid])
+            if int(placement_prev.get(prev_pid) or 0) in (1,2): previous_finalists.append(str(pid))
             if prev_team_by_pid.get(prev_pid): previous_teams[pid]=prev_team_by_pid[prev_pid]
             matched.append({"name":name,"wait_matches":wait,"place":placements.get(pid),"previous_team":previous_teams.get(pid)})
 
@@ -971,6 +972,7 @@ class Database:
             "matched":matched,
             "newcomers":newcomers,
             "new_player_ids":[str(x["player_id"]) for x in newcomers],
+            "previous_finalist_player_ids":sorted(set(previous_finalists)),
             "source_last_match_no":max_no,
         }
 
@@ -1619,7 +1621,7 @@ class Database:
             pending=extra.get("pending_wildcard")
             if pending: return {**pending,"wheel_team":pending.get("team"),"pool":pool,"wildcard":True,"auto_assigned":last_assignment}
             if is_wildcard_slot(row.get("team")):
-                pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"]}
+                pending={"player_id":row["player_id"],"name":row["name"],"team":row["team"],"auto_assigned":last_assignment}
                 extra["pending_wildcard"]=pending
                 conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
                 payload={"player_id":row["player_id"],"name":row["name"],"wheel_team":row["team"],"team":"🃏 Wild Card","pool":pool,"wildcard":True,"auto_assigned":last_assignment}
@@ -1726,7 +1728,11 @@ class Database:
             else: extra.pop("cross_tournament_priority",None)
             plan = schedule_for_format(draw, meta["format_key"], extra, rng)
             carry=(carry_info.get("priority_by_player_id") or {}) if carry_info else {}
-            preferred=optimize_opening_order(plan,carry,rng,(carry_info.get("new_player_ids") or []) if carry_info else []) if carry else [dict(x) for x in plan]
+            preferred=optimize_opening_order(
+                plan,carry,rng,
+                (carry_info.get("new_player_ids") or []) if carry_info else [],
+                (carry_info.get("previous_finalist_player_ids") or []) if carry_info else [],
+            ) if carry else [dict(x) for x in plan]
             extra["match_play_order"]=[int(x["match_no"]) for x in preferred]
             # Smart scheduler changes only the order among matches that are already legal/ready.
             # It never changes pairings or bracket sources. Policy applies to every DE and 8+ player formats.
@@ -3906,11 +3912,22 @@ class Database:
         if played:
             last_players={str(played[-1].get("home_player_id") or ""),str(played[-1].get("away_player_id") or "")}
         nplayed=len(played)
-        newcomers=set(str(x) for x in (((extra.get("cross_tournament_priority") or {}).get("new_player_ids")) or []))
+        carry=(extra.get("cross_tournament_priority") or {})
+        newcomers=set(str(x) for x in (carry.get("new_player_ids") or []))
+        previous_finalists=set(str(x) for x in (carry.get("previous_finalist_player_ids") or []))
         tie={str(k):float(v) for k,v in (extra.get("scheduler_tiebreak") or {}).items()}
+
+        # At the start of a new tournament, neither finalist from the immediately
+        # previous tournament should open if any other ready match exists.  This is a
+        # hard preference among legal/ready matches only; it never changes pairings.
+        opener_has_non_finalist=bool(not played and previous_finalists and any(
+            not previous_finalists.intersection({str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")})
+            for m in ready
+        ))
 
         def score(m):
             no=int(m.get("match_no") or 0); pids=(str(m.get("home_player_id")),str(m.get("away_player_id")))
+            finalist_opener=int(opener_has_non_finalist and bool(previous_finalists.intersection(pids)))
             b2b=int(bool(last_players.intersection(pids))) if played else 0
             waits=[]
             for pid in pids:
@@ -3918,7 +3935,7 @@ class Database:
                 waits.append((nplayed-last_pos[pid]) if pid in last_pos else (nplayed+1))
             longest=max(waits); total=sum(waits)
             newcomer_pending=sum(1 for pid in pids if pid in newcomers and pid not in last_pos)
-            return (b2b,-longest,-total,-newcomer_pending,pref(m)[0],tie.get(str(no),0.5),no)
+            return (finalist_opener,b2b,-longest,-total,-newcomer_pending,pref(m)[0],tie.get(str(no),0.5),no)
         ordered=sorted(ready,key=score)
         return ([forced]+[m for m in ordered if m is not forced]) if forced else ordered
 

@@ -825,7 +825,18 @@ def team_draw(tid:str):
         target=slot if slot is not None else st.empty()
         target.empty()
         with target.container():
-            if remaining:
+            if len(remaining)==1:
+                # The final slot is deterministic: consume it immediately instead of
+                # drawing a useless one-sector wheel in Streamlit.
+                final_result=db.reveal_next_team(tid)
+                if final_result and final_result.get("wildcard"):
+                    st.session_state.pop("last_spin",None)
+                    rf()
+                elif final_result:
+                    st.session_state.pop("last_spin",None)
+                    db.start_structure_draw(tid)
+                    rr()
+            elif remaining:
                 nxt=sorted(remaining,key=lambda x:x["team_reveal_order"])[0]
                 st.button(f"🎰 ZAKRĘĆ DLA {nxt['name']}",type="primary",use_container_width=True,key=f"next_spin_{tid}_{new_done}")
             else:
@@ -839,8 +850,11 @@ def team_draw(tid:str):
             st.form_submit_button("✅ ZATWIERDŹ DRUŻYNĘ",type="primary",use_container_width=True)
 
     if pending:
-        with wheel_slot.container():
-            render_wheel(pending["team"],pending["name"],tid,remaining_pool or pool,display_result="🃏 Wild Card")
+        # The final Wild Card is not a wheel spin. Go straight to the controller
+        # selection UI; earlier Wild Cards keep their normal reveal animation.
+        if not pending.get("auto_assigned"):
+            with wheel_slot.container():
+                render_wheel(pending["team"],pending["name"],tid,remaining_pool or pool,display_result="🃏 Wild Card")
         st.markdown(f"### 🃏 Wild Card — {esc(pending['name'])}")
         with st.form(f"wildcard_draw_{tid}_{pending['player_id']}"):
             choice=st.selectbox("Wpisz lub wybierz drużynę",options=db.available_wildcard_suggestions(tid),index=None,
@@ -853,9 +867,27 @@ def team_draw(tid:str):
                 result={"player_id":pending["player_id"],"name":pending["name"],"team":team,"wheel_team":wheel_team,"pool":remaining_pool or pool,"wildcard":False}
                 st.session_state.last_spin=result
                 wildcard_team_suggestions_cached.clear()
+                if pending.get("auto_assigned"):
+                    st.session_state.pop("last_spin",None)
+                    db.start_structure_draw(tid)
+                    rr()
                 show_wheel(result,display_result=team)
                 next_after(result,hidden)
             except ValueError as e:st.error(str(e))
+        return
+
+    # Streamlit used to still show a final "spin" button even though the backend
+    # already knows the only remaining slot. Consume that slot immediately. A normal
+    # team advances straight to the structure draw; a final Wild Card opens its picker.
+    if len(hidden)==1:
+        st.session_state.pop("last_spin",None)
+        result=db.reveal_next_team(tid)
+        if result:
+            if result.get("wildcard"):
+                show_pending_wildcard(result)
+                return
+            db.start_structure_draw(tid)
+            rr()
         return
 
     if last:

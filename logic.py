@@ -938,7 +938,7 @@ def winner_from_result(home_score:int,away_score:int,home_id:str,away_id:str,hom
     return home_id if home_pen>away_pen else away_id
 
 
-def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None) -> list[dict]:
+def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | None, rng: random.Random, new_player_ids: list[str] | None = None, previous_finalist_ids: list[str] | None = None) -> list[dict]:
     """Reorder only the independent opening games; never change the drawn pairings.
 
     Logical match numbers stay attached to their original pairings. The returned list
@@ -950,6 +950,7 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
     """
     priority = {str(k): max(0, int(v or 0)) for k, v in (start_priority or {}).items()}
     newcomers = {str(x) for x in (new_player_ids or []) if x}
+    previous_finalists = {str(x) for x in (previous_finalist_ids or []) if x}
     if not plan:
         return plan
 
@@ -1034,14 +1035,18 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
         newcomer_latest = max(newcomer_positions) if newcomer_positions else 0
         newcomer_delay = sum(max(0, pos-1) for pos in newcomer_positions)
 
-        # A player from the very last match of the previous tournament should ideally
-        # get one complete match of rest before starting again.
+        # Neither finalist from the immediately previous tournament should open the
+        # next tournament when a legal schedule without either finalist at position 1
+        # exists.  Keep this explicit instead of inferring it from generic wait values.
+        finalist_restart = sum(1 for pid in previous_finalists if first.get(pid) == 1)
+
+        # Legacy/fallback signal for old carry payloads without explicit finalists.
         just_finished = {pid for pid,wait in priority.items() if wait == 0 and pid not in newcomers}
         immediate_restart = sum(1 for pid in just_finished if first.get(pid) == 1)
 
         # Long-waiting players are gently pulled towards an earlier opener.
         priority_cost = sum((first.get(pid, len(seq)+1)-1) * (1 + priority.get(pid, 0)*4) for pid in first)
-        return (back, max_gap, max_first, newcomer_latest, newcomer_delay, immediate_restart, priority_cost)
+        return (back, max_gap, max_first, finalist_restart, newcomer_latest, newcomer_delay, immediate_restart, priority_cost)
 
     # Never buy cross-tournament fairness by making the current tournament's opening
     # schedule worse. The original schedule is always a candidate, so this set cannot
@@ -1049,7 +1054,7 @@ def optimize_opening_order(plan: list[dict], start_priority: dict[str, int] | No
     # who just played the previous final, then favour players who waited longer.
     base_q = quality(base_seq)
     safe = [seq for seq in candidates if quality(seq)[0] <= base_q[0] and quality(seq)[1] <= base_q[1] and quality(seq)[2] <= base_q[2]]
-    best = min(safe, key=lambda seq:(quality(seq)[0], quality(seq)[3], quality(seq)[4], quality(seq)[5], quality(seq)[1], quality(seq)[2], quality(seq)[6]))
+    best = min(safe, key=lambda seq:(quality(seq)[0], quality(seq)[3], quality(seq)[4], quality(seq)[5], quality(seq)[6], quality(seq)[1], quality(seq)[2], quality(seq)[7]))
     reordered_opening = [opening[idx] for idx in best]
     out = [dict(x) for x in plan]
     # Only list order changes. Every item keeps its original match_no and sources.
