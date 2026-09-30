@@ -1735,8 +1735,11 @@ class Database:
             ) if carry else [dict(x) for x in plan]
             extra["match_play_order"]=[int(x["match_no"]) for x in preferred]
             # Smart scheduler changes only the order among matches that are already legal/ready.
-            # It never changes pairings or bracket sources. Policy applies to every DE and 8+ player formats.
-            extra["smart_scheduler"]=bool(str(meta["format_key"]).startswith("double") or int(meta.get("player_count") or 0)>=8)
+            # It never changes pairings or bracket sources. Rest/fatigue fairness is global:
+            # every format benefits whenever 2+ legal matches are simultaneously ready.
+            # With only one ready match the scheduler is a no-op, so deterministic brackets
+            # and forced dependencies remain untouched.
+            extra["smart_scheduler"]=True
             extra["scheduler_tiebreak"]={str(int(x["match_no"])):rng.random() for x in plan}
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
             conn.execute(self._sql("DELETE FROM matches WHERE tournament_id=?"), (tid,))
@@ -2191,16 +2194,32 @@ class Database:
             self._resolve_all_conn(conn,tid,meta["format_key"])
 
 
-    def _dynamic_lb_bye_choice(self, candidates: list[str], mm: dict[int,dict]) -> tuple[str | None,list[str]]:
-        """Weighted in-tournament LB BYE.
+    @staticmethod
+    def _in_tournament_bye_repeat_multiplier(previous_byes: int) -> float:
+        """Soft anti-repeat penalty for BYEs inside one tournament.
+
+        A previous lucky draw must make another one much less likely, but never
+        impossible because some bracket states can leave only a tiny legal pool.
+        """
+        n=max(0,int(previous_byes or 0))
+        if n<=0:return 1.0
+        if n==1:return 0.25
+        if n==2:return 0.10
+        return 0.05
+
+    def _dynamic_lb_bye_choice(self, candidates: list[str], mm: dict[int,dict], previous_byes: list[str] | tuple[str,...] | None = None) -> tuple[str | None,list[str]]:
+        """Weighted in-tournament LB BYE with rest + anti-repeat fairness.
 
         A player who has just played may reasonably get the short rest; someone who has
-        waited a long time should normally be pulled into a match.  Nobody is excluded:
-        weight falls with idle-match distance, and equal states remain a genuine draw.
-        Returns the selected player and the complete candidate list for the visible reveal.
+        waited a long time should normally be pulled into a match. A player who already
+        received a BYE in this tournament gets a strong additional weight reduction.
+        Nobody is excluded completely. Returns the selected player and the complete
+        candidate list for the visible reveal.
         """
         vals=[str(x) for x in candidates if x]
         if not vals:return None,[]
+        history=[str(x) for x in (previous_byes or []) if x]
+        repeat_count={pid:history.count(pid) for pid in vals}
         # Rest must follow the *actual* order in which matches were played.
         # Smart scheduling can play M10 before M7, so logical match numbers are
         # not a reliable clock for who has been sitting longest.
@@ -2210,7 +2229,9 @@ class Database:
         for pid in vals:
             idle=max(0,newest-last[pid])
             # recent: 1.00, one match older: .55, two: .38, then gently decreasing
-            weights.append(1.0/(1.0+0.82*idle))
+            rest_weight=1.0/(1.0+0.82*idle)
+            repeat_weight=self._in_tournament_bye_repeat_multiplier(repeat_count.get(pid,0))
+            weights.append(rest_weight*repeat_weight)
         total=sum(weights); pick=random.SystemRandom().random()*total; acc=0.0
         for pid,w in zip(vals,weights):
             acc+=w
@@ -2360,7 +2381,7 @@ class Database:
                 nonlocal src,extra
                 if not played(*deps) or f"D9:L{out_nos[0]}H" in src:return
                 pool=[str(x) for x in prefix_nos if x]
-                bye,cands=self._dynamic_lb_bye_choice(pool,mm); rest=[x for x in pool if x!=bye]
+                previous=[extra.get('d9_bye1'),extra.get('d9_bye2'),extra.get('d9_bye3'),extra.get('d9_bye4')]; bye,cands=self._dynamic_lb_bye_choice(pool,mm,previous); rest=[x for x in pool if x!=bye]
                 pairs,cnt=self._choose_de_pairing(rest,mm); extra[bye_key]=bye;upd={}
                 for no,(a,b) in zip(out_nos,pairs):upd[f"D9:L{no}H"]=P(a);upd[f"D9:L{no}A"]=P(b)
                 event_extra={"bye_player_id":bye,"bye_candidates":self._draw_candidate_rows_conn(conn,cands)}
@@ -2370,11 +2391,11 @@ class Database:
             if played(6,7,9,10) and "D9:L11H" not in src:
                 stage([winner(9),winner(10),extra.get("d9_bye1"),loser(6),loser(7)],(11,12),"d9_bye2",(6,7,9,10))
             if played(11,12) and "D9:L13H" not in src:
-                pool=[str(winner(11)),str(winner(12)),str(extra.get("d9_bye2"))];bye,cands=self._dynamic_lb_bye_choice(pool,mm);rest=[x for x in pool if x!=bye];extra["d9_bye3"]=bye
+                pool=[str(winner(11)),str(winner(12)),str(extra.get("d9_bye2"))];previous=[extra.get('d9_bye1'),extra.get('d9_bye2')];bye,cands=self._dynamic_lb_bye_choice(pool,mm,previous);rest=[x for x in pool if x!=bye];extra["d9_bye3"]=bye
                 event_extra={"bye_player_id":bye,"bye_candidates":self._draw_candidate_rows_conn(conn,cands)}
                 self._save_big_sources_conn(conn,tid,extra,{"D9:L13H":P(rest[0]),"D9:L13A":P(rest[1])},"double9_lb_bye3",len(cands),event_extra);src=extra["big_sources"]
             if played(8,13) and "D9:L14H" not in src:
-                pool=[str(winner(13)),str(extra.get("d9_bye3")),str(loser(8))];bye,cands=self._dynamic_lb_bye_choice(pool,mm);rest=[x for x in pool if x!=bye];extra["d9_bye4"]=bye
+                pool=[str(winner(13)),str(extra.get("d9_bye3")),str(loser(8))];previous=[extra.get('d9_bye1'),extra.get('d9_bye2'),extra.get('d9_bye3')];bye,cands=self._dynamic_lb_bye_choice(pool,mm,previous);rest=[x for x in pool if x!=bye];extra["d9_bye4"]=bye
                 event_extra={"bye_player_id":bye,"bye_candidates":self._draw_candidate_rows_conn(conn,cands)}
                 self._save_big_sources_conn(conn,tid,extra,{"D9:L14H":P(rest[0]),"D9:L14A":P(rest[1]),"D9:L15H":"W:14","D9:L15A":P(bye)},"double9_lb_bye4",len(cands),event_extra)
             return
@@ -3911,6 +3932,23 @@ class Database:
         last_players=set()
         if played:
             last_players={str(played[-1].get("home_player_id") or ""),str(played[-1].get("away_player_id") or "")}
+
+        # Fatigue fairness: distinguish an ordinary back-to-back from a player who
+        # has already appeared in 2-3 consecutive matches. Also look at the rolling
+        # last-four load, so one intervening game does not immediately erase a late-DE
+        # marathon. These are ordering preferences only; if no alternative ready match
+        # exists, the bracket remains playable and the required match is selected.
+        recent_streak={}
+        all_pids={str(pid) for m in played for pid in (m.get("home_player_id"),m.get("away_player_id")) if pid}
+        for pid in all_pids:
+            streak=0
+            for pm in reversed(played):
+                participants={str(pm.get("home_player_id") or ""),str(pm.get("away_player_id") or "")}
+                if pid in participants: streak+=1
+                else: break
+            recent_streak[pid]=streak
+        recent4=played[-4:]
+        recent_load={pid:sum(pid in {str(pm.get("home_player_id") or ""),str(pm.get("away_player_id") or "")} for pm in recent4) for pid in all_pids}
         nplayed=len(played)
         carry=(extra.get("cross_tournament_priority") or {})
         newcomers=set(str(x) for x in (carry.get("new_player_ids") or []))
@@ -3929,13 +3967,16 @@ class Database:
             no=int(m.get("match_no") or 0); pids=(str(m.get("home_player_id")),str(m.get("away_player_id")))
             finalist_opener=int(opener_has_non_finalist and bool(previous_finalists.intersection(pids)))
             b2b=int(bool(last_players.intersection(pids))) if played else 0
+            marathon=max((recent_streak.get(pid,0) for pid in pids),default=0) if b2b else 0
+            load4=max((recent_load.get(pid,0) for pid in pids),default=0)
+            load4_total=sum(recent_load.get(pid,0) for pid in pids)
             waits=[]
             for pid in pids:
                 # Never-played players have effectively waited through the whole night so far.
                 waits.append((nplayed-last_pos[pid]) if pid in last_pos else (nplayed+1))
             longest=max(waits); total=sum(waits)
             newcomer_pending=sum(1 for pid in pids if pid in newcomers and pid not in last_pos)
-            return (finalist_opener,b2b,-longest,-total,-newcomer_pending,pref(m)[0],tie.get(str(no),0.5),no)
+            return (finalist_opener,b2b,marathon,load4,load4_total,-longest,-total,-newcomer_pending,pref(m)[0],tie.get(str(no),0.5),no)
         ordered=sorted(ready,key=score)
         return ([forced]+[m for m in ordered if m is not forced]) if forced else ordered
 

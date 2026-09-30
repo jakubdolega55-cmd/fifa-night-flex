@@ -1,12 +1,11 @@
-# GitHub patch — final team visibility fix
+# GitHub patch — Global Rest + BYE Fairness
 
 Replace on GitHub:
-- `app.py`
+- `database.py`
 
 No APK rebuild required.
 
-Fix:
-- penultimate team wheel stays visible,
-- final deterministic team gets no wheel,
-- final assignment is visibly shown before structure draw,
-- final Wild Card also remains visible after confirmation before continuing.
+Behavior:
+- anti-marathon match ordering applies to every format whenever 2+ legal matches are ready;
+- repeated in-tournament BYEs are strongly down-weighted, never hard-blocked;
+- pairings/bracket sources are never rewritten.
