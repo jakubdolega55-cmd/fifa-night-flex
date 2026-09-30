@@ -1806,14 +1806,23 @@ def render_special_event(tid:str, b:dict) -> bool:
         else:
             st.markdown("### 🎲 Losowanie w trakcie turnieju" if random_draw else "### ✅ Pary ustalone")
             st.caption("Tu faktycznie losujemy. Żadnego udawania." if random_draw else "Tu nie ma co losować — zasady dały jeden układ. Pokazujemy go i czekamy na klepnięcie.")
-        bye_pid=state.get("bye_player_id")
-        if bye_pid:
-            candidate=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
-            st.success(f"🍀 **Szczęśliwy Los / BYE:** {esc(candidate.get('name') or '?')}")
-            if state.get("bye_candidates"):
-                st.caption("Kandydaci: "+" • ".join(str(x.get("name") or "?") for x in state.get("bye_candidates") or []))
-        for pair in state.get("pairs",[]):
-            st.markdown(f"**{esc(pair.get('home_name') or '?')}**  vs  **{esc(pair.get('away_name') or '?')}**")
+        # Use the same cinematic pair-draw renderer on the controller that the TV
+        # already uses.  Previously the controller fell back to raw markdown lines
+        # ("A vs B" + a green BYE box), which made genuine DE/Swiss draws look
+        # unfinished and inconsistent with the public screen.
+        title=None
+        kind=str(state.get("kind") or "")
+        if kind.startswith("double9"):
+            title="DOUBLE ELIMINATION • LOSERS BRACKET"
+        elif kind.startswith("double10"):
+            title="DOUBLE ELIMINATION • LOSERS BRACKET"
+        elif kind.startswith("double"):
+            title="DOUBLE ELIMINATION • LOSOWANIE DRABINKI"
+        elif kind.startswith("groups9"):
+            title="FAZA PUCHAROWA • LOSOWANIE PAR"
+        elif kind.startswith("swiss"):
+            title=f"SWISS • RUNDA {kind.rsplit('_',1)[-1]}"
+        render_visible_pair_draw(state,title=title)
         ack_label="✅ ZATWIERDŹ PARY / ROZPOCZNIJ RUNDĘ" if swiss_draw else ("✅ ZATWIERDŹ LOSOWANIE" if random_draw else "✅ ZATWIERDŹ PARY")
         if st.button(ack_label,type="primary",use_container_width=True,key=f"big_draw_ack_{tid}_{state.get('kind')}"):
             db.ack_big_visible_draw(tid,state.get("kind"));rf()

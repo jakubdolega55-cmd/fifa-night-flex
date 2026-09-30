@@ -362,12 +362,17 @@ def render_synced_setup_tv(tid: str, api_url: str):
 
 
 def render_visible_pair_draw(state: dict, *, title: str | None = None):
-    """Large TV-friendly renderer for a true pair draw during a tournament."""
+    """Large controller/TV renderer for a genuine in-tournament pairing draw.
+
+    The public result is intentionally revealed in stages: pair 1, pair 2, ...,
+    and only then the lucky BYE.  This keeps DE9/DE10 and other dynamic formats
+    feeling like an actual draw instead of a raw diagnostic list.
+    """
     pairs=list(state.get("pairs") or [])
     random_draw=state.get("is_random_draw") is not False
     stage_map={
         "PLAY_IN":"PLAY-IN","WB":"WINNERS BRACKET","WB_FINAL":"FINAŁ WINNERS",
-        "LB":"LOSER BRACKET","LB_BRIDGE":"LOSER BRACKET • BRIDGE","LB_FINAL":"FINAŁ LOSER BRACKET",
+        "LB":"LOSERS BRACKET","LB_BRIDGE":"LOSERS BRACKET • BRIDGE","LB_FINAL":"FINAŁ LOSERS BRACKET",
         "SF":"PÓŁFINAŁ","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","FINAL":"WIELKI FINAŁ",
         "SWISS_R2":"SWISS • RUNDA 2","SWISS_R3":"SWISS • RUNDA 3",
     }
@@ -388,17 +393,25 @@ def render_visible_pair_draw(state: dict, *, title: str | None = None):
             f"<div class='vpair{playin}'><div class='vbadge'>{html.escape(badge)}</div>"
             f"<div class='vduel'>{side(p.get('home_name'),0,base)}<div class='vvs'>VS</div>{side(p.get('away_name'),1,base+2.25)}</div></div>"
         )
+
     bye_html=""
+    candidates=list(state.get("bye_candidates") or [])
     bye_pid=state.get("bye_player_id")
+    finish_pairs=.8+max(len(pairs)-1,0)*4.5+(2.7 if pairs else .8)
+    if candidates:
+        chips="".join(f"<span>{html.escape(str(x.get('name') or '?'))}</span>" for x in candidates)
+        bye_html+=f"<div class='vpool'><small>KANDYDACI DO SZCZĘŚLIWEGO LOSU</small><div>{chips}</div></div>"
     if bye_pid:
-        cand=next((x for x in (state.get("bye_candidates") or []) if str(x.get("player_id"))==str(bye_pid)),{})
-        bye_html=f"<div class='vbye'>🍀 SZCZĘŚLIWY LOS • <b>{html.escape(str(cand.get('name') or '?'))}</b></div>"
+        cand=next((x for x in candidates if str(x.get("player_id"))==str(bye_pid)),{})
+        bye_name=html.escape(str(cand.get("name") or "?"))
+        bye_html+=f"<div class='vbye' style='--bd:{finish_pairs+0.35:.2f}s'>🍀 SZCZĘŚLIWY LOS / BYE • <b>{bye_name}</b></div>"
+
     heading=title or ("Losowanie drabinki" if random_draw else "Ustalone pary")
-    sub=("Najpierw pojawia się pierwszy zawodnik, potem jego rywal. Pokazane pary są wynikiem tego losowania."
+    sub=("Najpierw odkrywamy pary. Jeśli format ma BYE, Szczęśliwy Los pojawi się na końcu."
          if random_draw else "Pary wynikają z regulaminu formatu — to reveal, nie losowanie.")
-    finish=.8+max(len(pairs)-1,0)*4.5+(2.7 if pairs else .8)
+    finish=finish_pairs+(1.3 if bye_pid else 0)
     components.html(f"""<div class='visibleDraw'><div class='veye'>{'OFICJALNE LOSOWANIE' if random_draw else 'OFICJALNE ZESTAWIENIE'}</div><div class='vtitle'>{html.escape(heading)}</div><div class='vsub'>{html.escape(sub)}</div><div class='vgrid'>{''.join(cards)}</div>{bye_html}<div class='vfoot'>✅ {'Losowanie zakończone.' if random_draw else 'Pary potwierdzone.'}</div></div>
-    <style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.visibleDraw{{max-width:1080px;margin:3px auto;padding:24px;border-radius:26px;background:radial-gradient(circle at 50% 0,#1a3f5c,#101d32 43%,#0b1220);border:1px solid rgba(148,163,184,.24);color:#f8fafc;text-align:center}}.veye{{font-size:11px;font-weight:950;letter-spacing:.2em;color:#7dd3fc}}.vtitle{{font-size:29px;font-weight:1000;margin:5px 0 2px}}.vsub{{color:#94a3b8;font-size:13px;margin-bottom:16px}}.vgrid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}.vpair{{padding:16px;border-radius:20px;background:#101c31;border:1px solid #334155;text-align:left;box-shadow:0 10px 25px rgba(0,0,0,.16)}}.vpair.playin{{background:linear-gradient(145deg,#35250d,#151b29);border-color:#b7791f}}.vbadge{{display:inline-block;margin-bottom:10px;padding:5px 10px;border-radius:999px;background:#17283c;color:#a5def7;font-size:11px;font-weight:1000;letter-spacing:.08em}}.playin .vbadge{{background:#503609;color:#fde68a}}.vduel{{display:grid;grid-template-columns:minmax(0,1fr) 42px minmax(0,1fr);align-items:stretch;gap:8px}}.vside{{min-height:82px;padding:12px 10px;border-radius:15px;background:#14243a;border:1px solid rgba(148,163,184,.2);display:flex;flex-direction:column;justify-content:center;text-align:center}}.vside span{{font-size:9px;font-weight:1000;letter-spacing:.13em;color:#64748b}}.vside b{{font-size:21px;line-height:1.12;overflow-wrap:anywhere}}.vside.anim{{opacity:0;transform:translateY(9px) scale(.98);animation:vreveal .42s ease var(--d) forwards}}.vvs{{display:grid;place-items:center;font-size:12px;color:#64748b;font-weight:1000}}.vbye{{margin:15px auto 0;max-width:520px;padding:13px;border-radius:16px;background:#3b2b08;border:1px solid #a16207;color:#fde68a;font-size:17px}}.vfoot{{margin-top:15px;color:#86efac;font-size:13px;font-weight:850;opacity:0;animation:vreveal .35s ease {finish:.2f}s forwards}}@keyframes vreveal{{to{{opacity:1;transform:none}}}}@media(max-width:760px){{.visibleDraw{{padding:16px 9px}}.vgrid{{grid-template-columns:1fr;gap:9px}}.vtitle{{font-size:23px}}.vside b{{font-size:18px}}}}</style>{FIT_SCRIPT}""",height=max(430,245+((len(cards)+1)//2)*130+(55 if bye_html else 0)),scrolling=True)
+    <style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.visibleDraw{{max-width:1080px;margin:3px auto;padding:24px;border-radius:26px;background:radial-gradient(circle at 50% 0,#1a3f5c,#101d32 43%,#0b1220);border:1px solid rgba(148,163,184,.24);color:#f8fafc;text-align:center}}.veye{{font-size:11px;font-weight:950;letter-spacing:.2em;color:#7dd3fc}}.vtitle{{font-size:29px;font-weight:1000;margin:5px 0 2px}}.vsub{{color:#94a3b8;font-size:13px;margin-bottom:16px}}.vgrid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}.vpair{{padding:16px;border-radius:20px;background:#101c31;border:1px solid #334155;text-align:left;box-shadow:0 10px 25px rgba(0,0,0,.16)}}.vpair.playin{{background:linear-gradient(145deg,#35250d,#151b29);border-color:#b7791f}}.vbadge{{display:inline-block;margin-bottom:10px;padding:5px 10px;border-radius:999px;background:#17283c;color:#a5def7;font-size:11px;font-weight:1000;letter-spacing:.08em}}.playin .vbadge{{background:#503609;color:#fde68a}}.vduel{{display:grid;grid-template-columns:minmax(0,1fr) 42px minmax(0,1fr);align-items:stretch;gap:8px}}.vside{{min-height:82px;padding:12px 10px;border-radius:15px;background:#14243a;border:1px solid rgba(148,163,184,.2);display:flex;flex-direction:column;justify-content:center;text-align:center}}.vside span{{font-size:9px;font-weight:1000;letter-spacing:.13em;color:#64748b}}.vside b{{font-size:21px;line-height:1.12;overflow-wrap:anywhere}}.vside.anim{{opacity:0;transform:translateY(9px) scale(.98);animation:vreveal .42s ease var(--d) forwards}}.vvs{{display:grid;place-items:center;font-size:12px;color:#64748b;font-weight:1000}}.vpool{{margin:16px auto 0;max-width:880px;padding:11px 12px;border-radius:16px;background:#0d1726;border:1px dashed #334155}}.vpool small{{display:block;margin-bottom:8px;color:#94a3b8;font-size:9px;font-weight:1000;letter-spacing:.14em}}.vpool>div{{display:flex;gap:7px;flex-wrap:wrap;justify-content:center}}.vpool span{{padding:6px 10px;border-radius:999px;background:#17283c;color:#cbd5e1;font-size:12px;font-weight:850}}.vbye{{margin:12px auto 0;max-width:560px;padding:14px;border-radius:16px;background:#3b2b08;border:1px solid #a16207;color:#fde68a;font-size:18px;opacity:0;transform:scale(.94);animation:vbye .48s cubic-bezier(.16,.86,.2,1) var(--bd) forwards;box-shadow:0 0 0 1px rgba(251,191,36,.08)}}.vfoot{{margin-top:15px;color:#86efac;font-size:13px;font-weight:850;opacity:0;animation:vreveal .35s ease {finish:.2f}s forwards}}@keyframes vreveal{{to{{opacity:1;transform:none}}}}@keyframes vbye{{70%{{opacity:1;transform:scale(1.045);box-shadow:0 0 36px rgba(251,191,36,.22)}}100%{{opacity:1;transform:none;box-shadow:0 0 0 1px rgba(251,191,36,.08)}}}}@media(max-width:760px){{.visibleDraw{{padding:16px 9px}}.vgrid{{grid-template-columns:1fr;gap:9px}}.vtitle{{font-size:23px}}.vside b{{font-size:18px}}}}</style>{FIT_SCRIPT}""",height=max(470,265+((len(cards)+1)//2)*130+(105 if candidates else 0)+(55 if bye_pid else 0)),scrolling=True)
 
 
 def render_awards_gala_tv(initial_status: dict, api_url: str, year: int):

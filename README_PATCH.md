@@ -1,7 +1,6 @@
-# GitHub patch — GROUP9 draw visual fix
+Replace on GitHub:
+- app.py
+- ui.py
 
-Podmień w repo:
-- `ui.py`
-
-Następnie zredeployuj Streamlit.
-APK: bez zmian / bez nowego buildu.
+Then redeploy Streamlit.
+No APK rebuild required.
