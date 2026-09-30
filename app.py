@@ -826,16 +826,12 @@ def team_draw(tid:str):
         target.empty()
         with target.container():
             if len(remaining)==1:
-                # The final slot is deterministic: consume it immediately instead of
-                # drawing a useless one-sector wheel in Streamlit.
-                final_result=db.reveal_next_team(tid)
-                if final_result and final_result.get("wildcard"):
-                    st.session_state.pop("last_spin",None)
-                    rf()
-                elif final_result:
-                    st.session_state.pop("last_spin",None)
-                    db.start_structure_draw(tid)
-                    rr()
+                # Do NOT consume the final slot in the same run as the penultimate
+                # wheel. A rerun here used to erase the just-rendered penultimate
+                # animation, so users visually lost both the 8th and 9th assignments.
+                # Keep the penultimate wheel on screen; the next click only advances
+                # to the deterministic final assignment (still without a wheel).
+                st.button("➡️ POKAŻ OSTATNI PRZYDZIAŁ",type="primary",use_container_width=True,key=f"show_final_{tid}_{new_done}")
             elif remaining:
                 nxt=sorted(remaining,key=lambda x:x["team_reveal_order"])[0]
                 st.button(f"🎰 ZAKRĘĆ DLA {nxt['name']}",type="primary",use_container_width=True,key=f"next_spin_{tid}_{new_done}")
@@ -869,16 +865,34 @@ def team_draw(tid:str):
                 wildcard_team_suggestions_cached.clear()
                 if pending.get("auto_assigned"):
                     st.session_state.pop("last_spin",None)
-                    db.start_structure_draw(tid)
+                    st.session_state[f"final_auto_reveal_{tid}"]=result
                     rr()
                 show_wheel(result,display_result=team)
                 next_after(result,hidden)
             except ValueError as e:st.error(str(e))
         return
 
-    # Streamlit used to still show a final "spin" button even though the backend
-    # already knows the only remaining slot. Consume that slot immediately. A normal
-    # team advances straight to the structure draw; a final Wild Card opens its picker.
+    final_state_key=f"final_auto_reveal_{tid}"
+    final_state=st.session_state.get(final_state_key)
+    if final_state:
+        st.session_state.pop("last_spin",None)
+        st.markdown(
+            f"<div class='mini-card' style='text-align:center'>"
+            f"<div class='match-no'>OSTATNI PRZYDZIAŁ • BEZ LOSOWANIA</div>"
+            f"<div class='player-big' style='margin-top:8px'>{esc(final_state['name'])}</div>"
+            f"<div class='team-small' style='font-size:1.15rem;margin-top:4px'>⚽ {esc(final_state['team'])}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        if st.button("🎲 PRZEJDŹ DO LOSOWANIA TURNIEJU",type="primary",use_container_width=True,key=f"final_to_structure_{tid}"):
+            st.session_state.pop(final_state_key,None)
+            db.start_structure_draw(tid)
+            rr()
+        return
+
+    # Exactly one unrevealed slot is deterministic. Assign it without a wheel, but
+    # KEEP its result visible on the controller. Do not jump directly to structure
+    # draw, otherwise the user never sees who received the final team.
     if len(hidden)==1:
         st.session_state.pop("last_spin",None)
         result=db.reveal_next_team(tid)
@@ -886,8 +900,16 @@ def team_draw(tid:str):
             if result.get("wildcard"):
                 show_pending_wildcard(result)
                 return
-            db.start_structure_draw(tid)
-            rr()
+            st.session_state[final_state_key]=result
+            st.markdown(
+                f"<div class='mini-card' style='text-align:center'>"
+                f"<div class='match-no'>OSTATNI PRZYDZIAŁ • BEZ LOSOWANIA</div>"
+                f"<div class='player-big' style='margin-top:8px'>{esc(result['name'])}</div>"
+                f"<div class='team-small' style='font-size:1.15rem;margin-top:4px'>⚽ {esc(result['team'])}</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            st.button("🎲 PRZEJDŹ DO LOSOWANIA TURNIEJU",type="primary",use_container_width=True,key=f"final_to_structure_{tid}")
         return
 
     if last:
