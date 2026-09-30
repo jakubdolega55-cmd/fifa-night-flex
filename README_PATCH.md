@@ -1,7 +1,7 @@
-# GitHub patch — 2026-09-30
-Replace these files in the repository root:
-- database.py
-- logic.py
-- app.py
+# GitHub patch — GROUP9 draw visual fix
 
-Then redeploy backend/Streamlit. No new APK is required.
+Podmień w repo:
+- `ui.py`
+
+Następnie zredeployuj Streamlit.
+APK: bez zmian / bez nowego buildu.
