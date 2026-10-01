@@ -1,5 +1,6 @@
 export type Match = {
   match_no:number;
+  display_match_no?:number;
   stage:string;
   stage_label:string;
   group_name?:string|null;
