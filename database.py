@@ -380,6 +380,51 @@ class Database:
     def _norm_scorer_name(value: str) -> str:
         return " ".join(str(value or "").strip().casefold().split())
 
+    def _events_with_derived_second_yellow_reds(self, events: list[dict]) -> list[dict]:
+        """Return event rows plus one derived red for a same-match double yellow.
+
+        EA FC 27 can represent a dismissal only as two yellow-card rows. The raw
+        rows stay untouched; this helper is used only by counters/milestones so
+        the dismissal is counted as one red card without inventing a stored event.
+        If a direct red row already exists for the same footballer in that match,
+        no extra derived red is added.
+        """
+        rows=[dict(e) for e in (events or [])]
+        yellows: dict[tuple[str,int,str,str], list[int]] = defaultdict(list)
+        direct_reds: set[tuple[str,int,str,str]] = set()
+        for idx,e in enumerate(rows):
+            et=str(e.get("event_type") or "")
+            if et not in {"yellow_card","red_card"}:
+                continue
+            pid=str(e.get("actor_player_id") or "").strip()
+            norm=str(e.get("normalized_footballer") or "").strip()
+            if not norm:
+                norm=self._norm_scorer_name(str(e.get("footballer_name") or ""))
+            if not pid or not norm:
+                continue
+            try: match_no=int(e.get("match_no") or 0)
+            except Exception: match_no=0
+            key=(str(e.get("tournament_id") or ""),match_no,pid,norm)
+            if et=="red_card":
+                direct_reds.add(key)
+            else:
+                yellows[key].append(idx)
+        derived_after: dict[int,list[dict]] = defaultdict(list)
+        for key,positions in yellows.items():
+            if len(positions)<2 or key in direct_reds:
+                continue
+            second_idx=positions[1]
+            derived=dict(rows[second_idx])
+            derived["event_type"]="red_card"
+            derived["_derived_second_yellow_red"]=1
+            derived["id"]=f"derived-second-yellow:{key[0]}:{key[1]}:{key[2]}:{key[3]}"
+            derived_after[second_idx].append(derived)
+        out=[]
+        for idx,e in enumerate(rows):
+            out.append(e)
+            out.extend(derived_after.get(idx,[]))
+        return out
+
     def _is_helper_team(self, team_name: str) -> bool:
         return self._norm_team_name(team_name)==self._norm_team_name(REAL_HELPER_TEAM)
 
@@ -1350,7 +1395,8 @@ class Database:
                 LEFT JOIN players ap ON ap.id=m.away_player_id
                 WHERE m.tournament_id=? AND m.home_score IS NOT NULL
                 ORDER BY m.match_no""",(tid,))
-            events=self._fetchall(conn,"""SELECT me.match_no,me.event_type,me.synthetic_de,me.minute
+            events=self._fetchall(conn,"""SELECT me.tournament_id,me.match_no,me.event_type,me.synthetic_de,me.minute,
+                       me.actor_player_id,me.footballer_name,me.normalized_footballer
                 FROM match_events me
                 JOIN matches m ON m.tournament_id=me.tournament_id AND m.match_no=me.match_no
                 WHERE me.tournament_id=? AND m.home_score IS NOT NULL
@@ -1380,7 +1426,8 @@ class Database:
 
         counters={"penalties_awarded":0,"yellow_cards":0,"red_cards":0,"own_goals":0,"extra_time_goals":0}
         detailed_match_nos=set()
-        for e in events:
+        events_for_stats=self._events_with_derived_second_yellow_reds(events)
+        for e in events_for_stats:
             detailed_match_nos.add(int(e.get("match_no") or 0))
             et=str(e.get("event_type") or "")
             synthetic=bool(int(e.get("synthetic_de") or 0))
@@ -3303,6 +3350,15 @@ class Database:
                 JOIN tournaments t ON t.id=me.tournament_id
                 WHERE t.is_test=0 AND t.status IN ('active','completed','abandoned') AND me.actor_player_id=?
             """,(pid,)) or {}
+            card_rows=self._fetchall(conn,"""
+                SELECT me.tournament_id,me.match_no,me.event_type,me.actor_player_id,
+                       me.footballer_name,me.normalized_footballer,me.event_order,me.id
+                FROM match_events me
+                JOIN tournaments t ON t.id=me.tournament_id
+                WHERE t.is_test=0 AND t.status IN ('active','completed','abandoned')
+                  AND me.actor_player_id=? AND me.event_type IN ('yellow_card','red_card')
+                ORDER BY me.tournament_id,me.match_no,me.event_order,me.id
+            """,(pid,))
             goals=self._fetchall(conn,"""
                 SELECT me.minute,me.stoppage,me.minute_label,me.footballer_name,me.credited_team_name,
                        me.event_type,me.created_at
@@ -3337,11 +3393,13 @@ class Database:
                 "team_name":str(g.get("credited_team_name") or ""),
                 "event_type":str(g.get("event_type") or "normal_goal"),
             }
+        card_rows_for_stats=self._events_with_derived_second_yellow_reds(card_rows)
+        derived_red_cards=sum(1 for e in card_rows_for_stats if str(e.get("event_type") or "")=="red_card")
         out={**empty}
         out.update({
             "coverage_matches":int((coverage or {}).get("c") or 0),
             "yellow_cards":int(actor.get("yellow_cards") or 0),
-            "red_cards":int(actor.get("red_cards") or 0),
+            "red_cards":derived_red_cards,
             "penalties_awarded":int(actor.get("penalties_awarded") or 0),
             "penalties_scored":int(actor.get("penalties_scored") or 0),
             "penalties_missed":int(actor.get("penalties_missed") or 0),
@@ -5374,6 +5432,7 @@ class Database:
         for r in scorer_rows:scorer_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
         detailed_goals_by=defaultdict(list)
         for r in detailed_goal_rows:detailed_goals_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
+        detailed_event_rows=self._events_with_derived_second_yellow_reds(detailed_event_rows)
         detailed_events_by=defaultdict(list)
         for r in detailed_event_rows:detailed_events_by[(str(r["tournament_id"]),int(r["match_no"]))].append(r)
         timeline=[];pending=[]
