@@ -41,6 +41,7 @@ CURRENT_KEY = "flex_current_tournament"
 LAST_COUNT_KEY = "flex_last_player_count"
 LAST_STAKE_KEY = "flex_last_stake_pln"
 TEAM_MODE_KEY = "flex_team_mode"
+FC27_REAL_BANNED_KEY = "flex_fc27_real_banned"
 
 # One canonical Awards order shared by Streamlit and mobile clients.
 # Keep selection flow and public display in the same order so the gala reads
@@ -526,10 +527,12 @@ class Database:
                 conn.execute(self._sql("INSERT INTO footballer_rosters (id,game_version,team_name,normalized_team,scorer_name,normalized_scorer,seed_rank,created_at) VALUES (?,?,?,?,?,?,?,?)"),
                              (str(uuid.uuid4()),version,REAL_HELPER_TEAM,nt,clean,ns,rank,now_iso()))
 
-    def wildcard_team_suggestions(self, game_version: str = "FC26", team_mode: str = "clubs") -> list[str]:
+    def wildcard_team_suggestions(self, game_version: str = "FC26", team_mode: str = "clubs", fc27_real_banned: bool | None = None) -> list[str]:
         version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
-        fixed={self._norm_team_name(x) for x in fixed_teams_for_version(version,mode)}
-        banned={self._norm_team_name(x) for x in banned_team_names(version,mode)}
+        if fc27_real_banned is None:
+            fc27_real_banned=self.fc27_real_banned_setting() if version=="FC27" and mode=="clubs" else False
+        fixed={self._norm_team_name(x) for x in fixed_teams_for_version(version,mode,bool(fc27_real_banned))}
+        banned={self._norm_team_name(x) for x in banned_team_names(version,mode,bool(fc27_real_banned))}
         history=[]
         # Historical free-text choices remain useful only for legacy FC26 club mode.
         # FC27 and national mode use the explicit ranked pools approved for the wheel/WC UI.
@@ -538,7 +541,7 @@ class Database:
                 rows=self._fetchall(conn,"SELECT team,COUNT(*) AS c FROM tournament_players WHERE team<>'' GROUP BY team ORDER BY c DESC,team")
             history=[r["team"] for r in rows]
         out=[]; seen=set()
-        for name in wildcard_suggestions_for_version(version,mode)+history:
+        for name in wildcard_suggestions_for_version(version,mode,bool(fc27_real_banned))+history:
             clean=" ".join(str(name or "").strip().split()); norm=self._norm_team_name(clean)
             if not clean or is_wildcard_slot(clean) or norm in fixed or norm in banned or norm in seen: continue
             # Do not surface legacy helper Real as a WC suggestion in FC26.
@@ -553,7 +556,8 @@ class Database:
         trow=self._fetchone(conn,"SELECT game_version FROM tournaments WHERE id=?",(tid,)) or {}
         meta,extra=self._meta_extra_conn(conn,tid)
         version=normalize_game_version(trow.get("game_version")); mode=effective_team_mode(version,extra.get("team_mode") or "clubs")
-        banned={self._norm_team_name(x) for x in banned_team_names(version,mode)}
+        real_banned=bool(extra.get("fc27_real_banned")) if version=="FC27" and mode=="clubs" else False
+        banned={self._norm_team_name(x) for x in banned_team_names(version,mode,real_banned)}
         if norm in banned:
             banned_label=FRANCE_BANNED_TEAM if mode=="national" else REAL_HELPER_TEAM
             raise ValueError(f"{banned_label} jest banned 🚫")
@@ -582,6 +586,18 @@ class Database:
         with self.connect() as conn:
             self._setting_set_conn(conn,TEAM_MODE_KEY,clean)
         return clean
+
+    def fc27_real_banned_setting(self) -> bool:
+        """Admin switch used only when creating NEW FC27 club tournaments."""
+        with self.connect() as conn:
+            raw=str(self._setting_get_conn(conn,FC27_REAL_BANNED_KEY) or "0").strip().casefold()
+        return raw in {"1","true","yes","on"}
+
+    def set_fc27_real_banned(self, enabled: bool) -> bool:
+        value="1" if bool(enabled) else "0"
+        with self.connect() as conn:
+            self._setting_set_conn(conn,FC27_REAL_BANNED_KEY,value)
+        return bool(enabled)
 
     def last_player_count(self) -> int:
         with self.connect() as conn:
@@ -1177,6 +1193,11 @@ class Database:
             extra["team_rating_snapshot"]={k:float(v) for k,v in ratings.items()}
             extra["game_version"]=game_version
             extra["team_mode"]=team_mode
+            extra["fc27_real_banned"]=(
+                game_version=="FC27" and team_mode=="clubs"
+                and any(self._norm_team_name(x)==self._norm_team_name("Manchester City") for x in teams if not is_wildcard_slot(x))
+                and not any(self._norm_team_name(x)==self._norm_team_name("Real Madryt") for x in teams if not is_wildcard_slot(x))
+            )
             if carry:
                 draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 draw=apply_de_playin_priority(draw,format_key,carry.get("placement_by_player_id") or {},rng,carry.get("new_player_ids") or [])
@@ -1235,7 +1256,8 @@ class Database:
         norms=[self._norm_team_name(x) for x in teams]
         flags=list(cash_flags) if cash_flags is not None else [True,True]
         if len(flags)!=2: flags=[True,True]
-        banned={self._norm_team_name(x) for x in banned_team_names(game_version,team_mode)}
+        real_banned=self.fc27_real_banned_setting() if game_version=="FC27" and team_mode=="clubs" else False
+        banned={self._norm_team_name(x) for x in banned_team_names(game_version,team_mode,real_banned)}
         for i,norm in enumerate(norms):
             if norm in banned:
                 banned_label=FRANCE_BANNED_TEAM if team_mode=="national" else REAL_HELPER_TEAM
@@ -1258,7 +1280,8 @@ class Database:
                         and real_helper_available(game_version,team_mode)]
             extra={"stake_per_player":self._stake_cents(effective_stake)/100,"cash_player_ids":pids if effective_stake>0 else [],
                    "cash_player_names":clean if effective_stake>0 else [],"is_duel":True,"game_version":game_version,
-                   "team_mode":team_mode,"real_helper_player_ids":helper_ids}
+                   "team_mode":team_mode,"real_helper_player_ids":helper_ids,
+                   "fc27_real_banned":bool(real_banned)}
             self._setting_set_conn(conn,CURRENT_KEY,tid); self._setting_set_conn(conn,LAST_STAKE_KEY,f"{extra['stake_per_player']:.2f}")
             conn.execute(self._sql("INSERT INTO tournaments (id,status,phase,is_test,is_current,game_version,groups_revealed,created_at) VALUES (?,'active','active',?,0,?,0,?)"),(tid,int(is_test),game_version,now_iso()))
             for i,(pid,team) in enumerate(zip(pids,teams),1):
@@ -1556,7 +1579,8 @@ class Database:
             game_version=normalize_game_version(t.get("game_version"))
             team_mode=effective_team_mode(game_version,extra.get("team_mode") or "clubs")
             picked=self._fetchall(conn,"SELECT team FROM tournament_players WHERE tournament_id=? AND team<>''",(tid,))
-        suggestions=self.wildcard_team_suggestions(game_version,team_mode)
+        real_banned=bool(extra.get("fc27_real_banned")) if game_version=="FC27" and team_mode=="clubs" else False
+        suggestions=self.wildcard_team_suggestions(game_version,team_mode,real_banned)
         used={self._norm_team_name(r.get("team") or "") for r in picked}
         return [x for x in suggestions if self._norm_team_name(x) not in used]
 

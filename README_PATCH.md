@@ -1,11 +1,10 @@
-# GitHub patch — Global Rest + BYE Fairness
+Replace these files on GitHub:
+- app.py
+- database.py
+- logic.py
+- mobile_api.py
+- mobile/App.tsx
+- mobile/app.json
+- mobile/src/api.ts
 
-Replace on GitHub:
-- `database.py`
-
-No APK rebuild required.
-
-Behavior:
-- anti-marathon match ordering applies to every format whenever 2+ legal matches are ready;
-- repeated in-tournament BYEs are strongly down-weighted, never hard-blocked;
-- pairings/bracket sources are never rewritten.
+Then redeploy backend/Streamlit/PWA. Because mobile/App.tsx changed and app.json versionCode is 13, build and install a new APK to see the toggle in the native Android app.

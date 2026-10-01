@@ -383,6 +383,33 @@ def render_team_mode_settings():
         st.caption("Zmiana jest dostępna po włączeniu sterowania.")
 
 
+def render_fc27_real_ban_settings():
+    st.markdown("### 🚫 Real Madryt — opcjonalny ban w EA FC 27")
+    current=db.fc27_real_banned_setting()
+    if current:
+        st.warning("Ban jest WŁĄCZONY dla nowych turniejów FC27 (kluby): Manchester City jest na kole zamiast Realu.")
+        st.caption("Koło: Manchester City • PSG • Bayern Monachium • FC Barcelona • Arsenal. Real nie może wtedy wejść również jako Wild Card. Przy tym wariancie tylko PSG zachowuje handicap „mocnej drużyny”.")
+        action_label="✅ PRZYWRÓĆ REAL MADRYT NA KOŁO"
+    else:
+        st.info("Ban jest WYŁĄCZONY: Real Madryt jest na kole, a Manchester City jest pierwszym Wild Cardem.")
+        action_label="🚫 ZBANUJ REAL MADRYT W FC27"
+    st.caption("Zmiana dotyczy tylko nowych turniejów FC27 w trybie klubowym. Już rozpoczęte turnieje zachowują swoją pulę.")
+    if not admin_password():
+        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Nie można zmienić tej opcji.")
+        return
+    with st.form("fc27_real_ban_settings_form"):
+        pwd=st.text_input("Hasło administratora",type="password",key="settings_fc27_real_ban_pwd")
+        go=st.form_submit_button(action_label,use_container_width=True,type="primary")
+    if go:
+        if not admin_ok(pwd):
+            st.error("Nieprawidłowe hasło.")
+        else:
+            db.set_fc27_real_banned(not current)
+            wildcard_team_suggestions_cached.clear()
+            st.success("Ban Realu w FC27 włączony." if not current else "Real Madryt przywrócony na koło FC27.")
+            rr()
+
+
 def render_access_settings():
     st.subheader("⚙️ Ustawienia dostępu")
     if controller_access():
@@ -415,6 +442,8 @@ def render_access_settings():
         st.caption("Dostęp jest zapamiętany w bieżącej sesji przeglądarki. Po zamknięciu sesji, ponownym otwarciu aplikacji lub jej wybudzeniu może być potrzebne ponowne wpisanie hasła.")
     st.divider()
     render_team_mode_settings()
+    st.divider()
+    render_fc27_real_ban_settings()
     st.divider()
     render_player_rename_settings()
     st.divider()
@@ -486,9 +515,10 @@ def render_duel_start(official_names:list[str], game_version:str="FC26", team_mo
     st.markdown("### ⚔️ Mecz 1 vs 1")
     st.caption("Ręczny wybór graczy i drużyn. 1v1 liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów ani statystyk turniejowych.")
     team_mode=effective_team_mode(game_version,team_mode)
+    real_banned=db.fc27_real_banned_setting() if normalize_game_version(game_version)=="FC27" and team_mode=="clubs" else False
     team_options=list(dict.fromkeys(
-        fixed_teams_for_version(game_version,team_mode)
-        + db.wildcard_team_suggestions(game_version,team_mode)
+        fixed_teams_for_version(game_version,team_mode,real_banned)
+        + db.wildcard_team_suggestions(game_version,team_mode,real_banned)
         
     ))
     if real_helper_available(game_version,team_mode) and "Real Madryt" not in team_options:
@@ -617,8 +647,9 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
                 names.append(st.selectbox(f"Gracz {i+1}",official_names,index=None,key=f"p_{count}_{i}",placeholder="Wpisz nick lub wybierz z listy",accept_new_options=True))
             with c_cash:
                 cash_flags.append(st.checkbox("💰 Gra za kasę",value=True,key=f"cash_{count}_{i}"))
-        teams=allowed_teams(count,game_version,team_mode)
-        fixed=fixed_teams_for_version(game_version,team_mode)
+        real_banned=db.fc27_real_banned_setting() if game_version=="FC27" and team_mode=="clubs" else False
+        teams=allowed_teams(count,game_version,team_mode,real_banned)
+        fixed=fixed_teams_for_version(game_version,team_mode,real_banned)
         mode_label="reprezentacje" if team_mode=="national" else "kluby"
         if count in (3,4):
             st.markdown(f"**Wybór drużyn:** losujemy kolejność, potem każdy wybiera {'reprezentację' if team_mode=='national' else 'klub'} z puli normalnej albo dostępny Wild Card.")
@@ -630,7 +661,10 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
         elif game_version=="FC26":
             st.caption(f"{game_version} • Kluby: " + " • ".join(fixed) + ". Real Madryt jest poza kołem/Wild Cardem i może być pomocą wyłącznie dla osoby grającej bez kasy.")
         else:
-            st.caption(f"{game_version} • Kluby: " + " • ".join(fixed) + ". Real Madryt jest normalnie na kole; Manchester City jest Wild Cardem.")
+            if real_banned:
+                st.caption(f"{game_version} • Kluby: " + " • ".join(fixed) + ". Real Madryt jest zbanowany; Manchester City zajmuje jego miejsce na kole.")
+            else:
+                st.caption(f"{game_version} • Kluby: " + " • ".join(fixed) + ". Real Madryt jest normalnie na kole; Manchester City jest Wild Cardem.")
         stake=st.number_input("💰 Stawka na osobę (zł)",min_value=0.0,step=5.0,format="%.2f",key="stake_per_player")
         jackpot=db.current_jackpot_cents()
         if jackpot>0:st.warning(f"🎰 Aktualny jackpot do przejęcia przez kolejnego uprawnionego mistrza: **{pln_cents(jackpot)} zł**")

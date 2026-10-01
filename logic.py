@@ -24,6 +24,13 @@ FC27_WILDCARD_SUGGESTIONS = [
     "Manchester City", "Atletico", "Liverpool", "Man United", "Inter", "BVB",
     "Napoli", "Chelsea", "Tottenham", "AC Milan",
 ]
+# Optional admin pool for FC27 clubs. When Real is banned, City takes its
+# wheel slot and therefore disappears from Wild Card suggestions.
+FC27_REAL_BANNED_FIXED_TEAMS = ["Manchester City", "PSG", "Bayern Monachium", "FC Barcelona", "Arsenal"]
+FC27_REAL_BANNED_WILDCARD_SUGGESTIONS = [
+    "Atletico", "Liverpool", "Man United", "Inter", "BVB",
+    "Napoli", "Chelsea", "Tottenham", "AC Milan",
+]
 
 # National teams are supported only in FC27. France is banned.
 FC27_NATIONAL_FIXED_TEAMS = ["Hiszpania", "Anglia", "Brazylia", "Niemcy", "Portugalia"]
@@ -60,25 +67,29 @@ def effective_team_mode(game_version: str, team_mode: str | None = "clubs") -> s
     return "national" if version=="FC27" and mode=="national" else "clubs"
 
 
-def fixed_teams_for_version(game_version: str, team_mode: str | None = "clubs") -> list[str]:
+def fixed_teams_for_version(game_version: str, team_mode: str | None = "clubs", fc27_real_banned: bool = False) -> list[str]:
     version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
     if mode=="national":
         return FC27_NATIONAL_FIXED_TEAMS.copy()
+    if version=="FC27" and bool(fc27_real_banned):
+        return FC27_REAL_BANNED_FIXED_TEAMS.copy()
     return (FC27_FIXED_TEAMS if version=="FC27" else FC26_FIXED_TEAMS).copy()
 
 
-def wildcard_suggestions_for_version(game_version: str, team_mode: str | None = "clubs") -> list[str]:
+def wildcard_suggestions_for_version(game_version: str, team_mode: str | None = "clubs", fc27_real_banned: bool = False) -> list[str]:
     version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
     if mode=="national":
         return FC27_NATIONAL_WILDCARD_SUGGESTIONS.copy()
+    if version=="FC27" and bool(fc27_real_banned):
+        return FC27_REAL_BANNED_WILDCARD_SUGGESTIONS.copy()
     return (FC27_WILDCARD_SUGGESTIONS if version=="FC27" else FC26_WILDCARD_SUGGESTIONS).copy()
 
 
-def banned_team_names(game_version: str, team_mode: str | None = "clubs") -> set[str]:
+def banned_team_names(game_version: str, team_mode: str | None = "clubs", fc27_real_banned: bool = False) -> set[str]:
     version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
     if mode=="national":
         return {"france","francja"}
-    if version=="FC26":
+    if version=="FC26" or (version=="FC27" and mode=="clubs" and bool(fc27_real_banned)):
         return {"real","real madrid","real madryt","rma"}
     return set()
 
@@ -103,9 +114,9 @@ def wildcard_slot_label(index: int | None, game_version: str, team_mode: str | N
     return f"{base}{suffix}"
 
 
-def allowed_teams(player_count: int, game_version: str = "FC26", team_mode: str | None = "clubs") -> list[str]:
+def allowed_teams(player_count: int, game_version: str = "FC26", team_mode: str | None = "clubs", fc27_real_banned: bool = False) -> list[str]:
     version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
-    fixed=fixed_teams_for_version(version,mode)
+    fixed=fixed_teams_for_version(version,mode,fc27_real_banned)
     # FC27 clubs and FC27 national teams use five fixed wheel teams. Legacy FC26 clubs use four.
     normal_count=5 if (version=="FC27" or mode=="national") else 4
     fixed=fixed[:normal_count]
@@ -297,7 +308,11 @@ def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], 
             w*=math.exp((50.0-rating)*coef)
             if previous.get(pid) and previous.get(pid).casefold()==str(team).casefold():
                 w*=0.35
-            w*=strong_team_multiplier(team,placements.get(pid),game_version,team_mode)
+            mult=strong_team_multiplier(team,placements.get(pid),game_version,team_mode)
+            # When the optional FC27 Real ban is active, City moves onto the wheel
+            # but does NOT inherit Real's strong-team handicap. PSG is then the only
+            # strong club receiving the extra previous-finalist soft handicap.
+            w*=mult
         opts.append((perm,w))
     chosen=_weighted_choice_pairs(opts,rng)
     return dict(zip(pids,chosen))

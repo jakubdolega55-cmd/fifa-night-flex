@@ -223,6 +223,10 @@ class TeamModePayload(BaseModel):
     team_mode: str
 
 
+class Fc27RealBanPayload(BaseModel):
+    enabled: bool
+
+
 class DraftPickPayload(BaseModel):
     player_id: str
     slot: str
@@ -1416,6 +1420,17 @@ def set_team_mode(payload: TeamModePayload, _claims: dict[str, Any] = Depends(re
     }
 
 
+@app.post("/api/v1/settings/fc27-real-ban")
+def set_fc27_real_ban(payload: Fc27RealBanPayload, _claims: dict[str, Any] = Depends(require_controller)) -> dict[str, Any]:
+    enabled=db.set_fc27_real_banned(bool(payload.enabled))
+    return {
+        "fc27_real_banned":enabled,
+        "fc27_club_pool":allowed_teams(5,"FC27","clubs",enabled),
+        "fc27_wildcard_suggestions":db.wildcard_team_suggestions("FC27","clubs",enabled),
+        "strong_clubs":["PSG"] if enabled else ["PSG","Real Madryt"],
+    }
+
+
 def _special_event_payload(tid: str, fmt: str) -> dict[str, Any] | None:
     """Return one normalized in-tournament draw/reveal card for the mobile clients."""
     try:
@@ -1641,6 +1656,7 @@ def get_config() -> dict[str, Any]:
         formats[str(count)] = [{"key": k, "label": FORMAT_LABELS.get(k, k), "matches": FORMAT_MATCH_COUNTS.get(k, "")} for k in keys]
     official_names=db.official_player_names()
     team_mode=db.team_mode_setting()
+    fc27_real_banned=db.fc27_real_banned_setting()
     return {
         "api_version": API_VERSION,
         "players": official_names,
@@ -1652,11 +1668,12 @@ def get_config() -> dict[str, Any]:
         "game_versions": list(GAME_VERSIONS),
         "team_mode": team_mode,
         "team_modes": list(TEAM_MODES),
+        "fc27_real_banned": fc27_real_banned,
         "team_mode_effective_by_version": {v:effective_team_mode(v,team_mode) for v in GAME_VERSIONS},
         "national_mode_available_versions": ["FC27"],
         "fixed_teams": fixed_teams_for_version("FC26",team_mode),
-        "team_pools": {v:{str(n):allowed_teams(n,v,team_mode) for n in range(3,11)} for v in GAME_VERSIONS},
-        "wildcard_suggestions_by_version": {v:db.wildcard_team_suggestions(v,team_mode) for v in GAME_VERSIONS},
+        "team_pools": {v:{str(n):allowed_teams(n,v,team_mode,fc27_real_banned if v=="FC27" else False) for n in range(3,11)} for v in GAME_VERSIONS},
+        "wildcard_suggestions_by_version": {v:db.wildcard_team_suggestions(v,team_mode,fc27_real_banned if v=="FC27" else False) for v in GAME_VERSIONS},
         "wildcard_suggestions": db.wildcard_team_suggestions("FC26",team_mode),
         "real_helper_team": REAL_HELPER_TEAM,
         "real_helper_available_by_version": {v:real_helper_available(v,team_mode) for v in GAME_VERSIONS},
@@ -1672,7 +1689,8 @@ def create_tournament(payload: CreateTournamentPayload, authorization: str | Non
     try:
         game_version=normalize_game_version(payload.game_version)
         team_mode=db.team_mode_setting()
-        teams=allowed_teams(int(payload.player_count),game_version,team_mode)
+        fc27_real_banned=db.fc27_real_banned_setting() if game_version=="FC27" and effective_team_mode(game_version,team_mode)=="clubs" else False
+        teams=allowed_teams(int(payload.player_count),game_version,team_mode,fc27_real_banned)
         tid=db.create_tournament(payload.player_names,int(payload.player_count),payload.format_key,teams,bool(payload.is_test),float(payload.stake_per_player),payload.cash_flags or None,game_version,team_mode)
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return {"id":tid,"live":live_payload()}
