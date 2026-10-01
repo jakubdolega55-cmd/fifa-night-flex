@@ -13,8 +13,6 @@ const CLUB_ASSETS={
  'inter':require('../assets/teams/clubs/inter.png'),
  'manchester-united':require('../assets/teams/clubs/manchester-united.png'),
  'borussia-dortmund':require('../assets/teams/clubs/borussia-dortmund.png'),
- 'napoli':require('../assets/teams/clubs/napoli.png'),
- 'chelsea':require('../assets/teams/clubs/chelsea.png'),
  'tottenham':require('../assets/teams/clubs/tottenham.png'),
  'milan':require('../assets/teams/clubs/milan.png'),
  'bayer-leverkusen':require('../assets/teams/clubs/bayer-leverkusen.png'),
@@ -31,7 +29,7 @@ const CLUB_KEYS:Record<string,keyof typeof CLUB_ASSETS>={
  'inter':'inter','inter milan':'inter','lombardia fc':'inter',
  'man united':'manchester-united','man utd':'manchester-united','manchester utd':'manchester-united','manchester united':'manchester-united',
  'bvb':'borussia-dortmund','bvb 09':'borussia-dortmund','borussia dortmund':'borussia-dortmund',
- 'napoli':'napoli','chelsea':'chelsea','tottenham':'tottenham','tottenham hotspur':'tottenham',
+ 'tottenham':'tottenham','tottenham hotspur':'tottenham',
  'ac milan':'milan','milan':'milan','bayer leverkusen':'bayer-leverkusen',
 };
 
