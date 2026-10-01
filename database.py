@@ -4015,6 +4015,20 @@ class Database:
                 return m
         return None
 
+    def visible_next_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
+        """Return the match that public LIVE views should advertise as next.
+
+        In fixed-pairing GROUP/LEAGUE stages the scheduler can change immediately
+        after the current result is saved, so use the post-result projection there.
+        Knockout stages keep the ordinary next-ready behavior because a result can
+        unlock a winner/loser-dependent pairing that is unknowable beforehand.
+        """
+        cur=next((m for m in matches if int(m.get("match_no") or 0)==int(current_no)),None)
+        stage=str((cur or {}).get("stage") or "").upper()
+        if stage in {"GROUP","LEAGUE"}:
+            return self.projected_next_match_from(matches,current_no,extra)
+        return self.next_ready_match_from(matches,current_no,extra)
+
     def projected_next_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
         """Predict the next playable match *after* the current one is completed.
 
@@ -4068,8 +4082,25 @@ class Database:
         pending=[m for m in matches if not done(m)]
         ready_ids={int(m.get("match_no") or 0) for m in pending if m.get("home_player_id") and m.get("away_player_id")}
         ready=[m for m in self._ready_match_order(matches,extra) if int(m.get("match_no") or 0) in ready_ids]
+        # Public schedule must agree with the NEXT card. For fixed-pairing stages,
+        # reorder the tail using the same post-current projection that will be used
+        # immediately after saving the current result. Internal logical match_no values
+        # stay untouched; only the presentation order changes.
+        if len(ready)>1 and str(ready[0].get("stage") or "").upper() in {"GROUP","LEAGUE"}:
+            current_no=int(ready[0].get("match_no") or 0)
+            sim=[dict(m) for m in matches]
+            cur=next((m for m in sim if int(m.get("match_no") or 0)==current_no),None)
+            if cur is not None:
+                cur["home_score"]=0;cur["away_score"]=0
+                cur["played_at"]="9999-12-31T23:59:59.999999+00:00"
+                projected=[m for m in self._ready_match_order(sim,extra) if int(m.get("match_no") or 0) in ready_ids and int(m.get("match_no") or 0)!=current_no]
+                by_no={int(m.get("match_no") or 0):m for m in ready}
+                ready=[by_no[current_no]]+[by_no[int(m.get("match_no") or 0)] for m in projected if int(m.get("match_no") or 0) in by_no]
         locked=sorted([m for m in pending if not (m.get("home_player_id") and m.get("away_player_id"))],key=pref)
-        return completed+ready+locked
+        ordered=completed+ready+locked
+        # display_match_no is intentionally presentation-only. Bracket dependencies,
+        # API actions and DB rows continue to use the immutable logical match_no.
+        return [dict(m,display_match_no=i) for i,m in enumerate(ordered,1)]
 
     def can_defer_match(self, tid: str, match_no: int) -> dict:
         """Return whether an active match can be moved behind the next match that is ready now.

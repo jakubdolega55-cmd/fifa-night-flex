@@ -2000,9 +2000,11 @@ def live(tid:str):
     live_schedule=db.live_schedule_from(b.get("matches") or [],meta.get("extra") or {})
     absence_targets=_absence_targets_for_schedule(tid,live_schedule)
     total=max_matches(fmt)
+    display_by_no={int(x.get("match_no") or 0):int(x.get("display_match_no") or x.get("match_no") or 0) for x in live_schedule}
+    cur_display_no=display_by_no.get(int(cur.get("match_no") or 0),int(cur.get("match_no") or 0))
     if not int(t.get("is_test") or 0):
         render_live_milestone_alerts(tid,compact=False)
-    st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="match-no">MECZ {cur_display_no}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     if fmt in DE_FORMATS and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px">{team_visual_html(cur.get("home_team"),64)}<div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px">{team_visual_html(cur.get("away_team"),64)}<div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
@@ -2041,7 +2043,7 @@ def live(tid:str):
                 try: db.forfeit_match(tid,int(cur["match_no"]),loser);rf()
                 except ValueError as e: st.error(str(e))
     score_form(tid,cur,fmt)
-    nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
+    nxt=db.visible_next_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
     if nxt:
         st.markdown("### ⏭️ Następny mecz")
         st.markdown(f'<div class="mini-card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("home_team"),44)}<b>{esc(nxt.get("home_name"))}</b><span class="team-small">{esc(nxt.get("home_team"))}</span></div><div style="color:#64748b;font-weight:900">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("away_team"),44)}<b>{esc(nxt.get("away_name"))}</b><span class="team-small">{esc(nxt.get("away_team"))}</span></div></div></div>',unsafe_allow_html=True)
@@ -2405,8 +2407,11 @@ def render_schedule(t):
         if view=="🌳 Drzewko":
             render_de_bracket(t,b,fmt,cur_no);return
     matches=db.live_schedule_from(b["matches"],extra)
-    ready_pending=[] if abandoned else [m for m in matches if m.get("home_player_id") and m.get("away_player_id") and m.get("home_score") is None and str(m.get("match_status") or "pending")!="skipped"]
-    next_no=int(ready_pending[1]["match_no"]) if len(ready_pending)>1 and cur_no is not None and int(ready_pending[0]["match_no"])==cur_no else None
+    display_by_no={int(x.get("match_no") or 0):int(x.get("display_match_no") or x.get("match_no") or 0) for x in matches}
+    def display_route(text):
+        return re.sub(r"\bM(\d+)\b",lambda mm:f"M{display_by_no.get(int(mm.group(1)),int(mm.group(1)))}",str(text or ""))
+    nxt=None if abandoned or cur_no is None else db.visible_next_match_from(b["matches"],cur_no,extra)
+    next_no=int(nxt.get("match_no") or 0) if nxt else None
     if cur_no is not None:
         st.caption("Kolejka układa się na bieżąco. Gotowi grają, reszta czeka aż drabinka przestanie kombinować.")
     milestone_by_match={}
@@ -2415,7 +2420,7 @@ def render_schedule(t):
             if x.get("match_no") is not None:
                 milestone_by_match.setdefault(int(x["match_no"]),[]).append(x)
     for m in matches:
-        no=int(m["match_no"]);status=str(m.get("match_status") or "pending");skipped=status=="skipped";forfeited=status=="forfeit"
+        no=int(m["match_no"]);display_no=int(m.get("display_match_no") or no);status=str(m.get("match_status") or "pending");skipped=status=="skipped";forfeited=status=="forfeit"
         played=m.get("home_score") is not None
         ready=bool(m.get("home_player_id") and m.get("away_player_id")) and not played and not skipped
         if m.get("home_player_id"):
@@ -2428,14 +2433,14 @@ def render_schedule(t):
             elif no==next_no:result="—";icon="⏭️";live_tag=" • NASTĘPNY"
             else:result="—";icon="⏳";live_tag=" • GOTOWY" if ready else ""
         else:
-            left=m.get("home_source_display") or source_placeholder(fmt,no).split("—",1)[0].strip()
-            fallback=source_placeholder(fmt,no); right=(fallback.split("—",1)[1].strip() if "—" in fallback else "do ustalenia")
-            right=m.get("away_source_display") or right
+            left=display_route(m.get("home_source_display") or source_placeholder(fmt,no).split("—",1)[0].strip())
+            fallback=display_route(source_placeholder(fmt,no)); right=(fallback.split("—",1)[1].strip() if "—" in fallback else "do ustalenia")
+            right=display_route(m.get("away_source_display") or right)
             names=f"{esc(left)} — {esc(right)}";result=("NIE ROZEGRANO" if abandoned else "—");icon=("⚪" if abandoned else "🔒");live_tag=("" if abandoned else " • CZEKA NA ROZSTRZYGNIĘCIE")
         bonus=" • START 1:0 DLA WINNERS" if fmt in DE_FORMATS and m["stage"]=="FINAL" else ""
         tags=milestone_by_match.get(no,[])
         milestone_tag=(" • "+" • ".join(f"{x.get('icon','💎')} {x.get('title')}" for x in tags)) if tags else ""
-        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {no} • {stage_name(m)}{esc(live_tag)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="mini-card"><span class="match-no">{icon} MECZ {display_no} • {stage_name(m)}{esc(live_tag)}{bonus}{esc(milestone_tag)}</span><br><b>{names}</b><span style="float:right" class="scoreline">{esc(result)}</span></div>',unsafe_allow_html=True)
         if skipped:st.caption("Ten mecz świadomie nie został rozegrany i nie wchodzi do statystyk.")
         elif forfeited:st.caption("Poddanie: 3:0 liczy się tylko do sytuacji w tym turnieju. Poza turniejem ten mecz nie istnieje statystycznie.")
         elif played:_render_match_scorer_details(t["id"],m,no)
@@ -3376,8 +3381,38 @@ def render_tv_special_event(tid:str,b:dict) -> bool:
     return False
 
 
-@st.fragment(run_every="1s")
+@st.fragment(run_every="5s")
+def _render_tv_live_fragment(tid:str):
+    _render_tv_screen_content(tid,"📺 LIVE")
+
+@st.fragment(run_every="30s")
+def _render_tv_auto_fragment(tid:str):
+    _render_tv_screen_content(tid,"🔄 AUTO")
+
 def render_tv_screen(tid:str):
+    fresh=db.current_tournament()
+    if not fresh or str(fresh.get("id"))!=str(tid):
+        st.info("Brak aktywnego turnieju.")
+        return
+    b=db.bundle(tid);fmt=b["meta"]["format_key"]
+    if fmt=="duel1v1":
+        _render_tv_live_fragment(tid)
+        return
+    tv_mode=st.segmented_control(
+        "Tryb TV",["📺 LIVE","🔄 AUTO"],default="📺 LIVE",
+        key=f"tv_display_mode_{tid}",label_visibility="collapsed"
+    ) or "📺 LIVE"
+    prev_key=f"_tv_display_prev_{tid}"
+    start_key=f"_tv_auto_started_{tid}"
+    if tv_mode=="🔄 AUTO" and st.session_state.get(prev_key)!="🔄 AUTO":
+        st.session_state[start_key]=time.time()
+    st.session_state[prev_key]=tv_mode
+    if tv_mode=="🔄 AUTO":
+        _render_tv_auto_fragment(tid)
+    else:
+        _render_tv_live_fragment(tid)
+
+def _render_tv_screen_content(tid:str,tv_mode:str):
     fresh=db.current_tournament()
     if not fresh or str(fresh.get("id"))!=str(tid):
         st.info("Brak aktywnego turnieju.")
@@ -3385,24 +3420,9 @@ def render_tv_screen(tid:str):
     b=db.bundle(tid);t=b["tournament"];meta=b["meta"];fmt=meta["format_key"];extra=meta.get("extra") or {}
     status="🧪 TEST" if int(t.get("is_test") or 0) else "🏆 OFICJALNY"
     st.markdown(f"<div style='text-align:center;margin:.2rem 0 .7rem'><span class='status-chip'>{status}</span></div>",unsafe_allow_html=True)
-
-    # Hotfix 25: TV AUTO changes only what is displayed. It never changes the
-    # tournament scheduler or the order chosen by the existing fairness algorithm.
-    if fmt=="duel1v1":
-        tv_mode="📺 LIVE"
-    else:
-        tv_mode=st.segmented_control(
-            "Tryb TV",["📺 LIVE","🔄 AUTO"],default="📺 LIVE",
-            key=f"tv_display_mode_{tid}",label_visibility="collapsed"
-        ) or "📺 LIVE"
-    prev_key=f"_tv_display_prev_{tid}"
-    start_key=f"_tv_auto_started_{tid}"
-    if tv_mode=="🔄 AUTO" and st.session_state.get(prev_key)!="🔄 AUTO":
-        st.session_state[start_key]=time.time()
-    st.session_state[prev_key]=tv_mode
     auto_slide=0
     if tv_mode=="🔄 AUTO":
-        started=float(st.session_state.get(start_key) or time.time())
+        started=float(st.session_state.get(f"_tv_auto_started_{tid}") or time.time())
         auto_slide=int(max(0,time.time()-started)//30)%4
         labels=["🎮 TERAZ / NASTĘPNY","🗺️ SYTUACJA TURNIEJU","⚽ WYNIKI I STRZELCY","📊 FIFA NIGHT NA ŻYWO"]
         st.caption(f"🔄 TV AUTO • {labels[auto_slide]} • zmiana co około 30 s")
@@ -3447,7 +3467,7 @@ def render_tv_screen(tid:str):
             st.markdown("#### 🕘 Ostatnie wyniki")
             for m in played[-4:]:
                 st.markdown(
-                    f'<div class="mini-card"><span class="match-no">MECZ {int(m.get("match_no") or 0)} • {esc(stage_name(m))}</span><br>'
+                    f'<div class="mini-card"><span class="match-no">MECZ {int(m.get("display_match_no") or m.get("match_no") or 0)} • {esc(stage_name(m))}</span><br>'
                     f'<b>{esc(m.get("home_name"))} — {esc(m.get("away_name"))}</b>'
                     f'<span style="float:right" class="scoreline">{esc(("PODDANIE • "+result_text(m)) if str(m.get("match_status") or "") == "forfeit" else result_text(m))}</span></div>',
                     unsafe_allow_html=True
@@ -3497,23 +3517,28 @@ def render_tv_screen(tid:str):
     st.markdown(f"<div style='text-align:center;font-weight:900;color:#22c55e;letter-spacing:.08em;margin-bottom:.35rem'>▶️ TERAZ</div>",unsafe_allow_html=True)
     if not int(t.get("is_test") or 0):
         render_live_milestone_alerts(tid,compact=True)
-    st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
+    display_by_no={int(x.get("match_no") or 0):int(x.get("display_match_no") or x.get("match_no") or 0) for x in schedule}
+    cur_display_no=display_by_no.get(int(cur.get("match_no") or 0),int(cur.get("match_no") or 0))
+    st.markdown(f'<div class="match-no">MECZ {cur_display_no}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     stake_card=_match_stake_card(fmt,cur)
     if stake_card:st.markdown(stake_card,unsafe_allow_html=True)
     st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("home_team"),82)}<div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("away_team"),82)}<div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_banter(cur)
     render_live_form(db.match_context(cur["home_player_id"],cur["away_player_id"]),cur)
     render_match_absences(cur,absence_targets,compact=True)
-    # Kolejne gotowe spotkania w faktycznej kolejności LIVE.
-    later=[m for m in ready if int(m.get("match_no") or 0)!=int(cur.get("match_no") or 0)]
-    if later:
-        nxt=later[0]
+    # NEXT and schedule use one scheduler source. GROUP/LEAGUE use the post-result
+    # projection; knockout keeps the ordinary ready match because the winner can unlock
+    # a pairing that cannot be known before the current score exists.
+    nxt=db.visible_next_match_from(b.get("matches") or [],int(cur.get("match_no") or 0),extra)
+    if nxt:
         st.markdown("### ⏭️ Następny mecz")
         st.markdown(f'<div class="mini-card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("home_team"),48)}<b>{esc(nxt.get("home_name"))}</b><span class="team-small">{esc(nxt.get("home_team"))}</span></div><div style="color:#64748b;font-weight:900">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("away_team"),48)}<b>{esc(nxt.get("away_name"))}</b><span class="team-small">{esc(nxt.get("away_team"))}</span></div></div></div>',unsafe_allow_html=True)
         render_match_absences(nxt,absence_targets,compact=True)
-        if len(later)>1:
-            st.caption(f"Potem: {later[1].get('home_name')} vs {later[1].get('away_name')}")
-            render_match_absences(later[1],absence_targets,compact=True)
+        nxt_no=int(nxt.get("match_no") or 0)
+        tail=[m for m in ready if int(m.get("match_no") or 0) not in {int(cur.get("match_no") or 0),nxt_no}]
+        if tail:
+            st.caption(f"Potem: {tail[0].get('home_name')} vs {tail[0].get('away_name')}")
+            render_match_absences(tail[0],absence_targets,compact=True)
     else:
         st.caption("Kolejny mecz zostanie ustalony po tym spotkaniu.")
     scorers=db.tournament_live_scorers(tid,3)

@@ -266,6 +266,7 @@ def stage_label(match: dict[str, Any]) -> str:
 def clean_match(match: dict[str, Any]) -> dict[str, Any]:
     return {
         "match_no": int(match.get("match_no") or 0),
+        "display_match_no": int(match.get("display_match_no") or match.get("match_no") or 0),
         "stage": match.get("stage"),
         "stage_label": stage_label(match),
         "group_name": match.get("group_name"),
@@ -1554,15 +1555,9 @@ def live_payload() -> dict[str, Any]:
         except Exception: current_context = None
     current_no = int(current_raw.get("match_no") or 0) if current_raw else 0
     if current_raw:
-        # In fixed-pairing stages the smart scheduler can change its preference as soon as
-        # the current result is saved, because those two players become the most-recently
-        # used pair.  Show the match the scheduler will actually choose *after* this game,
-        # not merely the second item in the pre-result ordering.
-        stage=str(current_raw.get("stage") or "").upper()
-        if stage in {"GROUP","LEAGUE"}:
-            next_raw = db.projected_next_match_from(matches, current_no, extra)
-        else:
-            next_raw = db.next_ready_match_from(matches, current_no, extra)
+        # One public NEXT source for API + Streamlit. GROUP/LEAGUE use a post-result
+        # scheduler projection; knockout keeps the next already-ready pairing.
+        next_raw = db.visible_next_match_from(matches, current_no, extra)
     else:
         next_raw = None
     group_tiebreak = {"required": False}
@@ -1588,11 +1583,21 @@ def live_payload() -> dict[str, Any]:
     try: absences=db.active_absences(tid)
     except Exception: absences=[]
     special=_special_event_payload(tid,fmt) if str(tournament.get("status"))=="active" else None
+    display_by_no={int(m.get("match_no") or 0):int(m.get("display_match_no") or m.get("match_no") or 0) for m in schedule_raw}
+    if current_raw:
+        current_raw=dict(current_raw,display_match_no=display_by_no.get(current_no,current_no))
+    if next_raw:
+        next_no=int(next_raw.get("match_no") or 0)
+        next_raw=dict(next_raw,display_match_no=display_by_no.get(next_no,next_no))
     current_clean=clean_match(current_raw) if current_raw else None
     if current_clean is not None: current_clean["group_tiebreak"]=group_tiebreak
+    def display_route(text):
+        return re.sub(r"\bM(\d+)\b",lambda mm:f"M{display_by_no.get(int(mm.group(1)),int(mm.group(1)))}",str(text or ""))
     schedule_clean=[]
     for raw in schedule_raw:
         item=clean_match(raw)
+        item["home_source_display"]=display_route(item.get("home_source_display")) or item.get("home_source_display")
+        item["away_source_display"]=display_route(item.get("away_source_display")) or item.get("away_source_display")
         if int(item.get("match_no") or 0)==current_no:
             item["group_tiebreak"]=group_tiebreak
         schedule_clean.append(item)
