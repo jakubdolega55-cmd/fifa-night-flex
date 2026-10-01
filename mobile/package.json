@@ -4,14 +4,15 @@
   "private": true,
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
+    "start": "npm run vendor:teams && expo start",
+    "android": "npm run vendor:teams && expo start --android",
     "check": "tsc --noEmit",
-    "build:apk": "eas build --platform android --profile preview",
-    "web": "expo start --web",
-    "build:web": "expo export --platform web && node scripts/pwa-postbuild.mjs && node scripts/pwa-verify.mjs",
+    "build:apk": "npm run vendor:teams && eas build --platform android --profile preview",
+    "web": "npm run vendor:teams && expo start --web",
+    "build:web": "npm run vendor:teams && expo export --platform web && node scripts/pwa-postbuild.mjs && node scripts/pwa-verify.mjs",
     "check:web": "tsc --noEmit",
-    "verify:web": "node scripts/pwa-verify.mjs"
+    "verify:web": "node scripts/pwa-verify.mjs",
+    "vendor:teams": "node scripts/vendor-team-crests.mjs"
   },
   "dependencies": {
     "expo": "~57.0.20",
