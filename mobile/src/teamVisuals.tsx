@@ -14,12 +14,17 @@ const CLUBS:Record<string,[string,string]>={
  'napoli':['italy','napoli'],'chelsea':['england','chelsea'],'tottenham':['england','tottenham'],'tottenham hotspur':['england','tottenham'],
  'ac milan':['italy','milan'],'milan':['italy','milan'],'bayer leverkusen':['germany','bayer-leverkusen'],
 };
-const ENGLAND_FLAG='\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}';
-const FLAGS:Record<string,string>={
- 'hiszpania':'🇪🇸','spain':'🇪🇸','anglia':ENGLAND_FLAG,'england':ENGLAND_FLAG,'brazylia':'🇧🇷','brazil':'🇧🇷','niemcy':'🇩🇪','germany':'🇩🇪','portugalia':'🇵🇹','portugal':'🇵🇹',
- 'włochy':'🇮🇹','wlochy':'🇮🇹','italy':'🇮🇹','argentyna':'🇦🇷','argentina':'🇦🇷','holandia':'🇳🇱','netherlands':'🇳🇱','belgia':'🇧🇪','belgium':'🇧🇪',
- 'chorwacja':'🇭🇷','croatia':'🇭🇷','dania':'🇩🇰','denmark':'🇩🇰','maroko':'🇲🇦','morocco':'🇲🇦','turcja':'🇹🇷','turkey':'🇹🇷','szwajcaria':'🇨🇭','switzerland':'🇨🇭',
+const FLAG_ASSETS={
+ spain:require('../assets/teams/flags/spain.png'),england:require('../assets/teams/flags/england.png'),brazil:require('../assets/teams/flags/brazil.png'),germany:require('../assets/teams/flags/germany.png'),portugal:require('../assets/teams/flags/portugal.png'),
+ italy:require('../assets/teams/flags/italy.png'),argentina:require('../assets/teams/flags/argentina.png'),netherlands:require('../assets/teams/flags/netherlands.png'),belgium:require('../assets/teams/flags/belgium.png'),croatia:require('../assets/teams/flags/croatia.png'),
+ denmark:require('../assets/teams/flags/denmark.png'),morocco:require('../assets/teams/flags/morocco.png'),turkey:require('../assets/teams/flags/turkey.png'),switzerland:require('../assets/teams/flags/switzerland.png'),
+} as const;
+const FLAGS:Record<string,any>={
+ 'hiszpania':FLAG_ASSETS.spain,'spain':FLAG_ASSETS.spain,'anglia':FLAG_ASSETS.england,'england':FLAG_ASSETS.england,'brazylia':FLAG_ASSETS.brazil,'brazil':FLAG_ASSETS.brazil,'niemcy':FLAG_ASSETS.germany,'germany':FLAG_ASSETS.germany,'portugalia':FLAG_ASSETS.portugal,'portugal':FLAG_ASSETS.portugal,
+ 'włochy':FLAG_ASSETS.italy,'wlochy':FLAG_ASSETS.italy,'italy':FLAG_ASSETS.italy,'argentyna':FLAG_ASSETS.argentina,'argentina':FLAG_ASSETS.argentina,'holandia':FLAG_ASSETS.netherlands,'netherlands':FLAG_ASSETS.netherlands,'belgia':FLAG_ASSETS.belgium,'belgium':FLAG_ASSETS.belgium,
+ 'chorwacja':FLAG_ASSETS.croatia,'croatia':FLAG_ASSETS.croatia,'dania':FLAG_ASSETS.denmark,'denmark':FLAG_ASSETS.denmark,'maroko':FLAG_ASSETS.morocco,'morocco':FLAG_ASSETS.morocco,'turcja':FLAG_ASSETS.turkey,'turkey':FLAG_ASSETS.turkey,'szwajcaria':FLAG_ASSETS.switzerland,'switzerland':FLAG_ASSETS.switzerland,
 };
+
 const norm=(v:any)=>String(v||'').trim().toLowerCase().replace(/\s+/g,' ');
 export const teamLogoUrl=(team:any)=>{const d=CLUBS[norm(team)];return d?`https://football-logos.cc/logos/${d[0]}/256x256/${d[1]}.png`:null};
 export const teamFlag=(team:any)=>FLAGS[norm(team)]||null;
@@ -27,7 +32,7 @@ const initials=(team:any)=>{const x=String(team||'').replace(/-/g,' ').trim().sp
 
 export function TeamVisual({team,size=52}:{team?:string|null;size?:number}){
  const [failed,setFailed]=useState(false);const flag=teamFlag(team);const url=teamLogoUrl(team);
- if(flag)return <View style={[s.box,{width:size,height:size}]}><Text style={{fontSize:Math.round(size*.65),lineHeight:size}}>{flag}</Text></View>;
+ if(flag)return <View style={[s.box,s.logoShadow,{width:size,height:size}]}><Image accessibilityLabel={`Flaga ${team||''}`} source={flag} resizeMode="contain" style={{width:size,height:size}}/></View>;
  if(url&&!failed)return <View style={[s.box,s.logoShadow,{width:size,height:size}]}><Image accessibilityLabel={`Herb ${team||''}`} source={{uri:url,cache:'force-cache'}} resizeMode="contain" onError={()=>setFailed(true)} style={{width:size,height:size}}/></View>;
  return <View style={[s.fallback,{width:size,height:size,borderRadius:size/2}]}><Text style={[s.fallbackText,{fontSize:Math.max(10,Math.round(size*.23))}]}>{initials(team)}</Text></View>;
 }
