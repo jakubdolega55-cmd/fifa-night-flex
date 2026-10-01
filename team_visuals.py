@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
 import html
+from functools import lru_cache
+from pathlib import Path
 
 # Lightweight remote crest library. Browsers / React Native cache these small images;
 # if a Wild Card has no known mapping, UI falls back to initials instead of failing.
@@ -42,24 +45,35 @@ _CLUBS = {
     'bayer leverkusen': ('germany','bayer-leverkusen'),
 }
 
-_ENGLAND_FLAG = '\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F'
-
 _FLAGS = {
-    'hiszpania':'🇪🇸', 'spain':'🇪🇸',
-    'anglia':_ENGLAND_FLAG, 'england':_ENGLAND_FLAG,
-    'brazylia':'🇧🇷', 'brazil':'🇧🇷',
-    'niemcy':'🇩🇪', 'germany':'🇩🇪',
-    'portugalia':'🇵🇹', 'portugal':'🇵🇹',
-    'włochy':'🇮🇹', 'wlochy':'🇮🇹', 'italy':'🇮🇹',
-    'argentyna':'🇦🇷', 'argentina':'🇦🇷',
-    'holandia':'🇳🇱', 'netherlands':'🇳🇱',
-    'belgia':'🇧🇪', 'belgium':'🇧🇪',
-    'chorwacja':'🇭🇷', 'croatia':'🇭🇷',
-    'dania':'🇩🇰', 'denmark':'🇩🇰',
-    'maroko':'🇲🇦', 'morocco':'🇲🇦',
-    'turcja':'🇹🇷', 'turkey':'🇹🇷',
-    'szwajcaria':'🇨🇭', 'switzerland':'🇨🇭',
+    'hiszpania':'spain', 'spain':'spain',
+    'anglia':'england', 'england':'england',
+    'brazylia':'brazil', 'brazil':'brazil',
+    'niemcy':'germany', 'germany':'germany',
+    'portugalia':'portugal', 'portugal':'portugal',
+    'włochy':'italy', 'wlochy':'italy', 'italy':'italy',
+    'argentyna':'argentina', 'argentina':'argentina',
+    'holandia':'netherlands', 'netherlands':'netherlands',
+    'belgia':'belgium', 'belgium':'belgium',
+    'chorwacja':'croatia', 'croatia':'croatia',
+    'dania':'denmark', 'denmark':'denmark',
+    'maroko':'morocco', 'morocco':'morocco',
+    'turcja':'turkey', 'turkey':'turkey',
+    'szwajcaria':'switzerland', 'switzerland':'switzerland',
 }
+
+_ASSET_ROOT = Path(__file__).resolve().parent / 'assets' / 'teams'
+
+
+@lru_cache(maxsize=64)
+def _png_data_uri(path: str) -> str | None:
+    file_path = Path(path)
+    try:
+        raw = file_path.read_bytes()
+    except OSError:
+        return None
+    return 'data:image/png;base64,' + base64.b64encode(raw).decode('ascii')
+
 
 
 def _norm(value: str | None) -> str:
@@ -68,6 +82,13 @@ def _norm(value: str | None) -> str:
 
 def team_flag(value: str | None) -> str | None:
     return _FLAGS.get(_norm(value))
+
+
+def team_flag_data_uri(value: str | None) -> str | None:
+    slug = team_flag(value)
+    if not slug:
+        return None
+    return _png_data_uri(str(_ASSET_ROOT / 'flags' / f'{slug}.png'))
 
 
 def team_logo_url(value: str | None, size: int = 256) -> str | None:
@@ -89,9 +110,14 @@ def team_initials(value: str | None) -> str:
 
 def team_visual_html(value: str | None, size: int = 64, extra_style: str = '') -> str:
     name=str(value or '')
-    flag=team_flag(name)
-    if flag:
-        return f"<div class='team-flag' style='font-size:{max(28,int(size*.72))}px;line-height:{size}px;{extra_style}'>{flag}</div>"
+    flag_uri=team_flag_data_uri(name)
+    if flag_uri:
+        return (
+            f"<div class='team-flag' style='width:{size}px;height:{size}px;display:grid;place-items:center;{extra_style}'>"
+            f"<img src='{flag_uri}' alt='{html.escape(name)}' title='{html.escape(name)}' "
+            f"style='width:100%;height:100%;object-fit:contain;display:block;filter:drop-shadow(0 4px 7px rgba(0,0,0,.22))'>"
+            f"</div>"
+        )
     url=team_logo_url(name, 256)
     initials=html.escape(team_initials(name))
     if url:
