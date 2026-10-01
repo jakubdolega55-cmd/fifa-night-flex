@@ -28,7 +28,7 @@ installWebCompat();
 
 type RootTab = 'fifa' | 'stats' | 'awards' | 'settings';
 const KEEP_AWAKE_KEY = 'fifa-night-keep-awake-v1';
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.1.3';
 
 function KeepAwakeGate() {
   useKeepAwake('fifa-night-controller');
@@ -60,6 +60,7 @@ function SettingsScreen({
   connectionError,
   onRefresh,
   teamMode,
+  fc27RealBanned,
   onOptionsRefresh,
 }: {
   controller:boolean;
@@ -69,6 +70,7 @@ function SettingsScreen({
   connectionError:string;
   onRefresh:()=>Promise<void>;
   teamMode:string;
+  fc27RealBanned:boolean;
   onOptionsRefresh:()=>Promise<void>;
 }) {
   const [password, setPassword] = useState('');
@@ -108,6 +110,16 @@ function SettingsScreen({
     }catch(e:any){Alert.alert('Nie udało się zmienić trybu drużyn',e?.message??String(e))}
     finally{setBusy(false)}
   };
+  const changeRealBan = async (value:boolean) => {
+    if(!controller)return;
+    setBusy(true); setMessage('');
+    try{
+      await api.setFc27RealBan(value);
+      await onOptionsRefresh();
+      setMessage(value?'Real Madryt zbanowany w nowych turniejach FC27. Manchester City wchodzi na koło.':'Real Madryt przywrócony na koło FC27. Manchester City wraca do Wild Cardów.');
+    }catch(e:any){Alert.alert('Nie udało się zmienić bana Realu',e?.message??String(e))}
+    finally{setBusy(false)}
+  };
 
   return (
     <ScrollView contentContainerStyle={s.pad} keyboardShouldPersistTaps="handled">
@@ -144,6 +156,17 @@ function SettingsScreen({
           sub={controller?'Zmiana zapisuje się wspólnie dla PWA i Streamlit.':'Włącz sterowanie, aby zmienić tę opcję.'}
           value={teamMode==='national'}
           onChange={changeTeamMode}
+        />
+      </Card>
+
+      <Card>
+        <Text style={s.cardTitle}>🚫 Real Madryt — EA FC 27</Text>
+        <Muted>Opcjonalny ban dla nowych turniejów klubowych FC27. Po włączeniu Manchester City wchodzi na koło za Real, a Real nie może zostać wybrany jako Wild Card. Handicap „mocnej drużyny” zostaje tylko na PSG.</Muted>
+        <ToggleRow
+          label="Zbanuj Real Madryt w EA FC 27"
+          sub={controller?'Zmiana jest wspólna dla Streamlit, PWA i APK. Już rozpoczęte turnieje zachowują swoją pulę.':'Włącz sterowanie hasłem, aby zmienić tę opcję.'}
+          value={fc27RealBanned}
+          onChange={changeRealBan}
         />
       </Card>
 
@@ -270,7 +293,7 @@ export default function App() {
         ) : tab === 'awards' ? (
           <AwardsScreen controller={controller}/>
         ) : (
-          <SettingsScreen controller={controller} setController={setController} keepAwake={keepAwake} setKeepAwake={setKeepAwake} connectionError={connectionError} onRefresh={refresh} teamMode={String(options?.team_mode||'clubs')} onOptionsRefresh={loadOptions}/>
+          <SettingsScreen controller={controller} setController={setController} keepAwake={keepAwake} setKeepAwake={setKeepAwake} connectionError={connectionError} onRefresh={refresh} teamMode={String(options?.team_mode||'clubs')} fc27RealBanned={Boolean(options?.fc27_real_banned)} onOptionsRefresh={loadOptions}/>
         )}
         {busy ? <View style={s.busyOverlay}><View style={s.busyBox}><ActivityIndicator color={colors.green}/><Text style={s.busyText}>Chwila…</Text></View></View> : null}
       </View>
