@@ -13,8 +13,15 @@ assert '<MatchCard m={t.next_match} showTeamVisuals/>' in mobile
 assert '● FORMA LIVE' in mobile and 'formWin' in mobile and 'formLoss' in mobile and 'formDraw' in mobile
 assert "v==='D'||v==='R'?'R'" in mobile and "v==='L'||v==='P'?'P'" in mobile
 assert 'TeamVisual team={result}' in mobile
-assert "'hiszpania':'🇪🇸'" in visual and "'brazylia':'🇧🇷'" in visual
-assert 'ENGLAND_FLAG' in visual and '_ENGLAND_FLAG' in pyvisual
+assert "spain:require('../assets/teams/flags/spain.png')" in visual
+assert "england:require('../assets/teams/flags/england.png')" in visual
+assert "'hiszpania':FLAG_ASSETS.spain" in visual and "'brazylia':FLAG_ASSETS.brazil" in visual
+assert 'team_flag_data_uri' in pyvisual and "'assets' / 'teams'" in pyvisual
+for slug in ['spain','england','brazil','germany','portugal','italy','argentina','netherlands','belgium','croatia','denmark','morocco','turkey','switzerland']:
+    a=ROOT/'assets/teams/flags'/f'{slug}.png'
+    m=ROOT/'mobile/assets/teams/flags'/f'{slug}.png'
+    assert a.exists() and m.exists(), slug
+    assert a.read_bytes().startswith(b'\x89PNG\r\n\x1a\n') and m.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'), slug
 assert "'lombardia fc':['italy','inter']" in visual and "'atlético de madrid':['spain','atletico-madrid']" in visual
 assert 'football-logos.cc/logos/' in visual and 'football-logos.cc/logos/' in pyvisual
 assert 'render_live_form' in app and 'team_visual_html(cur.get("home_team"),64)' in app
