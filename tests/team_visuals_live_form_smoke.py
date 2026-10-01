@@ -10,12 +10,17 @@ appjson=json.loads((ROOT/'mobile/app.json').read_text(encoding='utf-8'))
 assert 'showTeamVisuals' in mobile
 assert '<MatchCard m={t.current_match} current showTeamVisuals/>' in mobile
 assert '<MatchCard m={t.next_match} showTeamVisuals/>' in mobile
-assert '● LIVE FORM' in mobile and 'formWin' in mobile and 'formLoss' in mobile and 'formDraw' in mobile
+assert '● FORMA LIVE' in mobile and 'formWin' in mobile and 'formLoss' in mobile and 'formDraw' in mobile
 assert "v==='D'||v==='R'?'R'" in mobile and "v==='L'||v==='P'?'P'" in mobile
 assert 'TeamVisual team={result}' in mobile
 assert "'hiszpania':'🇪🇸'" in visual and "'brazylia':'🇧🇷'" in visual
+assert 'ENGLAND_FLAG' in visual and '_ENGLAND_FLAG' in pyvisual
+assert "'lombardia fc':['italy','inter']" in visual and "'atlético de madrid':['spain','atletico-madrid']" in visual
 assert 'football-logos.cc/logos/' in visual and 'football-logos.cc/logos/' in pyvisual
 assert 'render_live_form' in app and 'team_visual_html(cur.get("home_team"),64)' in app
 assert "<div class='crest'>{team_visual_html(display_result,72)}</div>" in ui
 assert appjson['expo']['android']['versionCode']==14
 print('team_visuals_live_form_smoke: PASS')
+
+assert 'Array(Math.max(0,5-xs.length)).fill(null)' in mobile
+assert "recent=[None]*max(0,5-len(recent))+recent" in app
