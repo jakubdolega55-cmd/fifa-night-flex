@@ -1,14 +1,17 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "FIFA Night Mobile 1.0 - final APK checks"
-Write-Host "1/4 npm install"
+Write-Host "FIFA Night Mobile 1.1.3 / V14 - APK checks"
+Write-Host "1/5 npm install"
 npm.cmd install
 
-Write-Host "2/4 TypeScript"
+Write-Host "2/5 Lokalne herby"
+npm.cmd run vendor:teams
+
+Write-Host "3/5 TypeScript"
 npm.cmd run check
 
-Write-Host "3/4 Expo Doctor"
+Write-Host "4/5 Expo Doctor"
 npx.cmd expo-doctor
 
-Write-Host "4/4 EAS preview APK"
+Write-Host "5/5 EAS preview APK"
 npx.cmd eas-cli@latest build --platform android --profile preview
