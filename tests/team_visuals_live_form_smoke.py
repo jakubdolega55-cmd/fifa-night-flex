@@ -7,7 +7,6 @@ mobile=(ROOT/'mobile/src/FifaScreen.tsx').read_text(encoding='utf-8')
 visual=(ROOT/'mobile/src/teamVisuals.tsx').read_text(encoding='utf-8')
 pyvisual=(ROOT/'team_visuals.py').read_text(encoding='utf-8')
 appjson=json.loads((ROOT/'mobile/app.json').read_text(encoding='utf-8'))
-manifest=json.loads((ROOT/'team_crest_sources.json').read_text(encoding='utf-8'))
 package=json.loads((ROOT/'mobile/package.json').read_text(encoding='utf-8'))
 assert 'showTeamVisuals' in mobile
 assert '<MatchCard m={t.current_match} current showTeamVisuals/>' in mobile
@@ -34,13 +33,18 @@ assert "require('../assets/teams/clubs/bayer-leverkusen.png')" in visual
 assert 'football-logos.cc' not in visual and 'footylogos.com' not in visual
 assert 'football-logos.cc' not in pyvisual and 'footylogos.com' not in pyvisual
 assert "'lombardia fc':'inter'" in visual and "'atlético de madrid':'atletico-madrid'" in visual
-# Vendor step is wired before mobile starts/builds; source URLs live only in vendor tooling.
-assert len(manifest)==16
-assert (ROOT/'vendor_team_crests.py').exists()
-assert (ROOT/'mobile/scripts/vendor-team-crests.mjs').exists()
-assert package['scripts']['vendor:teams']=='node scripts/vendor-team-crests.mjs'
+# Club crests are physically bundled; normal start/build paths only verify local files.
+expected_clubs=['real-madrid','paris-saint-germain','bayern-munchen','barcelona','arsenal','manchester-city','liverpool','atletico-madrid','inter','manchester-united','borussia-dortmund','tottenham','milan','bayer-leverkusen']
+for slug in expected_clubs:
+    for base in (ROOT/'assets/teams/clubs',ROOT/'mobile/assets/teams/clubs'):
+        f=base/f'{slug}.png'
+        assert f.exists() and f.read_bytes().startswith(b'\x89PNG\r\n\x1a\n'), (base,slug)
+assert not (ROOT/'vendor_team_crests.py').exists()
+assert not (ROOT/'mobile/scripts/vendor-team-crests.mjs').exists()
+assert not (ROOT/'team_crest_sources.json').exists()
+assert package['scripts']['verify:teams']=='node scripts/verify-team-assets.mjs'
 for script in ('start','android','build:apk','web','build:web'):
-    assert 'vendor:teams' in package['scripts'][script], script
+    assert 'verify:teams' in package['scripts'][script], (script,package['scripts'][script])
 assert 'render_live_form' in app and 'team_visual_html(cur.get("home_team"),64)' in app
 assert "<div class='crest'>{team_visual_html(display_result,72)}</div>" in ui
 assert appjson['expo']['android']['versionCode']==14
