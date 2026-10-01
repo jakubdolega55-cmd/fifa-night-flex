@@ -1,15 +1,13 @@
-# GitHub patch — FC27 draw weight tuning
+Replace/add these files in the repository root, preserving paths:
+- app.py
+- ui.py
+- team_visuals.py (new)
+- mobile/app.json
+- mobile/src/FifaScreen.tsx
+- mobile/src/teamVisuals.tsx (new)
+- tests/team_visuals_live_form_smoke.py (new)
+- tests/fc27_real_ban_mobile_settings_smoke.py
+- tests/mobile_formdata_sdk57_source_smoke.py
+- CHECKPOINT_2026-10-01_TEAM_VISUALS_LIVE_FORM.md
 
-Replace `logic.py` in the repository.
-
-Optional test updates are included under `tests/`.
-
-New values:
-- Wild Card: champion 1.70, runner-up 1.45, third 1.15.
-- FC27 clubs PSG/Real: champion x0.40, runner-up x0.60.
-- Repeat-team penalty remains x0.35.
-- Live team rating unchanged.
-- Real-ban mode: City remains neutral; only PSG is treated as the strong club.
-- National mode Spain/Brazil remains x0.50 / x0.70.
-
-No APK rebuild is required.
+Android versionCode = 14, so build a new APK.

@@ -19,6 +19,7 @@ from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, 
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
                 render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw,
                 render_awards_gala_tv)
+from team_visuals import team_visual_html
 
 
 
@@ -1223,15 +1224,31 @@ def render_match_banter(m:dict) -> None:
         unsafe_allow_html=True,
     )
 
+def _form_badges_html(values):
+    out=[]
+    for raw in list(values or [])[-5:]:
+        value=str(raw or "").upper()
+        label="W" if value=="W" else ("R" if value in {"D","R"} else ("P" if value in {"L","P"} else "–"))
+        bg,border=("#123c2c","#22c55e") if label=="W" else (("#44370d","#eab308") if label=="R" else (("#451b20","#ef4444") if label=="P" else ("#17283a","#3a5065")))
+        out.append(f"<span style='display:inline-grid;place-items:center;width:32px;height:32px;border-radius:9px;background:{bg};border:1px solid {border};color:#f8fafc;font-weight:900;margin-left:5px'>{label}</span>")
+    return "".join(out) or "<span style='color:#64748b'>—</span>"
+
+def render_live_form(ctx,m):
+    st.markdown(
+        f"<div class='mini-card' style='border-color:#245b4d;background:linear-gradient(145deg,#091b1a,#0c2823);padding:14px 16px'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px'><b style='color:#73e7b7;letter-spacing:.12em'>● LIVE FORM</b><span class='match-no'>OSTATNIE 5</span></div>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0'><b>{esc(m.get('home_name'))}</b><div>{_form_badges_html(ctx.get('home_form'))}</div></div>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0'><b>{esc(m.get('away_name'))}</b><div>{_form_badges_html(ctx.get('away_form'))}</div></div>"
+        f"</div>", unsafe_allow_html=True)
+
 def render_match_context(m):
     ctx=db.match_context(m["home_player_id"],m["away_player_id"])
+    render_live_form(ctx,m)
     tags=[]
     if ctx.get("rivalry"):tags.append("🔥 RIVALRY")
     if ctx.get("derby"):tags.append("⚔️ DERBY")
     if tags:st.markdown("**"+" · ".join(tags)+"**")
-    hf=" ".join(ctx.get("home_form") or []) or "—"; af=" ".join(ctx.get("away_form") or []) or "—"
     st.caption(f"H2H: {m['home_name']} {ctx['home_wins']}–{ctx['away_wins']} {m['away_name']} • remisy {ctx['draws']} • mecze {ctx['meetings']}")
-    st.caption(f"Forma (ostatnie 5): {m['home_name']} {hf} | {m['away_name']} {af}")
     last=ctx.get("last")
     if last:st.caption(f"Ostatnio: {last.get('home_name')} {last.get('home_score')}:{last.get('away_score')} {last.get('away_name')}")
 
@@ -1986,7 +2003,7 @@ def live(tid:str):
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{total} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     if fmt in DE_FORMATS and cur.get("stage")=="FINAL":
         st.markdown(f"<div class='winner' style='padding:18px;margin:10px 0 16px'><div class='match-no'>🏆 BONUS WINNERS BRACKET</div><div class='player-big' style='font-size:2rem'>{esc(cur['home_name'])} zaczyna finał 1:0</div><div class='team-small'>Jeden finał. Bez resetu. Bonusowy gol nie ma strzelca.</div></div>",unsafe_allow_html=True)
-    st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:16px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px">{team_visual_html(cur.get("home_team"),64)}<div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.5rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px">{team_visual_html(cur.get("away_team"),64)}<div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_banter(cur)
     render_match_absences(cur,absence_targets)
     render_match_context(cur)
@@ -2024,7 +2041,8 @@ def live(tid:str):
     score_form(tid,cur,fmt)
     nxt=db.next_ready_match_from(b["matches"],int(cur["match_no"]),meta.get("extra") or {})
     if nxt:
-        st.caption(f"Następny: **{nxt['home_name']} vs {nxt['away_name']}**")
+        st.markdown("### ⏭️ Następny mecz")
+        st.markdown(f'<div class="mini-card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("home_team"),44)}<b>{esc(nxt.get("home_name"))}</b><span class="team-small">{esc(nxt.get("home_team"))}</span></div><div style="color:#64748b;font-weight:900">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("away_team"),44)}<b>{esc(nxt.get("away_name"))}</b><span class="team-small">{esc(nxt.get("away_team"))}</span></div></div></div>',unsafe_allow_html=True)
         render_match_absences(nxt,absence_targets,compact=True)
     if st.button("↩️ Cofnij ostatni wynik / poddanie / nierozgrany mecz",use_container_width=True,key=f"undo_{tid}_{cur['match_no']}"):
         st.session_state.pop("pending_ko",None);db.undo_last_result(tid);rf()
@@ -3480,14 +3498,17 @@ def render_tv_screen(tid:str):
     st.markdown(f'<div class="match-no">MECZ {cur["match_no"]}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     stake_card=_match_stake_card(fmt,cur)
     if stake_card:st.markdown(stake_card,unsafe_allow_html=True)
-    st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1"><div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1"><div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("home_team"),82)}<div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("away_team"),82)}<div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_banter(cur)
+    render_live_form(db.match_context(cur["home_player_id"],cur["away_player_id"]),cur)
     render_match_absences(cur,absence_targets,compact=True)
     # Kolejne gotowe spotkania w faktycznej kolejności LIVE.
     later=[m for m in ready if int(m.get("match_no") or 0)!=int(cur.get("match_no") or 0)]
     if later:
-        st.markdown(f"### ⏭️ Następny: **{esc(later[0].get('home_name'))} vs {esc(later[0].get('away_name'))}**")
-        render_match_absences(later[0],absence_targets,compact=True)
+        nxt=later[0]
+        st.markdown("### ⏭️ Następny mecz")
+        st.markdown(f'<div class="mini-card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("home_team"),48)}<b>{esc(nxt.get("home_name"))}</b><span class="team-small">{esc(nxt.get("home_team"))}</span></div><div style="color:#64748b;font-weight:900">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("away_team"),48)}<b>{esc(nxt.get("away_name"))}</b><span class="team-small">{esc(nxt.get("away_team"))}</span></div></div></div>',unsafe_allow_html=True)
+        render_match_absences(nxt,absence_targets,compact=True)
         if len(later)>1:
             st.caption(f"Potem: {later[1].get('home_name')} vs {later[1].get('away_name')}")
             render_match_absences(later[1],absence_targets,compact=True)
