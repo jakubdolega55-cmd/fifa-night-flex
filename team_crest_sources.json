@@ -1,0 +1,18 @@
+{
+  "real-madrid": {"country":"spain","remote":"real-madrid","footy":"real-madrid"},
+  "paris-saint-germain": {"country":"france","remote":"paris-saint-germain","footy":"paris-saint-germain"},
+  "bayern-munchen": {"country":"germany","remote":"bayern-munchen","footy":"bayern-munich"},
+  "barcelona": {"country":"spain","remote":"barcelona","footy":"barcelona"},
+  "arsenal": {"country":"england","remote":"arsenal","footy":"arsenal"},
+  "manchester-city": {"country":"england","remote":"manchester-city","footy":"manchester-city"},
+  "liverpool": {"country":"england","remote":"liverpool","footy":"liverpool-fc"},
+  "atletico-madrid": {"country":"spain","remote":"atletico-madrid","footy":"atletico-madrid"},
+  "inter": {"country":"italy","remote":"inter","footy":"inter-milan"},
+  "manchester-united": {"country":"england","remote":"manchester-united","footy":"manchester-united"},
+  "borussia-dortmund": {"country":"germany","remote":"borussia-dortmund","footy":"borussia-dortmund"},
+  "napoli": {"country":"italy","remote":"napoli","footy":"napoli"},
+  "chelsea": {"country":"england","remote":"chelsea","footy":"chelsea"},
+  "tottenham": {"country":"england","remote":"tottenham","footy":"tottenham-hotspur"},
+  "milan": {"country":"italy","remote":"milan","footy":"ac-milan"},
+  "bayer-leverkusen": {"country":"germany","remote":"bayer-leverkusen","footy":"bayer-leverkusen"}
+}

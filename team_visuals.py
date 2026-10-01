@@ -5,44 +5,44 @@ import html
 from functools import lru_cache
 from pathlib import Path
 
-# Lightweight remote crest library. Browsers / React Native cache these small images;
-# if a Wild Card has no known mapping, UI falls back to initials instead of failing.
+# Runtime visuals are fully local. Club crests are vendored into assets/teams/clubs
+# before deploy/build. Unknown/manual Wild Cards fall back to initials.
 _CLUBS = {
-    'real madryt': ('spain','real-madrid'),
-    'real madrid': ('spain','real-madrid'),
-    'psg': ('france','paris-saint-germain'),
-    'paris saint-germain': ('france','paris-saint-germain'),
-    'bayern monachium': ('germany','bayern-munchen'),
-    'bayern munich': ('germany','bayern-munchen'),
-    'bayern münchen': ('germany','bayern-munchen'),
-    'fc barcelona': ('spain','barcelona'),
-    'barcelona': ('spain','barcelona'),
-    'arsenal': ('england','arsenal'),
-    'manchester city': ('england','manchester-city'),
-    'liverpool': ('england','liverpool'),
-    'liverpool fc': ('england','liverpool'),
-    'atletico': ('spain','atletico-madrid'),
-    'atletico madrid': ('spain','atletico-madrid'),
-    'atlético': ('spain','atletico-madrid'),
-    'atlético madrid': ('spain','atletico-madrid'),
-    'atlético de madrid': ('spain','atletico-madrid'),
-    'inter': ('italy','inter'),
-    'inter milan': ('italy','inter'),
-    'lombardia fc': ('italy','inter'),
-    'man united': ('england','manchester-united'),
-    'man utd': ('england','manchester-united'),
-    'manchester utd': ('england','manchester-united'),
-    'manchester united': ('england','manchester-united'),
-    'bvb': ('germany','borussia-dortmund'),
-    'bvb 09': ('germany','borussia-dortmund'),
-    'borussia dortmund': ('germany','borussia-dortmund'),
-    'napoli': ('italy','napoli'),
-    'chelsea': ('england','chelsea'),
-    'tottenham': ('england','tottenham'),
-    'tottenham hotspur': ('england','tottenham'),
-    'ac milan': ('italy','milan'),
-    'milan': ('italy','milan'),
-    'bayer leverkusen': ('germany','bayer-leverkusen'),
+    'real madryt': 'real-madrid',
+    'real madrid': 'real-madrid',
+    'psg': 'paris-saint-germain',
+    'paris saint-germain': 'paris-saint-germain',
+    'bayern monachium': 'bayern-munchen',
+    'bayern munich': 'bayern-munchen',
+    'bayern münchen': 'bayern-munchen',
+    'fc barcelona': 'barcelona',
+    'barcelona': 'barcelona',
+    'arsenal': 'arsenal',
+    'manchester city': 'manchester-city',
+    'liverpool': 'liverpool',
+    'liverpool fc': 'liverpool',
+    'atletico': 'atletico-madrid',
+    'atletico madrid': 'atletico-madrid',
+    'atlético': 'atletico-madrid',
+    'atlético madrid': 'atletico-madrid',
+    'atlético de madrid': 'atletico-madrid',
+    'inter': 'inter',
+    'inter milan': 'inter',
+    'lombardia fc': 'inter',
+    'man united': 'manchester-united',
+    'man utd': 'manchester-united',
+    'manchester utd': 'manchester-united',
+    'manchester united': 'manchester-united',
+    'bvb': 'borussia-dortmund',
+    'bvb 09': 'borussia-dortmund',
+    'borussia dortmund': 'borussia-dortmund',
+    'napoli': 'napoli',
+    'chelsea': 'chelsea',
+    'tottenham': 'tottenham',
+    'tottenham hotspur': 'tottenham',
+    'ac milan': 'milan',
+    'milan': 'milan',
+    'bayer leverkusen': 'bayer-leverkusen',
 }
 
 _FLAGS = {
@@ -65,15 +65,16 @@ _FLAGS = {
 _ASSET_ROOT = Path(__file__).resolve().parent / 'assets' / 'teams'
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=128)
 def _png_data_uri(path: str) -> str | None:
     file_path = Path(path)
     try:
         raw = file_path.read_bytes()
     except OSError:
         return None
+    if not raw.startswith(b'\x89PNG\r\n\x1a\n'):
+        return None
     return 'data:image/png;base64,' + base64.b64encode(raw).decode('ascii')
-
 
 
 def _norm(value: str | None) -> str:
@@ -91,12 +92,15 @@ def team_flag_data_uri(value: str | None) -> str | None:
     return _png_data_uri(str(_ASSET_ROOT / 'flags' / f'{slug}.png'))
 
 
-def team_logo_url(value: str | None, size: int = 256) -> str | None:
-    data = _CLUBS.get(_norm(value))
-    if not data:
+def team_logo_slug(value: str | None) -> str | None:
+    return _CLUBS.get(_norm(value))
+
+
+def team_logo_data_uri(value: str | None) -> str | None:
+    slug = team_logo_slug(value)
+    if not slug:
         return None
-    country, slug = data
-    return f'https://football-logos.cc/logos/{country}/{int(size)}x{int(size)}/{slug}.png'
+    return _png_data_uri(str(_ASSET_ROOT / 'clubs' / f'{slug}.png'))
 
 
 def team_initials(value: str | None) -> str:
@@ -118,15 +122,13 @@ def team_visual_html(value: str | None, size: int = 64, extra_style: str = '') -
             f"style='width:100%;height:100%;object-fit:contain;display:block;filter:drop-shadow(0 4px 7px rgba(0,0,0,.22))'>"
             f"</div>"
         )
-    url=team_logo_url(name, 256)
+    logo_uri=team_logo_data_uri(name)
     initials=html.escape(team_initials(name))
-    if url:
+    if logo_uri:
         return (
             f"<div class='team-visual' style='width:{size}px;height:{size}px;{extra_style}'>"
-            f"<img src='{html.escape(url)}' alt='{html.escape(name)}' title='{html.escape(name)}' loading='eager' decoding='async' "
-            f"style='width:100%;height:100%;object-fit:contain;display:block;filter:drop-shadow(0 4px 7px rgba(0,0,0,.28))' "
-            f"onerror=\"this.style.display='none';this.nextElementSibling.style.display='grid'\">"
-            f"<span style='display:none;width:100%;height:100%;place-items:center;border-radius:50%;background:#14263a;color:#dbeafe;font-weight:900;font-size:{max(11,size//4)}px'>{initials}</span>"
+            f"<img src='{logo_uri}' alt='{html.escape(name)}' title='{html.escape(name)}' "
+            f"style='width:100%;height:100%;object-fit:contain;display:block;filter:drop-shadow(0 4px 7px rgba(0,0,0,.28))'>"
             f"</div>"
         )
     return (

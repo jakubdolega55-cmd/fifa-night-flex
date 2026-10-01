@@ -3,6 +3,8 @@ setlocal
 cd /d "%~dp0mobile"
 echo === FIFA NIGHT 1.1.3 - APK BUILD ===
 call npm.cmd install || goto :err
+echo Pobieranie lokalnych herbow...
+call npm.cmd run vendor:teams || goto :err
 call npm.cmd run check || goto :err
 call npx.cmd expo-doctor || goto :err
 call npx.cmd eas-cli@latest whoami || goto :login
