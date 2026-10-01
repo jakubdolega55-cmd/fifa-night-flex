@@ -1,0 +1,6 @@
+Po wdrożeniu tego patcha usuń z repo, jeśli nadal istnieją:
+- vendor_team_crests.py
+- team_crest_sources.json
+- mobile/scripts/vendor-team-crests.mjs
+
+Nie są już potrzebne. Build korzysta z fizycznie spakowanych PNG i tylko je weryfikuje.

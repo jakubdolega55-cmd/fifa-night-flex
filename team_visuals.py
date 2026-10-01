@@ -36,8 +36,6 @@ _CLUBS = {
     'bvb': 'borussia-dortmund',
     'bvb 09': 'borussia-dortmund',
     'borussia dortmund': 'borussia-dortmund',
-    'napoli': 'napoli',
-    'chelsea': 'chelsea',
     'tottenham': 'tottenham',
     'tottenham hotspur': 'tottenham',
     'ac milan': 'milan',
