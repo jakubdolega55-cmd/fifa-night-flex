@@ -40,7 +40,10 @@ FC27_NATIONAL_WILDCARD_SUGGESTIONS = [
 ]
 
 # Strong-team soft handicap for previous champion/finalist.
-TOP_FINISHER_STRONG_TEAM_MULTIPLIER = {1: 0.50, 2: 0.70}
+# FC27 clubs use a slightly stronger handicap for PSG/Real; national teams
+# intentionally keep their previous Spain/Brazil values.
+FC27_CLUB_STRONG_TEAM_MULTIPLIER = {1: 0.40, 2: 0.60}
+FC27_NATIONAL_STRONG_TEAM_MULTIPLIER = {1: 0.50, 2: 0.70}
 
 # Backwards-compatible aliases used by existing screens. FC26 clubs remain legacy/default.
 FIXED_TEAMS = FC26_FIXED_TEAMS
@@ -150,7 +153,12 @@ def strong_team_multiplier(team: str, placement: int | None, game_version: str, 
         strong={"hiszpania","brazylia"}
     if key not in strong:
         return 1.0
-    return TOP_FINISHER_STRONG_TEAM_MULTIPLIER.get(int(placement or 0),1.0)
+    multipliers = (
+        FC27_NATIONAL_STRONG_TEAM_MULTIPLIER
+        if mode == "national"
+        else FC27_CLUB_STRONG_TEAM_MULTIPLIER
+    )
+    return multipliers.get(int(placement or 0),1.0)
 
 
 FORMAT_LABELS = {
@@ -265,8 +273,8 @@ def weighted_draft_order(player_ids: list[str], placement_by_player_id: dict[str
 
 
 def wildcard_assignment_weights(placement_by_player_id: dict[str,int] | None) -> dict[str,float]:
-    """Soft handicap for Wild Card assignment: 1st=1.55, 2nd=1.35, 3rd=1.15, others=1.00."""
-    rank_weight={1:1.55,2:1.35,3:1.15}
+    """Soft handicap for Wild Card assignment: 1st=1.70, 2nd=1.45, 3rd=1.15, others=1.00."""
+    rank_weight={1:1.70,2:1.45,3:1.15}
     return {str(pid):rank_weight.get(int(place),1.0) for pid,place in (placement_by_player_id or {}).items()}
 
 
@@ -337,7 +345,7 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
                               game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
     """Assign Wild Card slots softly by prior finish, then fixed clubs intelligently.
 
-    Wild Card: 1st=1.55, 2nd=1.35, 3rd=1.15.
+    Wild Card: 1st=1.70, 2nd=1.45, 3rd=1.15.
     Fixed clubs: live strength is a soft handicap for top finishers and exact previous-team
     repeats are reduced to 35% normal weight. Every valid assignment remains possible.
     """
