@@ -5538,8 +5538,8 @@ class Database:
                 "match":lambda e: str(e.get("event_type") or "") in {"penalty_goal","penalty_miss"},
             },
             "own_goals":{
-                "thresholds":(10,25,50,100),"icon":"↩️","kind":"own_goal",
-                "title":lambda n:f"{n}. zarejestrowany samobój",
+                "thresholds":(1,10,25,50,100),"icon":"↩️","kind":"own_goal",
+                "title":lambda n:"Pierwszy zarejestrowany samobój" if n==1 else f"{n}. zarejestrowany samobój",
                 "match":lambda e: str(e.get("event_type") or "")=="own_goal" and not int(e.get("synthetic_de") or 0),
             },
             "yellow_cards":{
@@ -5548,13 +5548,13 @@ class Database:
                 "match":lambda e: str(e.get("event_type") or "")=="yellow_card",
             },
             "red_cards":{
-                "thresholds":(5,10,25,50),"icon":"🟥","kind":"red_card",
-                "title":lambda n:f"{n}. zarejestrowana czerwona kartka",
+                "thresholds":(1,5,10,25,50),"icon":"🟥","kind":"red_card",
+                "title":lambda n:"Pierwsza zarejestrowana czerwona kartka" if n==1 else f"{n}. zarejestrowana czerwona kartka",
                 "match":lambda e: str(e.get("event_type") or "")=="red_card",
             },
             "extra_time_goals":{
-                "thresholds":(25,50,100,200),"icon":"➕","kind":"extra_time_goal",
-                "title":lambda n:f"{n}. zarejestrowany gol w dogrywce",
+                "thresholds":(1,25,50,100,200),"icon":"➕","kind":"extra_time_goal",
+                "title":lambda n:"Pierwszy zarejestrowany gol w dogrywce" if n==1 else f"{n}. zarejestrowany gol w dogrywce",
                 "match":lambda e: str(e.get("event_type") or "") in {"normal_goal","penalty_goal","own_goal"}
                                   and not int(e.get("synthetic_de") or 0) and int(e.get("minute") or 0)>90,
             },
@@ -5614,10 +5614,10 @@ class Database:
             ("Czyste konta",total_cs,next_25(total_cs)),
             ("Hat-tricki",total_hats,next_25(total_hats)),
             ("Karne w meczu",event_counts["penalties_awarded"],next_target(event_counts["penalties_awarded"],(25,50,100,200))),
-            ("Samobóje",event_counts["own_goals"],next_target(event_counts["own_goals"],(10,25,50,100))),
+            ("Samobóje",event_counts["own_goals"],next_target(event_counts["own_goals"],(1,10,25,50,100))),
             ("Żółte kartki",event_counts["yellow_cards"],next_target(event_counts["yellow_cards"],(25,50,100,250))),
-            ("Czerwone kartki",event_counts["red_cards"],next_target(event_counts["red_cards"],(5,10,25,50))),
-            ("Gole w dogrywce",event_counts["extra_time_goals"],next_target(event_counts["extra_time_goals"],(25,50,100,200))),
+            ("Czerwone kartki",event_counts["red_cards"],next_target(event_counts["red_cards"],(1,5,10,25,50))),
+            ("Gole w dogrywce",event_counts["extra_time_goals"],next_target(event_counts["extra_time_goals"],(1,25,50,100,200))),
         ]
         next_rows=[{"name":n,"current":cur,"target":target,"left":max(0,target-cur) if target else 0} for n,cur,target in counters if target]
         return {"timeline":timeline,"pending_goal_scorers":pending,"next":next_rows,"totals":{
