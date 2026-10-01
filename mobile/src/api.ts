@@ -1,4 +1,6 @@
 import {Platform} from 'react-native';
+import {File as ExpoFile} from 'expo-file-system';
+import {fetch as expoFetch} from 'expo/fetch';
 import {deleteStoredItem,getStoredItem,setStoredItem} from './storage';
 import {LiveResponse, SetupResponse} from './types';
 
@@ -25,7 +27,12 @@ async function jsonRequest<T>(path:string, init:RequestInit={}):Promise<T> {
 async function formRequest<T>(path:string, form:FormData):Promise<T> {
   if (!API_URL) throw new Error('Brak EXPO_PUBLIC_API_URL.');
   const auth = await tokenHeader();
-  const r = await fetch(`${API_URL}${path}`, {method:'POST', headers:auth, body:form});
+  // Expo SDK 57 / RN 0.86 no longer accepts the legacy React Native
+  // FormData part shape { uri, name, type }. Native uploads must use a real
+  // Blob-compatible expo-file-system File and expo/fetch.
+  const r = Platform.OS==='web'
+    ? await fetch(`${API_URL}${path}`, {method:'POST', headers:auth, body:form})
+    : await expoFetch(`${API_URL}${path}`, {method:'POST', headers:auth, body:form});
   let data:any = null;
   try { data = await r.json(); } catch {}
   if (!r.ok) throw new Error(data?.detail ?? `Błąd API (${r.status})`);
@@ -103,7 +110,13 @@ export const api = {
         }
       }
     }else{
-      images.forEach((image,i)=>image?.uri && form.append('images',{uri:image.uri,name:image.fileName||`ea-fc-${i+1}.jpg`,type:image.mimeType||'image/jpeg'} as any));
+      // Do not append the old {uri,name,type} object here. With Expo SDK 57
+      // it throws "Unsupported FormDataPart implementation" on Android/iOS.
+      // ExpoFile implements Blob and is the supported native multipart part.
+      for(const image of images){
+        if(!image?.uri)continue;
+        form.append('images',new ExpoFile(image.uri) as any);
+      }
     }
     return formRequest<any>(`/api/v1/tournaments/${tid}/matches/${no}/scan-preview`,form);
   },
@@ -134,6 +147,7 @@ export const api = {
   },
   me:()=>jsonRequest<any>('/api/v1/auth/me'),
   setTeamMode:(team_mode:string)=>jsonRequest<any>('/api/v1/settings/team-mode',{method:'POST',body:JSON.stringify({team_mode})}),
+  setFc27RealBan:(enabled:boolean)=>jsonRequest<any>('/api/v1/settings/fc27-real-ban',{method:'POST',body:JSON.stringify({enabled})}),
   logout:()=>deleteStoredItem(TOKEN_KEY),
   hasToken:async()=>Boolean(await getStoredItem(TOKEN_KEY)),
   token:()=>getStoredItem(TOKEN_KEY),
