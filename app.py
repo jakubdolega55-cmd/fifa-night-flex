@@ -1225,18 +1225,20 @@ def render_match_banter(m:dict) -> None:
     )
 
 def _form_badges_html(values):
+    recent=list(values or [])[-5:]
+    recent=[None]*max(0,5-len(recent))+recent
     out=[]
-    for raw in list(values or [])[-5:]:
+    for raw in recent:
         value=str(raw or "").upper()
         label="W" if value=="W" else ("R" if value in {"D","R"} else ("P" if value in {"L","P"} else "–"))
-        bg,border=("#123c2c","#22c55e") if label=="W" else (("#44370d","#eab308") if label=="R" else (("#451b20","#ef4444") if label=="P" else ("#17283a","#3a5065")))
-        out.append(f"<span style='display:inline-grid;place-items:center;width:32px;height:32px;border-radius:9px;background:{bg};border:1px solid {border};color:#f8fafc;font-weight:900;margin-left:5px'>{label}</span>")
-    return "".join(out) or "<span style='color:#64748b'>—</span>"
+        bg,border,text=("#15803d","#4ade80","#ffffff") if label=="W" else (("#eab308","#fde047","#1f2937") if label=="R" else (("#b91c1c","#f87171","#ffffff") if label=="P" else ("#122334","#31485e","#71869a")))
+        out.append(f"<span style='display:inline-grid;place-items:center;width:32px;height:32px;border-radius:9px;background:{bg};border:1px solid {border};color:{text};font-weight:900;margin-left:5px;box-shadow:0 2px 5px rgba(0,0,0,.16)'>{label}</span>")
+    return "".join(out)
 
 def render_live_form(ctx,m):
     st.markdown(
-        f"<div class='mini-card' style='border-color:#245b4d;background:linear-gradient(145deg,#091b1a,#0c2823);padding:14px 16px'>"
-        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px'><b style='color:#73e7b7;letter-spacing:.12em'>● LIVE FORM</b><span class='match-no'>OSTATNIE 5</span></div>"
+        f"<div class='mini-card' style='border-color:#28735d;background:linear-gradient(145deg,#071816,#0b2721);padding:15px 16px;box-shadow:0 8px 24px rgba(0,0,0,.13)'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px'><b style='color:#7ff0bd;letter-spacing:.12em'>● FORMA LIVE</b><span class='match-no'>OSTATNIE 5</span></div>"
         f"<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0'><b>{esc(m.get('home_name'))}</b><div>{_form_badges_html(ctx.get('home_form'))}</div></div>"
         f"<div style='display:flex;justify-content:space-between;align-items:center;gap:12px;margin:6px 0'><b>{esc(m.get('away_name'))}</b><div>{_form_badges_html(ctx.get('away_form'))}</div></div>"
         f"</div>", unsafe_allow_html=True)

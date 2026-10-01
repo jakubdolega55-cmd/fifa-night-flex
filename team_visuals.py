@@ -11,6 +11,7 @@ _CLUBS = {
     'paris saint-germain': ('france','paris-saint-germain'),
     'bayern monachium': ('germany','bayern-munchen'),
     'bayern munich': ('germany','bayern-munchen'),
+    'bayern münchen': ('germany','bayern-munchen'),
     'fc barcelona': ('spain','barcelona'),
     'barcelona': ('spain','barcelona'),
     'arsenal': ('england','arsenal'),
@@ -20,10 +21,17 @@ _CLUBS = {
     'atletico': ('spain','atletico-madrid'),
     'atletico madrid': ('spain','atletico-madrid'),
     'atlético': ('spain','atletico-madrid'),
+    'atlético madrid': ('spain','atletico-madrid'),
+    'atlético de madrid': ('spain','atletico-madrid'),
     'inter': ('italy','inter'),
+    'inter milan': ('italy','inter'),
+    'lombardia fc': ('italy','inter'),
     'man united': ('england','manchester-united'),
+    'man utd': ('england','manchester-united'),
+    'manchester utd': ('england','manchester-united'),
     'manchester united': ('england','manchester-united'),
     'bvb': ('germany','borussia-dortmund'),
+    'bvb 09': ('germany','borussia-dortmund'),
     'borussia dortmund': ('germany','borussia-dortmund'),
     'napoli': ('italy','napoli'),
     'chelsea': ('england','chelsea'),
@@ -34,9 +42,11 @@ _CLUBS = {
     'bayer leverkusen': ('germany','bayer-leverkusen'),
 }
 
+_ENGLAND_FLAG = '\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F'
+
 _FLAGS = {
     'hiszpania':'🇪🇸', 'spain':'🇪🇸',
-    'anglia':'🏴', 'england':'🏴',
+    'anglia':_ENGLAND_FLAG, 'england':_ENGLAND_FLAG,
     'brazylia':'🇧🇷', 'brazil':'🇧🇷',
     'niemcy':'🇩🇪', 'germany':'🇩🇪',
     'portugalia':'🇵🇹', 'portugal':'🇵🇹',
@@ -87,8 +97,8 @@ def team_visual_html(value: str | None, size: int = 64, extra_style: str = '') -
     if url:
         return (
             f"<div class='team-visual' style='width:{size}px;height:{size}px;{extra_style}'>"
-            f"<img src='{html.escape(url)}' alt='{html.escape(name)}' loading='eager' "
-            f"style='width:100%;height:100%;object-fit:contain;display:block' "
+            f"<img src='{html.escape(url)}' alt='{html.escape(name)}' title='{html.escape(name)}' loading='eager' decoding='async' "
+            f"style='width:100%;height:100%;object-fit:contain;display:block;filter:drop-shadow(0 4px 7px rgba(0,0,0,.28))' "
             f"onerror=\"this.style.display='none';this.nextElementSibling.style.display='grid'\">"
             f"<span style='display:none;width:100%;height:100%;place-items:center;border-radius:50%;background:#14263a;color:#dbeafe;font-weight:900;font-size:{max(11,size//4)}px'>{initials}</span>"
             f"</div>"

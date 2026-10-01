@@ -1,13 +1,22 @@
-Replace/add these files in the repository root, preserving paths:
-- app.py
-- ui.py
-- team_visuals.py (new)
-- mobile/app.json
-- mobile/src/FifaScreen.tsx
-- mobile/src/teamVisuals.tsx (new)
-- tests/team_visuals_live_form_smoke.py (new)
-- tests/fc27_real_ban_mobile_settings_smoke.py
-- tests/mobile_formdata_sdk57_source_smoke.py
-- CHECKPOINT_2026-10-01_TEAM_VISUALS_LIVE_FORM.md
+# FIFA Night — V14 Team Visuals / Forma Live POLISHED
 
-Android versionCode = 14, so build a new APK.
+Base: `FIFA-NIGHT-1.1.3-TEAM-VISUALS-LIVE-FORM-V14-2026-10-01.zip`
+
+Replace on GitHub:
+- `app.py`
+- `team_visuals.py`
+- `mobile/src/FifaScreen.tsx`
+- `mobile/src/teamVisuals.tsx`
+- `tests/team_visuals_live_form_smoke.py`
+
+Add:
+- `CHECKPOINT_2026-10-01_TEAM_VISUALS_LIVE_FORM_POLISH.md`
+
+No database migration. No API contract change. Android `versionCode` stays **14** because the V14 APK has not been built yet.
+
+Polish included:
+- stronger W/R/P badges and fixed 5-slot layout,
+- `FORMA LIVE` Polish label,
+- England flag fix,
+- extra club-name aliases,
+- crest cache request + subtle shadow + initials fallback.
