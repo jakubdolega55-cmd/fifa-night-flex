@@ -1654,7 +1654,7 @@ def get_config() -> dict[str, Any]:
     format_keys = {
         3: ["league3_final"], 4: ["league4_final", "double4"], 5: ["double5", "league5_final"],
         6: ["groups6", "groups6_full", "double6"], 7: ["double7", "groups7", "groups7_sf"],
-        8: ["groups8_sf", "double8", "groups8_barrage", "swiss8"],
+        8: ["groups8_sf", "knockout8", "double8", "groups8_barrage", "swiss8"],
         9: ["groups9_final4", "groups9_barrage_final3", "groups9_top8", "double9"],
         10: ["groups10_sf", "swiss10", "double10"],
     }
@@ -1827,6 +1827,7 @@ def special_reveal(tournament_id: str, kind: str, authorization: str | None = He
         if kind=="double7_combined": db.reveal_double7_combined_draw(tournament_id)
         elif kind=="double8_wb": db.reveal_double_wb_draw(tournament_id)
         elif kind=="double5_opponent": db.reveal_double5_opponent(tournament_id)
+        elif str(kind).startswith("double"): db.reveal_big_visible_draw(tournament_id,kind)
         else: raise ValueError("To losowanie nie ma osobnej akcji losuj.")
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return live_payload()

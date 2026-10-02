@@ -631,7 +631,7 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
     elif count==7:
         st.session_state.format7=st.radio("Format dla 7 graczy",["double7","groups7","groups7_sf"],format_func=format_option,horizontal=False,key="format7_radio")
     elif count==8:
-        st.session_state.format8=st.radio("Format dla 8 graczy",["groups8_sf","double8","groups8_barrage","swiss8"],format_func=format_option,horizontal=False,key="format8_radio")
+        st.session_state.format8=st.radio("Format dla 8 graczy",["groups8_sf","knockout8","double8","groups8_barrage","swiss8"],format_func=format_option,horizontal=False,key="format8_radio")
     elif count==9:
         st.session_state.format9=st.radio("Format dla 9 graczy",["groups9_final4","groups9_barrage_final3","groups9_top8","double9"],format_func=format_option,horizontal=False,key="format9_radio")
     elif count==10:
@@ -1046,7 +1046,7 @@ def structure_draw(tid:str):
 
 
 def render_structure(t):
-    title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","double8":"losowanie drabinki","groups8_barrage":"losowanie grup","swiss8":"losowanie 1. rundy Swiss","groups9_final4":"losowanie grup","groups9_barrage_final3":"losowanie grup","groups9_top8":"losowanie grup","double9":"losowanie drabinki i play-inu","groups10_sf":"losowanie grup","swiss10":"losowanie 1. rundy Swiss","double10":"losowanie drabinki i play-inów"}.get(t["format_key"],"losowanie struktury")
+    title={"league3_final":"losowanie ustawienia ligi","league4_final":"losowanie ustawienia ligi","double4":"losowanie drabinki","double5":"losowanie drabinki","league5_final":"losowanie ustawienia ligi","groups6":"losowanie grup","groups6_full":"losowanie grup","double6":"losowanie drabinki","double7":"losowanie drabinki","groups7":"losowanie grup","groups7_sf":"losowanie grup","groups8_sf":"losowanie grup","knockout8":"losowanie drabinki KO","double8":"losowanie drabinki","groups8_barrage":"losowanie grup","swiss8":"losowanie 1. rundy Swiss","groups9_final4":"losowanie grup","groups9_barrage_final3":"losowanie grup","groups9_top8":"losowanie grup","double9":"losowanie drabinki i play-inu","groups10_sf":"losowanie grup","swiss10":"losowanie 1. rundy Swiss","double10":"losowanie drabinki i play-inów"}.get(t["format_key"],"losowanie struktury")
     step="Etap 3/3" if int(t["player_count"]) in (3,4) else "Etap 2/2"
     hero(f"{step} • {title}")
     if setup_tv_gate(t): return
@@ -1960,11 +1960,13 @@ def live(tid:str):
         champ_record=summary.get("champion_record") or {}
         champ_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==champ),"—")
         st.success(f"🏆 **1. miejsce: {champ} • {champ_team}**\n\nBilans: {champ_record.get('w',0)}W / {champ_record.get('d',0)}R / {champ_record.get('l',0)}P • Bramki {champ_record.get('gf',0)}:{champ_record.get('ga',0)}")
-        third=summary.get("third_place") or {};fourth=summary.get("fourth_place") or {}
+        third=summary.get("third_place") or {};third_places=summary.get("third_places") or ([third] if third else []);fourth=summary.get("fourth_place") or {}
         runner_name=summary.get("runner_up") or "—";runner_team=next((p.get("team") for p in b.get("players",[]) if p.get("name")==runner_name),"—")
         st.markdown("#### 🏅 Klasyfikacja")
         p1,p2,p3=st.columns(3);p1.info(f"🥈 **2. miejsce:** {runner_name} • {runner_team}")
-        if third:p2.info(f"🥉 **3. miejsce:** {third.get('name','—')} • {third.get('team','—')}")
+        if len(third_places)>1:
+            p2.info("🥉 **3. miejsce ex aequo:** " + " / ".join(f"{x.get('name','—')} • {x.get('team','—')}" for x in third_places))
+        elif third:p2.info(f"🥉 **3. miejsce:** {third.get('name','—')} • {third.get('team','—')}")
         if fourth:p3.info(f"4️⃣ **4. miejsce:** {fourth.get('name','—')} • {fourth.get('team','—')}")
         c1,c2=st.columns(2)
         if summary.get("biggest"):c1.info(f"💥 Największe zwycięstwo: **{summary['biggest']['home']} {summary['biggest']['score']} {summary['biggest']['away']}**")
@@ -2065,6 +2067,7 @@ def live(tid:str):
 
 
 DE_FORMATS={"double4","double5","double6","double7","double8","double9","double10"}
+BRACKET_FORMATS=DE_FORMATS|{"knockout8"}
 
 
 def _de_bracket_layout(fmt:str) -> dict:
@@ -2074,6 +2077,7 @@ def _de_bracket_layout(fmt:str) -> dict:
         "double5": {"wb":[[1,2],[3],[5]], "lb":[[4],[6],[7]], "final":[8]},
         "double6": {"wb":[[1,2],[3,4],[7]], "lb":[[5],[6],[8],[9]], "final":[10]},
         "double7": {"wb":[[1,2,3],[4,5],[9]], "lb":[[6],[7,8],[10],[11]], "final":[12]},
+        "knockout8": {"wb":[[1,2,3,4],[5,6]], "lb":[], "final":[7]},
         "double8": {"wb":[[1,2,3,4],[5,6],[11]], "lb":[[7,8],[9,10],[12],[13]], "final":[14]},
         "double9": {"wb":[[1],[2,3,4,5],[6,7],[8]], "lb":[[9,10],[11,12],[13],[14],[15]], "final":[16]},
         "double10": {"wb":[[1,2],[3,4,5,6],[7,8],[9]], "lb":[[10,11,12],[13],[14,15],[16],[17]], "final":[18]},
@@ -2102,6 +2106,10 @@ def _de_path_labels(fmt:str) -> dict[int,str]:
             3:"W → M4/M5 (losowanie)  •  P → M6/M7", 4:"W → M9  •  P → M7/M8", 5:"W → M9  •  P → M7/M8",
             6:"W → M8  •  P → odpada", 7:"W → M10  •  P → odpada", 8:"W → M10  •  P → odpada",
             9:"W → FINAŁ M12  •  P → M11", 10:"W → M11  •  P → odpada", 11:"W → FINAŁ M12  •  P → odpada", 12:"🏆 Mistrz",
+        },
+        "knockout8": {
+            1:"W → M5  •  P → odpada",2:"W → M5  •  P → odpada",3:"W → M6  •  P → odpada",4:"W → M6  •  P → odpada",
+            5:"W → FINAŁ M7  •  P → klasyfikacja 3. miejsca",6:"W → FINAŁ M7  •  P → klasyfikacja 3. miejsca",7:"🏆 Mistrz",
         },
         "double8": {
             1:"W → M5/M6 (losowanie)  •  P → M7", 2:"W → M5/M6 (losowanie)  •  P → M7",
@@ -2214,7 +2222,7 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_l
         h=player_html("home") if m.get("home_player_id") else f"<div class='de-player placeholder'><span class='de-name'>{esc(h_label)}</span></div>"
         a=player_html("away") if m.get("away_player_id") else f"<div class='de-player placeholder'><span class='de-name'>{esc(a_label)}</span></div>"
 
-    bonus="<div class='de-bonus'>⭐ Winners Bracket zaczyna Wielki Finał od 1:0</div>" if m.get("stage")=="FINAL" else ""
+    bonus="<div class='de-bonus'>⭐ Winners Bracket zaczyna Wielki Finał od 1:0</div>" if fmt in DE_FORMATS and m.get("stage")=="FINAL" else ""
     # Split the path into two visually distinct directions instead of one tiny line of text.
     path_parts=[x.strip() for x in str(path_label or "").split("•") if x.strip()]
     path_html="".join(f"<span>{esc(x)}</span>" for x in path_parts)
@@ -2254,17 +2262,21 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     wb=layout.get("wb") or []; lb=layout.get("lb") or []; max_rounds=max(len(wb),len(lb),1)
     lucky_by_match=_de_lucky_match_labels(b,fmt)
     abandoned=str(t.get("status") or "")=="abandoned"
-    st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany. Szczęśliwy los jest oznaczony tylko przy meczu, do którego gracz wszedł dzięki wolnemu losowi.")
+    if fmt=="knockout8":
+        st.caption("Klasyczne KO: ćwierćfinały → półfinały → finał. Przegrani półfinałów są klasyfikowani na 3. miejscu według bilansu bramek, potem goli strzelonych.")
+    else:
+        st.caption("Jedno drzewko całego Double Elimination. W = zwycięzca • P = przegrany. Szczęśliwy los jest oznaczony tylko przy meczu, do którego gracz wszedł dzięki wolnemu losowi.")
 
     def lane_html(lane:str,rounds_list:list[list[int]])->str:
         accent="#178a57" if lane=="wb" else "#c54848"
-        title="WINNERS BRACKET" if lane=="wb" else "LOSERS BRACKET"
+        title=("DRABINKA KO" if fmt=="knockout8" and lane=="wb" else ("WINNERS BRACKET" if lane=="wb" else "LOSERS BRACKET"))
         icon="🌿" if lane=="wb" else "🩸"
         pieces=[f"<section class='lane {lane}'><div class='lane-title' style='--accent:{accent}'><span>{icon}</span>{title}</div><div class='lane-grid'>"]
         # Keep the rounds adjacent. The previous version spread a 3-round Winners path
         # over a 4-column Losers canvas, which visually created a fake missing round.
         for idx,nos in enumerate(rounds_list):
-            pieces.append(f"<div class='round'><div class='round-title'>{esc(_de_round_title(lane,idx,len(rounds_list)))}</div><div class='round-stack'>")
+            round_title=("ĆWIERĆFINAŁY" if fmt=="knockout8" and idx==0 else ("PÓŁFINAŁY" if fmt=="knockout8" and idx==1 else _de_round_title(lane,idx,len(rounds_list))))
+            pieces.append(f"<div class='round'><div class='round-title'>{esc(round_title)}</div><div class='round-stack'>")
             for no in nos:
                 m=by_no.get(no)
                 if m:pieces.append(_de_bracket_match_card(m,fmt,cur_no,paths.get(no,""),lucky_by_match.get(no,{}),abandoned))
@@ -2281,7 +2293,7 @@ def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     # the exact same left-to-right map and simply scroll horizontally.
     col_w=174; gap=12; final_w=188
     width=max(690,max_rounds*col_w+(max_rounds-1)*gap+final_w+72)
-    height={"double4":650,"double5":720,"double6":790,"double7":860,"double8":930,"double9":1040,"double10":1080}.get(fmt,800)
+    height={"knockout8":690,"double4":650,"double5":720,"double6":790,"double7":860,"double8":930,"double9":1040,"double10":1080}.get(fmt,800)
     html_doc=f"""
     <!doctype html><html><head><meta charset='utf-8'><style>
     *{{box-sizing:border-box}} html,body{{margin:0;padding:0;background:transparent;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#202532}}
@@ -2424,7 +2436,7 @@ def render_schedule(t):
     abandoned=str(t.get("status") or "")=="abandoned"
     cur=None if abandoned else db.current_match_from(b["matches"],extra)
     cur_no=int(cur["match_no"]) if cur else None
-    if fmt in DE_FORMATS:
+    if fmt in BRACKET_FORMATS:
         view=st.segmented_control("Widok terminarza",["📋 Lista","🌳 Drzewko"],default="📋 Lista",key=f"de_schedule_view_{t['id']}",label_visibility="collapsed") or "📋 Lista"
         if view=="🌳 Drzewko":
             render_de_bracket(t,b,fmt,cur_no);return
@@ -3269,7 +3281,8 @@ def render_tournament_archive(readonly:bool=True):
             st.success(f"⚔️ **Zwycięzca: {champ}**")
         else:
             c1,c2,c3=st.columns(3);c1.success(f"🏆 **1. {champ}**");c2.info(f"🥈 **2. {summary.get('runner_up') or '—'}**")
-            third=summary.get("third_place") or {};c3.info(f"🥉 **3. {third.get('name') or '—'}**")
+            third=summary.get("third_place") or {};third_places=summary.get("third_places") or ([third] if third else [])
+            c3.info("🥉 **3. " + (" / ".join(x.get("name") or "—" for x in third_places) if third_places else "—") + "**")
     players=b.get("players") or []
     if players:
         st.markdown("#### 👥 Uczestnicy")
@@ -3379,7 +3392,11 @@ def render_tv_special_event(tid:str,b:dict) -> bool:
             return True
     state=db.big_visible_draw_state(tid)
     if state:
-        render_visible_pair_draw(state)
+        if state.get("selected"):
+            render_visible_pair_draw(state)
+        else:
+            st.markdown("### 🎲 Losowanie drabinki")
+            st.info("📱 Losowanie jest gotowe. Uruchom je przyciskiem LOSUJ na telefonie/controllerze.")
         return True
     # Short replay buffer: a phone can acknowledge the draw immediately after its
     # animation, but TV must still finish showing the exact same public result.
@@ -3471,7 +3488,7 @@ def _render_tv_screen_content(tid:str,tv_mode:str):
 
     if tv_mode=="🔄 AUTO" and auto_slide==1:
         st.markdown("### 🗺️ Sytuacja turnieju")
-        if fmt in DE_FORMATS:
+        if fmt in BRACKET_FORMATS:
             cur_no=int(cur.get("match_no")) if cur else None
             render_de_bracket(t,b,fmt,cur_no)
         else:

@@ -263,8 +263,11 @@ def generate_summary_png(bundle: dict, summary: dict, format_labels: dict[str, s
     y=814
     y=_classification_line(draw,86,y,2,runner,runner_team,390)
     third=summary.get("third_place") or {}
+    third_places=summary.get("third_places") or ([third] if third else [])
     fourth=summary.get("fourth_place") or {}
-    if third:y=_classification_line(draw,86,y,3,third.get("name"),third.get("team"),390)
+    if len(third_places)>1:
+        for item in third_places[:2]: y=_classification_line(draw,86,y,3,item.get("name"),item.get("team"),390)
+    elif third:y=_classification_line(draw,86,y,3,third.get("name"),third.get("team"),390)
     if fourth:y=_classification_line(draw,86,y,4,fourth.get("name"),fourth.get("team"),390)
 
     decided = [m for m in bundle.get("matches", []) if m.get("home_score") is not None]

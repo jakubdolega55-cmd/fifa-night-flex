@@ -175,6 +175,7 @@ FORMAT_LABELS = {
     "groups7": "Grupy 4+3 + ćwierćfinały + półfinały + finał",
     "groups7_sf": "Grupy 4+3 + półfinały + finał",
     "groups8_sf": "Grupy 4+4 + półfinały + finał",
+    "knockout8": "Szybki KO — ćwierćfinały + półfinały + finał",
     "double8": "Double elimination",
     "groups8_barrage": "Grupy 4+4 + baraże + półfinały + finał",
     "swiss8": "Swiss 3 rundy + TOP4",
@@ -201,6 +202,7 @@ FORMAT_MATCH_COUNTS = {
     "groups7": "14 meczów",
     "groups7_sf": "12 meczów",
     "groups8_sf": "15 meczów",
+    "knockout8": "7 meczów",
     "double8": "14 meczów",
     "groups8_barrage": "17 meczów",
     "swiss8": "15 meczów",
@@ -386,7 +388,7 @@ def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> di
     if format_key in ("groups7", "groups7_sf"):
         seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4"]
         return {"slots": dict(zip(seq, ids, strict=True))}
-    if format_key == "double8":
+    if format_key in ("double8","knockout8"):
         return {"slots": dict(zip(["A", "B", "C", "D", "E", "F", "G", "H"], ids, strict=True))}
     if format_key in ("groups8_sf", "groups8_barrage"):
         seq = ["A1", "B1", "A2", "B2", "A3", "B3", "A4", "B4"]
@@ -429,6 +431,8 @@ def structure_match_preview(format_key: str, draw: dict) -> list[dict]:
         return [M(1,"WB","WB • RUNDA 1",P("A"),P("B")),M(2,"WB","WB • RUNDA 1",P("C"),P("D")),M(3,"WB","WB • RUNDA 1",P("E"),P("F")),M(None,"WB_BYE","WB • WOLNY LOS",P("G"),None)]
     if format_key=="double8":
         return [M(1,"WB","WB • QF",P("A"),P("B")),M(2,"WB","WB • QF",P("C"),P("D")),M(3,"WB","WB • QF",P("E"),P("F")),M(4,"WB","WB • QF",P("G"),P("H"))]
+    if format_key=="knockout8":
+        return [M(1,"QF","ĆWIERĆFINAŁ 1",P("A"),P("B")),M(2,"QF","ĆWIERĆFINAŁ 2",P("C"),P("D")),M(3,"QF","ĆWIERĆFINAŁ 3",P("E"),P("F")),M(4,"QF","ĆWIERĆFINAŁ 4",P("G"),P("H"))]
     if format_key=="double9":
         return [M(1,"PLAY_IN","PLAY-IN",P("A"),P("B")),M(2,"WB","WB • QF",P("C"),P("D")),M(3,"WB","WB • QF",P("E"),P("F")),M(4,"WB","WB • QF",P("G"),P("H")),M(5,"WB","WB • QF",P("I"),R("Zwycięzca M1"))]
     if format_key=="double10":
@@ -630,6 +634,20 @@ def schedule_groups8_barrage(draw: dict, rng: random.Random) -> list[dict]:
     ]
     return out
 
+
+
+def schedule_knockout8(draw: dict, rng: random.Random) -> list[dict]:
+    """Classic 8-player single-elimination bracket: 4 QF, 2 SF, Final."""
+    s=draw["slots"]
+    return [
+        {"match_no":1,"stage":"QF","group_name":None,"home":f"P:{s['A']}","away":f"P:{s['B']}"},
+        {"match_no":2,"stage":"QF","group_name":None,"home":f"P:{s['C']}","away":f"P:{s['D']}"},
+        {"match_no":3,"stage":"QF","group_name":None,"home":f"P:{s['E']}","away":f"P:{s['F']}"},
+        {"match_no":4,"stage":"QF","group_name":None,"home":f"P:{s['G']}","away":f"P:{s['H']}"},
+        {"match_no":5,"stage":"SF","group_name":None,"home":"W:1","away":"W:2"},
+        {"match_no":6,"stage":"SF","group_name":None,"home":"W:3","away":"W:4"},
+        {"match_no":7,"stage":"FINAL","group_name":None,"home":"W:5","away":"W:6"},
+    ]
 
 def schedule_double8(draw: dict, extra: dict) -> list[dict]:
     """Pełna drabinka Double Elimination dla 8 graczy, bez BYE."""
@@ -841,6 +859,7 @@ def schedule_for_format(draw: dict, format_key: str, extra: dict, rng: random.Ra
     if format_key=="groups7": return schedule_groups7(draw,rng)
     if format_key=="groups7_sf": return schedule_groups7_sf(draw,rng)
     if format_key=="groups8_sf": return schedule_groups8_sf(draw,rng)
+    if format_key=="knockout8": return schedule_knockout8(draw,rng)
     if format_key=="double8": return schedule_double8(draw,extra)
     if format_key=="groups8_barrage": return schedule_groups8_barrage(draw,rng)
     if format_key=="swiss8": return schedule_swiss(draw,8,rng)

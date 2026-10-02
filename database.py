@@ -869,6 +869,29 @@ class Database:
         conn.execute(self._sql("INSERT INTO players (id,name,normalized_name,created_at) VALUES (?,?,?,?)"), (pid, clean, norm, now_iso()))
         return pid
 
+    def _knockout8_third_conn(self, conn, tid: str) -> tuple[list[str], bool]:
+        """Rank the two KO8 semifinal losers by tournament GD, then goals scored.
+
+        If both values are identical, both players share 3rd place. No extra
+        match, fair-play tie-break or lot is used.
+        """
+        matches=[m for m in self._matches_conn(conn,tid) if m.get("home_score") is not None]
+        sf=[m for m in matches if str(m.get("stage") or "")=="SF"]
+        losers=[str(self._loser_of(m) or "") for m in sf]
+        losers=[x for x in losers if x]
+        if len(losers)<2:return losers,False
+        stats=defaultdict(lambda:{"gf":0,"ga":0})
+        for m in matches:
+            if self._is_forfeit(m):continue
+            h,a=str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")
+            if not h or not a:continue
+            hs,ass=self._stats_score_pair(m,"knockout8")
+            stats[h]["gf"]+=hs;stats[h]["ga"]+=ass;stats[a]["gf"]+=ass;stats[a]["ga"]+=hs
+        def key(pid):return (stats[pid]["gf"]-stats[pid]["ga"],stats[pid]["gf"])
+        a,b=losers[0],losers[1];ka,kb=key(a),key(b)
+        if ka==kb:return [a,b],True
+        return ([a,b] if ka>kb else [b,a]),False
+
     def _placement_order_conn(self, conn, tid: str) -> list[str]:
         """Best-effort full final classification for any Flex format.
 
@@ -923,6 +946,10 @@ class Database:
             for no in (9,8,6,5): add(loser(no))
         elif fmt=="double7":
             for no in (11,10,8,7,6): add(loser(no))
+        elif fmt=="knockout8":
+            thirds,_tied=self._knockout8_third_conn(conn,tid)
+            for pid in thirds:add(pid)
+            for pid in rank_group([loser(1),loser(2),loser(3),loser(4)]):add(pid)
         elif fmt=="double8":
             add(loser(13)); add(loser(12))
             for pid in rank_group([loser(9),loser(10)]): add(pid)
@@ -962,7 +989,7 @@ class Database:
         that previous tournament. This keeps an all-new lineup fully random.
         """
         prev=self._fetchone(conn,"""
-            SELECT t.id,t.completed_at,t.created_at
+            SELECT t.id,t.completed_at,t.created_at,fm.format_key
             FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
             WHERE t.status='completed' AND t.is_test=? AND fm.format_key<>'duel1v1'
             ORDER BY COALESCE(t.completed_at,t.created_at) DESC, t.created_at DESC
@@ -977,6 +1004,10 @@ class Database:
         """,(prev["id"],))
         placement_order=self._placement_order_conn(conn,prev["id"])
         placement_prev={str(pid):i+1 for i,pid in enumerate(placement_order)}
+        if str(prev.get("format_key") or "")=="knockout8":
+            third_ids,tied=self._knockout8_third_conn(conn,prev["id"])
+            if tied:
+                for pid in third_ids:placement_prev[str(pid)]=3
         exact_prev={str(r.get("name") or ""):str(r.get("player_id") or "") for r in prev_players}
         prev_team_by_pid={str(r.get("player_id") or ""):str(r.get("team") or "") for r in prev_players}
         played=self._fetchall(conn,"""
@@ -1202,7 +1233,7 @@ class Database:
             5:("double5","league5_final"),
             6:("groups6","groups6_full","double6"),
             7:("double7","groups7","groups7_sf"),
-            8:("groups8_sf","double8","groups8_barrage","swiss8"),
+            8:("groups8_sf","knockout8","double8","groups8_barrage","swiss8"),
             9:("groups9_final4","groups9_barrage_final3","groups9_top8","double9"),
             10:("groups10_sf","swiss10","double10"),
         }
@@ -2210,7 +2241,8 @@ class Database:
             if k not in src: src[k]=v; changed=True
         if not changed:return
         if draw_kind and (candidates>1 or force_visible):
-            event={"special_kind":draw_kind,"sources":updates,"source_keys":list(updates),"candidate_count":candidates,"ack":False,"is_random_draw":bool(candidates>1)}
+            manual_de_reveal=bool(str(draw_kind or "").startswith("double"))
+            event={"special_kind":draw_kind,"sources":updates,"source_keys":list(updates),"candidate_count":candidates,"ack":False,"is_random_draw":bool(candidates>1),"revealed":not manual_de_reveal}
             if event_extra: event.update(event_extra)
             # Build readable pair rows for both phone and synchronized TV.  This
             # deliberately supports unresolved symbolic sources so an early DE draw
@@ -2250,7 +2282,8 @@ class Database:
                 })
             event["pairs"]=pairs
             extra.setdefault("visible_draws",[]).append(event)
-            self._publish_live_event_conn(conn,tid,"special_draw",event)
+            if not manual_de_reveal:
+                self._publish_live_event_conn(conn,tid,"special_draw",event)
         conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
 
     def big_visible_draw_state(self, tid: str) -> dict | None:
@@ -2258,13 +2291,29 @@ class Database:
             _meta,extra=self._meta_extra_conn(conn,tid)
             pending=next((x for x in (extra.get("visible_draws") or []) if not x.get("ack")),None)
             if not pending:return None
-            return {**pending,"kind":pending.get("special_kind"),"selected":True}
+            revealed=bool(pending.get("revealed", True))
+            return {**pending,"kind":pending.get("special_kind"),"selected":revealed}
+
+    def reveal_big_visible_draw(self, tid: str, kind: str) -> dict:
+        with self.connect() as conn:
+            _meta,extra=self._meta_extra_conn(conn,tid);found=None
+            for item in (extra.get("visible_draws") or []):
+                if not item.get("ack") and str(item.get("special_kind"))==str(kind):
+                    found=item;break
+            if not found: raise ValueError("Nie ma aktywnego losowania tego typu.")
+            if not bool(found.get("revealed", True)):
+                found["revealed"]=True
+                conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
+                self._publish_live_event_conn(conn,tid,"special_draw",found)
+            return {**found,"kind":found.get("special_kind"),"selected":True}
 
     def ack_big_visible_draw(self, tid: str, kind: str) -> None:
         with self.connect() as conn:
             meta,extra=self._meta_extra_conn(conn,tid);found=False
             for item in (extra.get("visible_draws") or []):
-                if not item.get("ack") and str(item.get("special_kind"))==str(kind): item["ack"]=True;found=True;break
+                if not item.get("ack") and str(item.get("special_kind"))==str(kind):
+                    if not bool(item.get("revealed", True)): raise ValueError("Najpierw uruchom losowanie z telefonu.")
+                    item["ack"]=True;found=True;break
             if not found:raise ValueError("Nie ma aktywnego losowania tego typu.")
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
             self._resolve_all_conn(conn,tid,meta["format_key"])
@@ -2855,7 +2904,7 @@ class Database:
         extra["d7_pairing"]={"bye_vs_sf":bye_sf,"w6_vs_sf":w6_sf}
         names={str(r["id"]):str(r.get("name") or "?") for r in self._fetchall(conn,"SELECT id,name FROM players")}
         event={
-            "special_kind":"double7_lb_cross","candidate_count":2,"ack":False,"is_random_draw":True,
+            "special_kind":"double7_lb_cross","candidate_count":2,"ack":False,"is_random_draw":True,"revealed":False,
             "pairs":[
                 {"match_no":7,"stage":"LB","home_player_id":str(bye_player),"home_name":names.get(str(bye_player),"?"),"home_source":f"P:{bye_player}",
                  "away_player_id":None,"away_name":f"Przegrany M{bye_sf}","away_source":f"L:{bye_sf}"},
@@ -2864,7 +2913,6 @@ class Database:
             ],
         }
         extra.setdefault("visible_draws",[]).append(event)
-        self._publish_live_event_conn(conn,tid,"special_draw",event)
         conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
 
     def _prepare_double8_pairing_conn(self, conn, tid: str) -> None:
@@ -2883,7 +2931,7 @@ class Database:
         a_no,b_no=random.SystemRandom().choice([(5,6),(6,5)])
         extra["d8_lb_cross"]={"PAIR7":a_no,"PAIR8":b_no}
         event={
-            "special_kind":"double8_lb_cross","candidate_count":2,"ack":False,"is_random_draw":True,
+            "special_kind":"double8_lb_cross","candidate_count":2,"ack":False,"is_random_draw":True,"revealed":False,
             "pairs":[
                 {"match_no":9,"stage":"LB","home_player_id":None,"home_name":"Zwycięzca M7","home_source":"W:7",
                  "away_player_id":None,"away_name":f"Przegrany M{a_no}","away_source":f"L:{a_no}"},
@@ -2892,7 +2940,6 @@ class Database:
             ],
         }
         extra.setdefault("visible_draws",[]).append(event)
-        self._publish_live_event_conn(conn,tid,"special_draw",event)
         conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
 
     def _prepare_group_playoffs_conn(self, conn, tid: str) -> dict | None:
@@ -3941,6 +3988,13 @@ class Database:
             table=group_table(ids,league_matches,ties)
             if len(table)>=3:third_pid=table[2]["player_id"]
             if len(table)>=4:fourth_pid=table[3]["player_id"]
+        elif fmt=="knockout8":
+            ko8_thirds=[str(self._loser_of(m) or "") for m in decided if m.get("stage")=="SF"]
+            ko8_thirds=[pid for pid in ko8_thirds if pid]
+            ko8_thirds=sorted(ko8_thirds,key=lambda pid:(ps[pid]["gf"]-ps[pid]["ga"],ps[pid]["gf"]),reverse=True)
+            ko8_tied=bool(len(ko8_thirds)>1 and (ps[ko8_thirds[0]]["gf"]-ps[ko8_thirds[0]]["ga"],ps[ko8_thirds[0]]["gf"])==(ps[ko8_thirds[1]]["gf"]-ps[ko8_thirds[1]]["ga"],ps[ko8_thirds[1]]["gf"]))
+            if ko8_thirds:third_pid=ko8_thirds[0]
+            if len(ko8_thirds)>1 and not ko8_tied:fourth_pid=ko8_thirds[1]
         elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","swiss8","swiss10"):
             sf_losers=rank_same_stage([self._loser_of(m) for m in decided if m.get("stage")=="SF"])
             if sf_losers: third_pid=sf_losers[0]
@@ -3960,6 +4014,12 @@ class Database:
         elif fmt=="double10":
             third_pid=self._loser_of(by_no.get(17)); fourth_pid=self._loser_of(by_no.get(16))
 
+        third_places=[]
+        if fmt=="knockout8":
+            third_places=[place_payload(pid) for pid in ko8_thirds[:2]] if ko8_tied else ([place_payload(ko8_thirds[0])] if ko8_thirds else [])
+        elif third_pid:
+            third_places=[place_payload(third_pid)]
+
         return {"champion":players.get(champ,{}).get("name"),"runner_up":players.get(runner,{}).get("name"),
                 "champion_record": ({"w":int(ps[champ]["w"]),"d":int(ps[champ]["d"]),"l":int(ps[champ]["l"]),"gf":int(ps[champ]["gf"]),"ga":int(ps[champ]["ga"])} if champ else {"w":0,"d":0,"l":0,"gf":0,"ga":0}),
                 "top_goals":{"name":players.get(top[0],{}).get("name"),"value":top[1].get("gf",0)},
@@ -3972,6 +4032,8 @@ class Database:
                     "score":f"{match_of_tournament['home_score']}:{match_of_tournament['away_score']}","stage":match_of_tournament.get("stage"),"group_name":match_of_tournament.get("group_name"),
                     "home_penalties":match_of_tournament.get("home_penalties"),"away_penalties":match_of_tournament.get("away_penalties")} if match_of_tournament else None),
                 "third_place": place_payload(third_pid),
+                "third_places": third_places,
+                "third_place_tied": bool(fmt=="knockout8" and len(third_places)>1),
                 "fourth_place": place_payload(fourth_pid),
                 "forfeit_count":len(forfeits),"played_match_count":len(played),
                 "rivalry_match":rivalry,"new_records":new_records}
@@ -4466,6 +4528,7 @@ class Database:
         elif fmt=="groups7": champion=mm[14].get("winner_player_id")
         elif fmt=="groups7_sf": champion=mm[12].get("winner_player_id")
         elif fmt=="groups8_sf": champion=mm[15].get("winner_player_id")
+        elif fmt=="knockout8": champion=mm[7].get("winner_player_id")
         elif fmt=="groups8_barrage": champion=mm[17].get("winner_player_id")
         elif fmt=="double5": champion=mm[8].get("winner_player_id")
         elif fmt=="double7": champion=mm[12].get("winner_player_id")
