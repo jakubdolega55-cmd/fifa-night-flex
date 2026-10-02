@@ -765,6 +765,13 @@ def render_setup_tv_watch(tid:str):
             st.session_state[exit_key]=time.time(); started=st.session_state[exit_key]
         if time.time()-float(started)>=4.2:
             st.session_state.pop(exit_key,None)
+            # After the synchronized setup/draw finishes, the TV should enter
+            # normal tournament coverage in AUTO mode without an extra click.
+            # Keep LIVE during setup (1 s watcher); AUTO starts only after the
+            # final reveal grace period has completed.
+            st.session_state[f"tv_display_mode_{tid}"]="🔄 AUTO"
+            st.session_state.pop(f"_tv_auto_started_{tid}",None)
+            st.session_state.pop(f"_tv_display_prev_{tid}",None)
             st.session_state["view"]="📺 TV"
             st.rerun()
     else:
