@@ -113,6 +113,22 @@ def test_bye_weighting():
 
 
 
+def test_bye_repeat_penalty():
+    db=Database()
+    assert db._in_tournament_bye_repeat_multiplier(0)==1.0
+    assert db._in_tournament_bye_repeat_multiplier(1)==0.25
+    assert db._in_tournament_bye_repeat_multiplier(2)==0.10
+    assert db._in_tournament_bye_repeat_multiplier(3)==0.05
+    # Equal-rest candidates: a already received one BYE, b/c did not.
+    mm={1:{'match_no':1,'home_player_id':'a','away_player_id':'x','home_score':1,'played_at':'2026-01-01T10:00:00'},
+        2:{'match_no':2,'home_player_id':'b','away_player_id':'y','home_score':1,'played_at':'2026-01-01T10:00:00'},
+        3:{'match_no':3,'home_player_id':'c','away_player_id':'z','home_score':1,'played_at':'2026-01-01T10:00:00'}}
+    c=Counter()
+    for _ in range(2400):
+        pick,_=db._dynamic_lb_bye_choice(['a','b','c'],mm,['a']);c[pick]+=1
+    assert c['a'] < min(c['b'],c['c'])*0.45,c
+    print('PASS in-tournament BYE anti-repeat weighting',dict(c))
+
 def test_de_rematch_policy():
     db=Database()
     # A-B have just played each other: if another complete pairing exists,
@@ -223,6 +239,7 @@ def main():
     play_de(9,'double9',16)
     play_de(10,'double10',18)
     test_bye_weighting()
+    test_bye_repeat_penalty()
     test_bye_uses_actual_play_order()
     test_de_rematch_policy()
     test_de10_early_lb_route_draw()
