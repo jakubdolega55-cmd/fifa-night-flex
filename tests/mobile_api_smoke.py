@@ -194,7 +194,7 @@ def complete_active(tid,auth=None,exercise=False):
     raise AssertionError('completion guard exceeded')
 
 formats={
-3:['league3_final'],4:['league4_final','double4'],5:['double5','league5_final'],6:['groups6','groups6_full','double6'],7:['double7','groups7','groups7_sf'],8:['groups8_sf','double8','groups8_barrage']}
+3:['league3_final'],4:['league4_final','double4'],5:['double5','league5_final'],6:['groups6','groups6_full','double6'],7:['double7','groups7','groups7_sf'],8:['groups8_sf','knockout8','double8','groups8_barrage']}
 
 # Every supported test format through full setup + completion.
 format_details=[]
