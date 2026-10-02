@@ -593,7 +593,7 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
 
     # 1 vs 1 jest zwykłym wariantem FIFA Night, obok turniejów 3–10 osobowych.
     # Nie dokładamy osobnej warstwy nawigacji tylko po to, żeby wybrać liczbę graczy.
-    game_version=st.segmented_control("Wersja gry",list(GAME_VERSIONS),default="FC26",key=f"game_version_{int(force_test)}") or "FC26"
+    game_version=st.segmented_control("Wersja gry",list(GAME_VERSIONS),default="FC27",key=f"game_version_{int(force_test)}") or "FC27"
     game_version=normalize_game_version(game_version)
     configured_team_mode=db.team_mode_setting()
     team_mode=effective_team_mode(game_version,configured_team_mode)
@@ -1232,7 +1232,7 @@ def _form_badges_html(values):
         value=str(raw or "").upper()
         label="W" if value=="W" else ("R" if value in {"D","R"} else ("P" if value in {"L","P"} else "–"))
         bg,border,text=("#15803d","#4ade80","#ffffff") if label=="W" else (("#eab308","#fde047","#1f2937") if label=="R" else (("#b91c1c","#f87171","#ffffff") if label=="P" else ("#122334","#31485e","#71869a")))
-        out.append(f"<span style='display:inline-grid;place-items:center;width:32px;height:32px;border-radius:9px;background:{bg};border:1px solid {border};color:{text};font-weight:900;margin-left:5px;box-shadow:0 2px 5px rgba(0,0,0,.16)'>{label}</span>")
+        out.append(f"<span style='display:inline-grid;place-items:center;width:36px;height:36px;border-radius:10px;background:{bg};border:1px solid {border};color:{text};font-weight:900;margin-left:5px;box-shadow:0 2px 5px rgba(0,0,0,.16)'>{label}</span>")
     return "".join(out)
 
 def render_live_form(ctx,m):
@@ -1490,7 +1490,7 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
     with c2:
         ass=st.number_input(m.get("away_name") or "Gracz 2",min_value=0,max_value=99,value=int(edit.get("away_score") or 0),step=1,key=f"scan_as_{tid}_{no}_{scan_id}")
 
-    knockout=str(m.get("stage") or "") not in ("GROUP","LEAGUE")
+    knockout=str(m.get("stage") or "") not in ("GROUP","LEAGUE") and not str(m.get("stage") or "").startswith("SWISS_")
     try: group_tb=db.group_match_tiebreak_context(tid,no) if str(m.get("stage") or "")=="GROUP" else {"required":False}
     except Exception: group_tb={"required":False}
     group_decider=bool(group_tb.get("required"))
@@ -1795,7 +1795,7 @@ def score_form(tid,m,fmt):
     with sc2:away_sc=_scorer_side_form(tid,m,"away",m["away_team"],m["away_name"])
     if wb_bonus:st.caption("Bonusowe 1:0 z Winners Bracket nie ma strzelca.")
     if st.button("✅ ZATWIERDŹ WYNIK",type="primary",use_container_width=True,key=f"save_score_{tid}_{no}"):
-        scorers={"home":home_sc,"away":away_sc};ko=m["stage"] not in ("GROUP","LEAGUE")
+        scorers={"home":home_sc,"away":away_sc};ko=m["stage"] not in ("GROUP","LEAGUE") and not str(m.get("stage") or "").startswith("SWISS_")
         if (ko or group_decider) and int(hs)==int(ass):st.session_state.pending_ko={"tid":tid,"no":no,"hs":int(hs),"as":int(ass),"scorers":scorers,"group_decider":group_decider};rf()
         else:
             try:db.save_result(tid,no,int(hs),int(ass),scorers=scorers);rf()
@@ -2213,7 +2213,7 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_l
     path_html="".join(f"<span>{esc(x)}</span>" for x in path_parts)
     return f"""
       <div class="de-match {state}">
-        <div class="de-head"><span>M{no}</span><b>{esc(stage_name(m))}</b><em>{esc(badge)}</em></div>
+        <div class="de-head"><span>M{int(m.get('display_match_no') or no)}</span><b>{esc(stage_name(m))}</b><em>{esc(badge)}</em></div>
         {h}
         <div class="de-vs">VS</div>
         {a}
@@ -2225,7 +2225,22 @@ def _de_bracket_match_card(m:dict,fmt:str,cur_no:int|None,path_label:str,lucky_l
 
 def render_de_bracket(t:dict,b:dict,fmt:str,cur_no:int|None):
     """One compact left-to-right Double Elimination map. Fixed layout on every device."""
-    layout=_de_bracket_layout(fmt); by_no={int(m["match_no"]):m for m in b["matches"]}; paths=_de_path_labels(fmt)
+    layout=_de_bracket_layout(fmt)
+    # The tree keeps technical match ids for its structure, but every visible M-number
+    # follows the same live/public order as the timetable.  This keeps BYE routes and
+    # labels such as "Przegrany Mx" consistent when the scheduler reorders matches.
+    extra=(b.get("meta") or {}).get("extra") or {}
+    live=db.live_schedule_from(b.get("matches") or [],extra)
+    display_by_no={int(m.get("match_no") or 0):int(m.get("display_match_no") or m.get("match_no") or 0) for m in live}
+    def public_route(text):
+        return re.sub(r"\bM(\d+)\b",lambda mm:f"M{display_by_no.get(int(mm.group(1)),int(mm.group(1)))}",str(text or ""))
+    by_no={}
+    for raw in live:
+        m=dict(raw)
+        if m.get("home_source_display"): m["home_source_display"]=public_route(m.get("home_source_display"))
+        if m.get("away_source_display"): m["away_source_display"]=public_route(m.get("away_source_display"))
+        by_no[int(m["match_no"])]=m
+    paths={no:public_route(label) for no,label in _de_path_labels(fmt).items()}
     if not layout.get("final"):
         st.info("Brak widoku drzewka dla tego formatu.");return
 
@@ -3522,17 +3537,17 @@ def _render_tv_screen_content(tid:str,tv_mode:str):
     st.markdown(f'<div class="match-no">MECZ {cur_display_no}/{max_matches(fmt)} • {stage_name(cur)}</div>',unsafe_allow_html=True)
     stake_card=_match_stake_card(fmt,cur)
     if stake_card:st.markdown(stake_card,unsafe_allow_html=True)
-    st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("home_team"),82)}<div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("away_team"),82)}<div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
+    st.markdown(f'<div class="match-card"><div style="display:flex;justify-content:space-between;gap:20px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("home_team"),112)}<div class="player-big">{esc(cur["home_name"])}</div><div class="team-small">{esc(cur["home_team"])}</div></div><div style="font-size:1.7rem;font-weight:900;color:#94a3b8">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">{team_visual_html(cur.get("away_team"),112)}<div class="player-big">{esc(cur["away_name"])}</div><div class="team-small">{esc(cur["away_team"])}</div></div></div></div>',unsafe_allow_html=True)
     render_match_banter(cur)
     render_live_form(db.match_context(cur["home_player_id"],cur["away_player_id"]),cur)
     render_match_absences(cur,absence_targets,compact=True)
-    # NEXT and schedule use one scheduler source. GROUP/LEAGUE use the post-result
-    # projection; knockout keeps the ordinary ready match because the winner can unlock
-    # a pairing that cannot be known before the current score exists.
+    # NEXT and the public M1/M2 timetable use the same iterative scheduler projection.
+    # If a KO result can immediately unlock a new playable match, NEXT stays unknown
+    # until the score is saved rather than advertising a pairing that may become false.
     nxt=db.visible_next_match_from(b.get("matches") or [],int(cur.get("match_no") or 0),extra)
     if nxt:
         st.markdown("### ⏭️ Następny mecz")
-        st.markdown(f'<div class="mini-card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("home_team"),48)}<b>{esc(nxt.get("home_name"))}</b><span class="team-small">{esc(nxt.get("home_team"))}</span></div><div style="color:#64748b;font-weight:900">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("away_team"),48)}<b>{esc(nxt.get("away_name"))}</b><span class="team-small">{esc(nxt.get("away_team"))}</span></div></div></div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="mini-card"><div style="display:flex;justify-content:space-between;gap:14px;align-items:center;text-align:center"><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("home_team"),64)}<b>{esc(nxt.get("home_name"))}</b><span class="team-small">{esc(nxt.get("home_team"))}</span></div><div style="color:#64748b;font-weight:900">VS</div><div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">{team_visual_html(nxt.get("away_team"),64)}<b>{esc(nxt.get("away_name"))}</b><span class="team-small">{esc(nxt.get("away_team"))}</span></div></div></div>',unsafe_allow_html=True)
         render_match_absences(nxt,absence_targets,compact=True)
         nxt_no=int(nxt.get("match_no") or 0)
         tail=[m for m in ready if int(m.get("match_no") or 0) not in {int(cur.get("match_no") or 0),nxt_no}]

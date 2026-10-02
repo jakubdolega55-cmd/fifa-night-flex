@@ -2097,15 +2097,20 @@ class Database:
     def _swiss_table_conn(self, conn, tid: str) -> list[dict]:
         prows=self._fetchall(conn,"SELECT tp.player_id,tp.tie_order,p.name,tp.team FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))
         ids=[str(x["player_id"]) for x in prows]; names={str(x["player_id"]):x.get("name") for x in prows}; teams={str(x["player_id"]):x.get("team") for x in prows}; ties={str(x["player_id"]):int(x.get("tie_order") or 9999) for x in prows}
-        stats={pid:{"player_id":pid,"m":0,"w":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0,"opponents":[]} for pid in ids}
+        stats={pid:{"player_id":pid,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0,"opponents":[]} for pid in ids}
         swiss=[m for m in self._matches_conn(conn,tid) if str(m.get("stage") or "").startswith("SWISS_") and m.get("home_score") is not None]
         h2h={}
         for m in swiss:
             h,a=str(m.get("home_player_id")),str(m.get("away_player_id")); hs,aw=int(m["home_score"]),int(m["away_score"]); w=str(m.get("winner_player_id") or "")
             if h not in stats or a not in stats: continue
             stats[h]["m"]+=1;stats[a]["m"]+=1;stats[h]["gf"]+=hs;stats[h]["ga"]+=aw;stats[a]["gf"]+=aw;stats[a]["ga"]+=hs;stats[h]["opponents"].append(a);stats[a]["opponents"].append(h)
-            if w==h: stats[h]["w"]+=1;stats[a]["l"]+=1;stats[h]["pts"]+=3
-            elif w==a: stats[a]["w"]+=1;stats[h]["l"]+=1;stats[a]["pts"]+=3
+            if w==h:
+                stats[h]["w"]+=1;stats[a]["l"]+=1;stats[h]["pts"]+=3
+            elif w==a:
+                stats[a]["w"]+=1;stats[h]["l"]+=1;stats[a]["pts"]+=3
+            else:
+                # Swiss rounds are league-style: a draw is final and gives 1 point each.
+                stats[h]["d"]+=1;stats[a]["d"]+=1;stats[h]["pts"]+=1;stats[a]["pts"]+=1
             h2h[frozenset((h,a))]=w
         for r in stats.values(): r["gd"]=r["gf"]-r["ga"]
         for pid,r in stats.items(): r["buchholz"]=sum(stats[o]["pts"] for o in r["opponents"] if o in stats)
@@ -2565,8 +2570,20 @@ class Database:
                         continue
                 if m.get("home_score") is not None: continue
                 h=self._resolve_source_conn(conn,tid,src["home_source"],mm); a=self._resolve_source_conn(conn,tid,src["away_source"],mm)
-                if h and a and (m.get("home_player_id")!=h or m.get("away_player_id")!=a):
-                    conn.execute(self._sql("UPDATE matches SET home_player_id=?,away_player_id=? WHERE tournament_id=? AND match_no=?"),(h,a,tid,no)); changed=True
+                # Resolve each bracket slot independently.  A DE BYE can make one side
+                # concrete several matches before the opponent is known; keeping that
+                # player hidden until both sources resolve made the public schedule show
+                # only a symbolic ``Przegrany Mx`` route even though the BYE winner was
+                # already known.  Readiness still requires both player ids, so this does
+                # not unlock a match prematurely.
+                updates=[]; params=[]
+                if h and m.get("home_player_id")!=h:
+                    updates.append("home_player_id=?"); params.append(h); m["home_player_id"]=h
+                if a and m.get("away_player_id")!=a:
+                    updates.append("away_player_id=?"); params.append(a); m["away_player_id"]=a
+                if updates:
+                    params.extend([tid,no])
+                    conn.execute(self._sql(f"UPDATE matches SET {','.join(updates)} WHERE tournament_id=? AND match_no=?"),tuple(params)); changed=True
             if not changed: break
 
     @staticmethod
@@ -4073,55 +4090,122 @@ class Database:
                 return m
         return None
 
-    def visible_next_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
-        """Return the match that public LIVE views should advertise as next.
+    def _projected_ready_sequence_from(self, matches: list[dict], extra: dict | None = None) -> list[dict]:
+        """Project the complete order of matches that are already playable now.
 
-        In fixed-pairing GROUP/LEAGUE stages the scheduler can change immediately
-        after the current result is saved, so use the post-result projection there.
-        Knockout stages keep the ordinary next-ready behavior because a result can
-        unlock a winner/loser-dependent pairing that is unknowable beforehand.
+        The scheduler is stateful: after each match the just-used players become the
+        most recent players, so the preferred order of the *remaining* ready matches
+        can change again.  A single sort is therefore not enough for a public schedule.
+        We simulate one completed match at a time without resolving any new bracket
+        sources.  Logical match ids and real tournament data stay untouched.
+        """
+        sim=[dict(m) for m in matches]
+        projected=[]
+        seen=set()
+        for step in range(len(sim)):
+            ordered=self._ready_match_order(sim,extra)
+            nxt=next((m for m in ordered if int(m.get("match_no") or 0) not in seen),None)
+            if nxt is None: break
+            no=int(nxt.get("match_no") or 0)
+            projected.append(dict(nxt))
+            seen.add(no)
+            target=next((m for m in sim if int(m.get("match_no") or 0)==no),None)
+            if target is None: break
+            target["home_score"]=0
+            target["away_score"]=0
+            target["match_status"]="played"
+            # Increasing synthetic timestamps preserve the simulated play order and
+            # always sort after real completed matches.
+            target["played_at"]=f"9999-12-31T23:59:59.{step:06d}+00:00"
+        return projected
+
+    def _result_can_unlock_ready_match_from(self, matches: list[dict], current_no: int) -> bool:
+        """True when the current KO result can immediately create a new playable pair.
+
+        In that situation advertising an already-ready match as NEXT can be false: the
+        newly unlocked match may outrank it once the scheduler recalculates.  Until the
+        score exists, the honest public answer is that NEXT will be known after this match.
+        """
+        deps={f"W:{int(current_no)}",f"L:{int(current_no)}"}
+        for m in matches:
+            if m.get("home_score") is not None or str(m.get("match_status") or "pending")=="skipped":
+                continue
+            hs=str(m.get("home_source") or "")
+            aws=str(m.get("away_source") or "")
+            if hs in deps and not m.get("home_player_id") and m.get("away_player_id"):
+                return True
+            if aws in deps and not m.get("away_player_id") and m.get("home_player_id"):
+                return True
+
+        # DE9/DE10 also create whole routing blocks after a dependency set closes.
+        # Those future pairs are not expressed as direct W:/L: dependencies yet, so
+        # the simple check above used to advertise an already-ready match as NEXT,
+        # then replace it after the current result triggered a new Losers draw.
+        # Detect the exact transition point and hide NEXT until that result is saved.
+        by_no={int(m.get("match_no") or 0):m for m in matches}
+        def played(no:int)->bool:
+            m=by_no.get(int(no)) or {}
+            return m.get("home_score") is not None
+        def unresolved_source(match_no:int,prefix:str)->bool:
+            m=by_no.get(int(match_no)) or {}
+            src=str(m.get("home_source") or "")
+            label=str(m.get("home_source_display") or "")
+            return src.startswith(prefix) and (not label or label=="Czeka na rozstrzygnięcie")
+        def closes(depset:tuple[int,...])->bool:
+            return int(current_no) in depset and all(played(no) for no in depset if int(no)!=int(current_no))
+
+        if unresolved_source(9,"D9:") and closes((1,2,3,4,5)):
+            return True
+        if unresolved_source(11,"D9:") and closes((6,7,9,10)):
+            return True
+        if unresolved_source(13,"D9:") and closes((11,12)):
+            return True
+        if unresolved_source(14,"D9:") and closes((8,13)):
+            return True
+
+        if unresolved_source(10,"D10:") and int(current_no) in (1,2,3,4,5,6):
+            # First LB routing draw appears as soon as the second result among M1-M6 exists.
+            already=sum(1 for no in (1,2,3,4,5,6) if played(no))
+            if already==1:
+                return True
+        if unresolved_source(13,"D10:") and closes((10,11,12)):
+            return True
+        return False
+
+    def visible_next_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
+        """One public NEXT source shared by Streamlit and the mobile API.
+
+        For matches whose result may immediately unlock another playable KO pairing,
+        do not guess.  Otherwise NEXT is simply the item after the current match in the
+        same iterative scheduler projection used by the public schedule.
         """
         cur=next((m for m in matches if int(m.get("match_no") or 0)==int(current_no)),None)
         stage=str((cur or {}).get("stage") or "").upper()
-        if stage in {"GROUP","LEAGUE"}:
-            return self.projected_next_match_from(matches,current_no,extra)
+        fixed_stage=(stage in {"GROUP","LEAGUE"} or stage.startswith("SWISS_R"))
+        if not fixed_stage and self._result_can_unlock_ready_match_from(matches,current_no):
+            return None
+        seq=self._projected_ready_sequence_from(matches,extra)
+        for i,m in enumerate(seq):
+            if int(m.get("match_no") or 0)==int(current_no):
+                return seq[i+1] if i+1<len(seq) else None
+        # Legacy/special state fallback: current may not be the scheduler's first row.
         return self.next_ready_match_from(matches,current_no,extra)
 
     def projected_next_match_from(self, matches: list[dict], current_no: int, extra: dict | None = None) -> dict | None:
-        """Predict the next playable match *after* the current one is completed.
-
-        The smart scheduler depends on who played most recently.  Calling
-        ``next_ready_match_from`` while the current match is still pending can therefore
-        show a different match than the scheduler will actually pick a few seconds later
-        after the score is saved.  For already-resolved pairings (especially group/league
-        stages) we can project the post-match state without knowing the score: mark only
-        the current match as played in a shallow copy and run the same scheduler again.
-
-        This never changes pairings or the real tournament state.  Knockout matches that
-        become newly unlocked by the result still cannot be predicted before the winner is
-        known; callers may choose to use this helper only for stages with fixed pairings.
-        """
-        sim=[dict(m) for m in matches]
-        cur=next((m for m in sim if int(m.get("match_no") or 0)==int(current_no)),None)
-        if cur is None:
-            return self.next_ready_match_from(matches,current_no,extra)
-        # Any non-None score is enough for _ready_match_order to treat the match as played.
-        # played_at must sort after existing completed matches so the current players become
-        # the true 'last_players' for the scheduler's back-to-back avoidance rule.
-        cur["home_score"]=0
-        cur["away_score"]=0
-        cur["played_at"]="9999-12-31T23:59:59.999999+00:00"
-        ordered=self._ready_match_order(sim,extra)
-        return ordered[0] if ordered else None
+        """Backward-compatible alias for callers/tests using the old helper name."""
+        seq=self._projected_ready_sequence_from(matches,extra)
+        for i,m in enumerate(seq):
+            if int(m.get("match_no") or 0)==int(current_no):
+                return seq[i+1] if i+1<len(seq) else None
+        return self.next_ready_match_from(matches,current_no,extra)
 
     def live_schedule_from(self, matches: list[dict], extra: dict | None = None) -> list[dict]:
-        """Return matches in the order useful during a live tournament.
+        """Public schedule: actual completed order, then projected live play order.
 
-        Logical ``match_no`` never changes because bracket dependencies refer to it.
-        The displayed schedule, however, should follow the preferred play order and
-        react when a previously locked match becomes ready after a result. Completed
-        matches stay at the top in their real played order, then currently ready
-        matches are shown, and unresolved/locked matches follow afterwards.
+        M1/M2/... are presentation numbers only.  Completed matches are permanently
+        ordered by their real ``played_at`` timestamps.  Pending matches are projected
+        iteratively with the same scheduler used for TERAZ/NEXT, so if rest/fairness
+        changes the future play order the visible timetable changes with it.
         """
         order=[int(x) for x in ((extra or {}).get("match_play_order") or [])]
         rank={no:i for i,no in enumerate(order)}
@@ -4134,30 +4218,12 @@ class Database:
             return m.get("home_score") is not None or skipped(m)
 
         completed=[m for m in matches if done(m)]
-        # played_at is an UTC ISO timestamp for both played and skipped matches.
-        # Keep a deterministic fallback for legacy rows without a timestamp.
         completed.sort(key=lambda m:(str(m.get("played_at") or "9999"),pref(m)))
+        projected=self._projected_ready_sequence_from(matches,extra)
+        projected_ids={int(m.get("match_no") or 0) for m in projected}
         pending=[m for m in matches if not done(m)]
-        ready_ids={int(m.get("match_no") or 0) for m in pending if m.get("home_player_id") and m.get("away_player_id")}
-        ready=[m for m in self._ready_match_order(matches,extra) if int(m.get("match_no") or 0) in ready_ids]
-        # Public schedule must agree with the NEXT card. For fixed-pairing stages,
-        # reorder the tail using the same post-current projection that will be used
-        # immediately after saving the current result. Internal logical match_no values
-        # stay untouched; only the presentation order changes.
-        if len(ready)>1 and str(ready[0].get("stage") or "").upper() in {"GROUP","LEAGUE"}:
-            current_no=int(ready[0].get("match_no") or 0)
-            sim=[dict(m) for m in matches]
-            cur=next((m for m in sim if int(m.get("match_no") or 0)==current_no),None)
-            if cur is not None:
-                cur["home_score"]=0;cur["away_score"]=0
-                cur["played_at"]="9999-12-31T23:59:59.999999+00:00"
-                projected=[m for m in self._ready_match_order(sim,extra) if int(m.get("match_no") or 0) in ready_ids and int(m.get("match_no") or 0)!=current_no]
-                by_no={int(m.get("match_no") or 0):m for m in ready}
-                ready=[by_no[current_no]]+[by_no[int(m.get("match_no") or 0)] for m in projected if int(m.get("match_no") or 0) in by_no]
-        locked=sorted([m for m in pending if not (m.get("home_player_id") and m.get("away_player_id"))],key=pref)
-        ordered=completed+ready+locked
-        # display_match_no is intentionally presentation-only. Bracket dependencies,
-        # API actions and DB rows continue to use the immutable logical match_no.
+        locked=sorted([m for m in pending if int(m.get("match_no") or 0) not in projected_ids],key=pref)
+        ordered=completed+projected+locked
         return [dict(m,display_match_no=i) for i,m in enumerate(ordered,1)]
 
     def can_defer_match(self, tid: str, match_no: int) -> dict:
@@ -4315,12 +4381,15 @@ class Database:
             if fmt in ("double4","double5","double6","double7","double8","double9","double10") and m["stage"]=="FINAL" and hs<1:
                 raise ValueError("Zwycięzca Winners Bracket zaczyna finał od 1:0.")
 
-            knockout = m["stage"] not in ("GROUP","LEAGUE")
+            swiss_round = str(m.get("stage") or "").startswith("SWISS_")
+            knockout = m["stage"] not in ("GROUP","LEAGUE") and not swiss_round
             group_decider = self._group_match_tiebreak_context_conn(conn,tid,int(match_no)) if m["stage"]=="GROUP" else {"required":False}
             group_shootout = bool(group_decider.get("required"))
             penalties_supplied = hp is not None or ap is not None
             if penalties_supplied and (hp is None or ap is None):
                 raise ValueError("Podaj wynik karnych dla obu stron albo usuń karne.")
+            if penalties_supplied and swiss_round:
+                raise ValueError("W rundach Swiss nie ma dogrywki ani karnych — remis daje po 1 punkcie.")
             if penalties_supplied and not knockout and not group_shootout:
                 raise ValueError("Rzuty karne są dozwolone tylko w fazie pucharowej albo w ostatnim meczu grupy rozstrzygającym awans.")
             if penalties_supplied and hs!=ass:

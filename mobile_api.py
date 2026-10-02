@@ -201,7 +201,7 @@ class CreateTournamentPayload(BaseModel):
     player_names: list[str]
     player_count: int = Field(ge=3, le=10)
     format_key: str
-    game_version: str = "FC26"
+    game_version: str = "FC27"
     is_test: bool = True
     stake_per_player: float = Field(default=0.0, ge=0, le=100000)
     cash_flags: list[bool] = Field(default_factory=list)
@@ -210,7 +210,7 @@ class CreateTournamentPayload(BaseModel):
 class CreateDuelPayload(BaseModel):
     player_names: list[str]
     team_names: list[str]
-    game_version: str = "FC26"
+    game_version: str = "FC27"
     stake_per_player: float = Field(default=0.0, ge=0, le=100000)
     cash_flags: list[bool] = Field(default_factory=lambda:[True,True])
 
@@ -1555,8 +1555,9 @@ def live_payload() -> dict[str, Any]:
         except Exception: current_context = None
     current_no = int(current_raw.get("match_no") or 0) if current_raw else 0
     if current_raw:
-        # One public NEXT source for API + Streamlit. GROUP/LEAGUE use a post-result
-        # scheduler projection; knockout keeps the next already-ready pairing.
+        # One public NEXT source for API + Streamlit.  It is derived from the same
+        # iterative scheduler projection as the public M1/M2 timetable; uncertain KO
+        # unlocks deliberately return no NEXT until the current result is known.
         next_raw = db.visible_next_match_from(matches, current_no, extra)
     else:
         next_raw = None
