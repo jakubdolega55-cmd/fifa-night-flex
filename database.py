@@ -5763,6 +5763,30 @@ class Database:
             champ=str(first_de.get("champion_player_id") or "")
             de_detail=(f"Mistrz: {names.get(champ,'?')}" if champ else "Turniej zakończony jako niedokończony")
             add("first_de","⚔️","Pierwszy Double Elimination",first_de.get("completed_at") or first_de.get("created_at"),first_de["id"],None,de_detail,"first",7)
+
+        # First champion of newer tournament families. Double Elimination already
+        # has the historical `first_de` milestone above, so only Swiss and KO need
+        # dedicated champion milestones here. Count only completed official events
+        # with a real champion; an abandoned event must never qualify.
+        def first_format_champion(predicate):
+            return next((
+                e for e in tournaments
+                if str(e.get("status") or "") == "completed"
+                and e.get("champion_player_id")
+                and predicate(str(e.get("format_key") or ""))
+            ), None)
+
+        format_champions=(
+            ("first_swiss_champion","🔀","Pierwszy mistrz Swiss",lambda f:f.startswith("swiss"),11),
+            ("first_ko_champion","🥊","Pierwszy mistrz KO",lambda f:f.startswith("knockout"),12),
+        )
+        for key,icon,title,predicate,order in format_champions:
+            e=first_format_champion(predicate)
+            if not e:
+                continue
+            champ=str(e.get("champion_player_id") or "")
+            add(key,icon,title,e.get("completed_at") or e.get("created_at"),e["id"],None,f"Mistrz: {names.get(champ,'?')}","first",order)
+
         first_duel=next((e for e in events_all if str(e.get("format_key"))=="duel1v1"),None)
         if first_duel:
             dm=next((m for m in matches if str(m.get("tournament_id"))==str(first_duel["id"])),None)
