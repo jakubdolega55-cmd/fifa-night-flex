@@ -71,14 +71,27 @@ tab=db.standings(T2)['A'];print('FAIR TABLE',[(r['player_id'],r['pts'],r['gd'],r
 assert [r['player_id'] for r in tab]==[p0,p1,p2],tab
 assert [r['fair_play'] for r in tab]==[0,1,3],tab
 
-# three-way cyclic tie, no cards -> persistent lot, not tie_order
+# three-way cyclic tie, no cards -> visible/manual lot, not hidden tie_order
 T3=db.create_tournament(['M','N','O','P','Q','R'],6,'groups6',allowed_teams(6,'FC27'),True,0,[True]*6,'FC27');setup(db,T3)
 a=group_matches(db,T3,'A');ids=sorted({str(x['home_player_id']) for x in a}|{str(x['away_player_id']) for x in a});p0,p1,p2=ids;beats={(p0,p1),(p1,p2),(p2,p0)}
 for m in a: save_winner(db,T3,m,desired(str(m['home_player_id']),str(m['away_player_id'])))
+# Finish group B decisively too; visible tiebreaks should appear only when the whole group phase is done.
+b=group_matches(db,T3,'B');bids=sorted({str(x['home_player_id']) for x in b}|{str(x['away_player_id']) for x in b});b0,b1,b2=bids;bbeats={(b0,b1),(b0,b2),(b1,b2)}
+for m in b:
+ h=str(m['home_player_id']);a2=str(m['away_player_id']);win=h if (h,a2) in bbeats else a2
+ db.save_result(T3,int(m['match_no']),2 if h==win else 0,2 if a2==win else 0)
+seen=[]
+for _ in range(4):
+ state=db.big_visible_draw_state(T3)
+ if not state:break
+ assert state.get('draw_mode')=='tiebreak' and state.get('selected') is False,state
+ seen.append(state.get('kind'))
+ db.reveal_big_visible_draw(T3,state['kind']);shown=db.big_visible_draw_state(T3);assert shown.get('selected') is True,shown
+ db.ack_big_visible_draw(T3,state['kind'])
 with db.connect() as c:
  meta,extra=db._meta_extra_conn(c,T3);lot=(extra.get('group_lot_order') or {}).get('A') or {}
-assert set(lot)==set(ids),lot
-first=db.standings(T3)['A'];second=db.standings(T3)['A'];order=[r['player_id'] for r in first];expected=sorted(ids,key=lambda x:int(lot[x]));print('LOT',lot,'ORDER',order)
+assert set(lot)==set(ids),(lot,seen)
+first=db.standings(T3)['A'];second=db.standings(T3)['A'];order=[r['player_id'] for r in first];expected=sorted(ids,key=lambda x:int(lot[x]));print('VISIBLE LOT',lot,'ORDER',order)
 assert order==expected,(order,expected)
 assert [r['player_id'] for r in second]==order
 print('GROUP TIEBREAK TEST PASS')

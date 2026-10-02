@@ -36,10 +36,15 @@ def play_stage_prefix(db, tid, end_no):
     while True:
         b=db.bundle(tid)
         pending=[m for m in b['matches'] if int(m['match_no'])<=end_no and m.get('home_score') is None]
+        # A ranking tiebreak can be created exactly after the last match in the
+        # requested prefix. Resolve it before returning so old draw-policy tests
+        # continue from a fully settled table.
+        ev=db.big_visible_draw_state(tid)
+        if ev and ev.get('draw_mode')=='tiebreak':
+            db.reveal_big_visible_draw(tid,ev['kind']);db.ack_big_visible_draw(tid,ev['kind']);continue
         if not pending:return
         # acknowledge only true dynamic draws if they happen before target prefix
-        ev=db.big_visible_draw_state(tid)
-        if ev: db.ack_big_visible_draw(tid,ev['kind']);continue
+        if ev: db.reveal_big_visible_draw(tid,ev['kind']);db.ack_big_visible_draw(tid,ev['kind']);continue
         m=db.current_match_from(b['matches'],b['meta'].get('extra') or {})
         if not m or int(m['match_no'])>end_no:
             ready=[x for x in pending if x.get('home_player_id') and x.get('away_player_id')]
@@ -102,7 +107,7 @@ def find_late_de_draw(fmt,n,first_round_end,target_done,reveal_kind):
                     assert len(ev.get('pairs') or [])==2,ev
                     print('PASS visible late DE draw',fmt,reveal_kind,'candidates',ev['candidate_count'])
                     return
-                db.ack_big_visible_draw(tid,ev['kind']);continue
+                db.reveal_big_visible_draw(tid,ev['kind']);db.ack_big_visible_draw(tid,ev['kind']);continue
             b=db.bundle(tid);mm={int(m['match_no']):m for m in b['matches']}
             if all(mm[i].get('home_score') is not None for i in target_done): break
             m=db.current_match_from(b['matches'],b['meta'].get('extra') or {})
@@ -119,7 +124,7 @@ def groups9_policy():
     assert ev and ev.get('kind')=='groups9_barrage' and int(ev.get('candidate_count') or 0)==2 and ev.get('is_random_draw') is True,ev
     assert len(ev.get('pairs') or [])==3,ev
     print('PASS groups9 barrage uses real 2-variant visible draw')
-    db.ack_big_visible_draw(tid,ev['kind'])
+    db.reveal_big_visible_draw(tid,ev['kind']);db.ack_big_visible_draw(tid,ev['kind'])
     # The three barrage winners have different rest (M10/M11/M12), so the longest-rested
     # finalist deterministically takes the M14+M15 role. No fake draw should appear.
     for no in (10,11,12):
@@ -142,7 +147,7 @@ def groups9_policy():
     ev=db.big_visible_draw_state(tid)
     if ev:
         assert ev.get('kind')=='groups9_final4_sf' and int(ev.get('candidate_count') or 0)>=2 and ev.get('is_random_draw') is True,ev
-        db.ack_big_visible_draw(tid,ev['kind'])
+        db.reveal_big_visible_draw(tid,ev['kind']);db.ack_big_visible_draw(tid,ev['kind'])
     b=db.bundle(tid);mm={int(x['match_no']):x for x in b['matches']}
     groups={p['player_id']:p.get('group_name') for p in b['players']}
     for no in (10,11):
