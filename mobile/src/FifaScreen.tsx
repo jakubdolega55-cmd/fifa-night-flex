@@ -10,7 +10,7 @@ import {TeamVisual} from './teamVisuals';
 
 type Props={live:LiveResponse|null;options:any;controller:boolean;refresh:()=>Promise<void>;setBusy:(v:boolean)=>void};
 const formatMap:any={3:['league3_final'],4:['league4_final','double4'],5:['double5','league5_final'],6:['groups6','groups6_full','double6'],7:['double7','groups7','groups7_sf'],8:['groups8_sf','double8','groups8_barrage','swiss8'],9:['groups9_final4','groups9_barrage_final3','groups9_top8','double9'],10:['groups10_sf','swiss10','double10']};
-const stageKnockout=(s:string)=>!['GROUP','LEAGUE'].includes(s);
+const stageKnockout=(s:string)=>!['GROUP','LEAGUE'].includes(s)&&!String(s||'').startsWith('SWISS_');
 const SCAN_EVENT_TYPES=['normal_goal','penalty_goal','own_goal','penalty_miss','yellow_card','red_card','injury','substitution','unknown'] as const;
 const SCAN_EVENT_LABELS:Record<string,string>={
  normal_goal:'⚽ gol',penalty_goal:'🥅 gol z karnego',own_goal:'↩️ samobój',penalty_miss:'❌ nietrafiony karny',
@@ -164,7 +164,7 @@ function StartWizard({options,controller,refresh,setBusy}:{options:any;controlle
  const [morePlayers,setMorePlayers]=useState(['8','9','10'].includes(String(options?.last_player_count||6)));
  const count=variant==='1v1'?2:Number(variant);
  const [format,setFormat]=useState('groups6');
- const [gameVersion,setGameVersion]=useState('FC26');
+ const [gameVersion,setGameVersion]=useState('FC27');
  const [isTest,setIsTest]=useState(!controller);
  const [stake,setStake]=useState(String(options?.last_stake??0));
  const initial=useMemo(()=>Array.from({length:10},(_,i)=>String(options?.last_lineups?.[String(Math.max(3,count))]?.[i]||'')),[count,options]);
@@ -258,7 +258,7 @@ function SetupStage({t,controller,refresh,setBusy}:{t:LiveTournament;controller:
 function Standings({data}:{data:Record<string,any[]>}){const groups=Object.entries(data||{});if(!groups.length)return null;return <View style={{gap:10}}>{groups.map(([g,rows])=><Card key={g}><Text style={st.cardTitle}>{g==='L'?'📊 Tabela':`📊 Grupa ${g}`}</Text>{rows.map((r:any,i)=><View style={st.tableRow} key={r.player_id}><Text style={[st.tablePos,{width:24}]}>{i+1}</Text><View style={{flex:1}}><Text style={st.line}>{r.name}</Text><Text style={st.team}>{r.team}</Text></View><Text style={st.tablePos}>{r.pts??0} pkt</Text><Text style={st.tablePos}>{(r.gd??0)>0?'+':''}{r.gd??0}</Text></View>)}</Card>)}</View>}
 
 const DE_LAYOUT:any={double4:{wb:[[1,2],[4]],lb:[[3],[5]],final:[6]},double5:{wb:[[1,2],[3],[5]],lb:[[4],[6],[7]],final:[8]},double6:{wb:[[1,2],[3,4],[7]],lb:[[5],[6],[8],[9]],final:[10]},double7:{wb:[[1,2,3],[4,5],[9]],lb:[[6],[7,8],[10],[11]],final:[12]},double8:{wb:[[1,2,3,4],[5,6],[11]],lb:[[7,8],[9,10],[12],[13]],final:[14]},double9:{wb:[[1],[2,3,4,5],[6,7],[8]],lb:[[9,10],[11,12],[13],[14],[15]],final:[16]},double10:{wb:[[1,2],[3,4,5,6],[7,8],[9]],lb:[[10,11,12],[13],[14,15],[16],[17]],final:[18]}};
-function Bracket({t,matches}:{t:LiveTournament;matches:Match[]}){const lay=DE_LAYOUT[t.format_key];if(!lay)return null;const mm:any={};matches.forEach(m=>mm[m.match_no]=m);const Lane=({title,rounds}:{title:string;rounds:number[][]})=><View style={{gap:7}}><Text style={st.kicker}>{title}</Text><ScrollView horizontal showsHorizontalScrollIndicator><View style={st.bracketRow}>{rounds.map((round,i)=><View key={i} style={st.bracketCol}><Text style={st.roundTitle}>{i===rounds.length-1?'FINAŁ':`RUNDA ${i+1}`}</Text>{round.map(no=><MatchCard key={no} m={mm[no]||{match_no:no,stage:'',stage_label:'',match_status:'pending',ready:false} as Match} current={t.current_match?.match_no===no} publicNumber={false}/>)}</View>)}</View></ScrollView></View>;return <View style={{gap:14}}><Lane title="🌿 WINNERS BRACKET" rounds={lay.wb}/><Lane title="🩸 LOSERS BRACKET" rounds={lay.lb}/><Text style={st.kicker}>🏆 WIELKI FINAŁ</Text>{lay.final.map((no:number)=><MatchCard key={no} m={mm[no]} current={t.current_match?.match_no===no} publicNumber={false}/>)}</View>}
+function Bracket({t,matches}:{t:LiveTournament;matches:Match[]}){const lay=DE_LAYOUT[t.format_key];if(!lay)return null;const mm:any={};matches.forEach(m=>mm[m.match_no]=m);const Lane=({title,rounds}:{title:string;rounds:number[][]})=><View style={{gap:7}}><Text style={st.kicker}>{title}</Text><ScrollView horizontal showsHorizontalScrollIndicator><View style={st.bracketRow}>{rounds.map((round,i)=><View key={i} style={st.bracketCol}><Text style={st.roundTitle}>{i===rounds.length-1?'FINAŁ':`RUNDA ${i+1}`}</Text>{round.map(no=><MatchCard key={no} m={mm[no]||{match_no:no,stage:'',stage_label:'',match_status:'pending',ready:false} as Match} current={t.current_match?.match_no===no} publicNumber/>)}</View>)}</View></ScrollView></View>;return <View style={{gap:14}}><Lane title="🌿 WINNERS BRACKET" rounds={lay.wb}/><Lane title="🩸 LOSERS BRACKET" rounds={lay.lb}/><Text style={st.kicker}>🏆 WIELKI FINAŁ</Text>{lay.final.map((no:number)=><MatchCard key={no} m={mm[no]} current={t.current_match?.match_no===no} publicNumber={false}/>)}</View>}
 
 function SpecialDraw({t,canEdit,refresh}:{t:LiveTournament;canEdit:boolean;refresh:()=>Promise<void>}){
  const d=t.special_draw;
