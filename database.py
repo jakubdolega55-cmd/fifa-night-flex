@@ -1945,27 +1945,135 @@ class Database:
         return bool(rows) and all(r.get("home_score") is not None or str(r.get("match_status") or "")=='skipped' for r in rows)
 
     def _ensure_group_lot_order_conn(self, conn, tid: str, group: str) -> dict[str,int]:
-        meta,extra=self._meta_extra_conn(conn,tid)
-        lots=extra.setdefault("group_lot_order",{})
-        stored=lots.get(group)
-        if isinstance(stored,dict) and stored:
-            return {str(k):int(v) for k,v in stored.items()}
-        players=[str(r["player_id"]) for r in self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=? AND group_name=? ORDER BY tie_order",(tid,group))]
-        shuffled=players[:]; random.SystemRandom().shuffle(shuffled)
-        stored={pid:i for i,pid in enumerate(shuffled,1)}; lots[group]=stored
-        conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
-        return stored
+        # Visible/manual tiebreak draws own the final lot now.  This helper remains
+        # backward-compatible for old tournaments that already persisted an order.
+        _meta,extra=self._meta_extra_conn(conn,tid)
+        stored=((extra.get("group_lot_order") or {}).get(group) or {})
+        return {str(k):int(v) for k,v in stored.items()} if isinstance(stored,dict) else {}
 
     def _ensure_cross_group_lot_order_conn(self, conn, tid: str) -> dict[str,int]:
+        # Do not silently create a tournament-wide random order.  New tournaments
+        # create a visible tiebreak event only when an exact tie actually matters.
+        _meta,extra=self._meta_extra_conn(conn,tid)
+        stored=extra.get("cross_group_lot_order") or {}
+        return {str(k):int(v) for k,v in stored.items()} if isinstance(stored,dict) else {}
+
+    @staticmethod
+    def _relevant_group_positions(format_key: str, group: str) -> set[int]:
+        fmt=str(format_key or "")
+        mapping={
+            "league3_final":{1,2},"league4_final":{1,2},"league5_final":{1,2},
+            "groups6":{1,2},"groups6_full":{1,2,3},"groups7":{1,2,3},
+            "groups7_sf":{1,2},"groups8_sf":{1,2},"groups8_barrage":{1,2,3},
+            "groups10_sf":{1,2},"groups9_final4":{1,2},
+            "groups9_barrage_final3":{1,2},"groups9_top8":{1,2,3},
+        }
+        return set(mapping.get(fmt,set()))
+
+    @staticmethod
+    def _lot_needed_for_positions(table: list[dict], positions: set[int]) -> list[str]:
+        wanted=set(int(x) for x in positions)
+        ids=[]
+        for idx,row in enumerate(table,1):
+            block=[str(x) for x in (row.get("lot_needed_ids") or []) if x]
+            if idx in wanted and len(block)>1:
+                ids.extend(block)
+        return sorted(set(ids))
+
+    def _create_tiebreak_draw_conn(self, conn, tid: str, extra: dict, *, key: str, title: str,
+                                   subtitle: str, candidate_ids: list[str], apply_scope: str,
+                                   group: str | None = None) -> bool:
+        ids=[str(x) for x in candidate_ids if x]
+        ids=list(dict.fromkeys(ids))
+        if len(ids)<2:return False
+        for ev in (extra.get("visible_draws") or []):
+            if not ev.get("ack") and str(ev.get("special_kind") or "")==f"tiebreak_{key}":
+                return True
+        names={str(r["id"]):str(r.get("name") or "?") for r in self._fetchall(conn,"SELECT id,name FROM players")}
+        shuffled=ids[:]; random.SystemRandom().shuffle(shuffled)
+        selected=[{"player_id":pid,"name":names.get(pid,"?"),"order":i} for i,pid in enumerate(shuffled,1)]
+        candidates=[{"player_id":pid,"name":names.get(pid,"?")} for pid in ids]
+        event={
+            "special_kind":f"tiebreak_{key}","draw_mode":"tiebreak","candidate_count":len(ids),
+            "ack":False,"revealed":False,"is_random_draw":True,
+            "title":title,"subtitle":subtitle,"candidates":candidates,"selected_order":selected,
+            "apply_scope":apply_scope,"group":group,
+        }
+        extra.setdefault("visible_draws",[]).append(event)
+        conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
+        return True
+
+    def _prepare_required_tiebreaks_conn(self, conn, tid: str, fmt: str) -> bool:
         meta,extra=self._meta_extra_conn(conn,tid)
-        stored=extra.get("cross_group_lot_order")
-        if isinstance(stored,dict) and stored:
-            return {str(k):int(v) for k,v in stored.items()}
-        players=[str(r["player_id"]) for r in self._fetchall(conn,"SELECT player_id FROM tournament_players WHERE tournament_id=? ORDER BY tie_order",(tid,))]
-        shuffled=players[:]; random.SystemRandom().shuffle(shuffled)
-        stored={pid:i for i,pid in enumerate(shuffled,1)}; extra["cross_group_lot_order"]=stored
-        conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra),tid))
-        return stored
+        if any(not ev.get("ack") and ev.get("draw_mode")=="tiebreak" for ev in (extra.get("visible_draws") or [])):
+            return True
+
+        def group_check(group: str, label: str) -> bool:
+            if not self._group_is_complete_conn(conn,tid,group):return False
+            positions=self._relevant_group_positions(fmt,group)
+            if not positions:return False
+            table=self._table_from_conn(conn,tid,group)
+            ids=self._lot_needed_for_positions(table,positions)
+            if not ids:return False
+            return self._create_tiebreak_draw_conn(
+                conn,tid,extra,key=f"{fmt}_{group}",
+                title=f"Losowanie rozstrzygające — {label}",
+                subtitle="Wszystkie sportowe kryteria są identyczne. Losowanie ustala kolejność potrzebną do dalszej fazy.",
+                candidate_ids=ids,apply_scope="group",group=group)
+
+        if fmt in ("league3_final","league4_final","league5_final"):
+            if group_check("L","tabela ligowa"):return True
+        elif fmt in ("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf"):
+            if all(self._group_is_complete_conn(conn,tid,g) for g in ("A","B")):
+                for g in ("A","B"):
+                    if group_check(g,f"grupa {g}"):return True
+        elif fmt.startswith("groups9_"):
+            if all(self._group_is_complete_conn(conn,tid,g) for g in ("A","B","C")):
+                for g in ("A","B","C"):
+                    if group_check(g,f"grupa {g}"):return True
+                tabs={g:self._table_from_conn(conn,tid,g) for g in ("A","B","C")}
+                runners=[tabs[g][1] for g in ("A","B","C")]
+                thirds=[tabs[g][2] for g in ("A","B","C")]
+                def cross_key(r):
+                    return (int(r.get("pts",0)),int(r.get("gd",0)),int(r.get("gf",0)),-int(r.get("fair_play",0) or 0))
+                def boundary_draw(rows: list[dict], cutoff: int, key: str, title: str) -> bool:
+                    ordered=sorted(rows,key=cross_key,reverse=True)
+                    if cutoff<=0 or cutoff>=len(ordered):return False
+                    boundary=cross_key(ordered[cutoff-1])
+                    if cross_key(ordered[cutoff])!=boundary:return False
+                    ids=[str(r["player_id"]) for r in ordered if cross_key(r)==boundary]
+                    existing={str(k):int(v) for k,v in (extra.get("cross_group_lot_order") or {}).items()}
+                    if ids and all(pid in existing for pid in ids): return False
+                    return self._create_tiebreak_draw_conn(
+                        conn,tid,extra,key=key,title=title,
+                        subtitle="Punkty, bilans bramek, gole strzelone i Fair Play są identyczne. O awansie/rozstawieniu decyduje jawne losowanie.",
+                        candidate_ids=ids,apply_scope="cross_group")
+                if fmt in ("groups9_final4","groups9_top8"):
+                    if boundary_draw(runners,1,f"{fmt}_runner","Losowanie — najlepsze 2. miejsce"):return True
+                if fmt=="groups9_top8":
+                    if boundary_draw(thirds,2,f"{fmt}_third","Losowanie — awans z 3. miejsca"):return True
+                if fmt=="groups9_barrage_final3":
+                    final3=[m for m in self._matches_conn(conn,tid) if str(m.get("stage") or "")=="FINAL3"]
+                    if final3 and all(m.get("home_score") is not None for m in final3):
+                        table=self._final3_table_conn(conn,tid)
+                        ids=self._lot_needed_for_positions(table,{1,2,3})
+                        if ids:
+                            return self._create_tiebreak_draw_conn(
+                                conn,tid,extra,key="groups9_final3",title="Losowanie rozstrzygające — Final Three",
+                                subtitle="Final Three zakończyło się absolutnym remisem. Losowanie ustala końcową kolejność podium.",
+                                candidate_ids=ids,apply_scope="final3")
+        elif fmt in ("swiss8","swiss10"):
+            rows=self._matches_conn(conn,tid)
+            swiss=[m for m in rows if str(m.get("stage") or "").startswith("SWISS_")]
+            if swiss and all(m.get("home_score") is not None for m in swiss):
+                table=self._swiss_table_conn(conn,tid)
+                ids=self._lot_needed_for_positions(table,{1,2,3,4})
+                if ids:
+                    return self._create_tiebreak_draw_conn(
+                        conn,tid,extra,key=f"{fmt}_top4",title="Losowanie rozstrzygające — Swiss TOP4",
+                        subtitle="Punkty, Buchholz, bilans, gole i H2H nie rozstrzygnęły kolejności TOP4.",
+                        candidate_ids=ids,apply_scope="swiss")
+        return False
 
     def _group_match_tiebreak_context_conn(self, conn, tid: str, match_no: int) -> dict:
         m=self._fetchone(conn,"SELECT * FROM matches WHERE tournament_id=? AND match_no=?",(tid,int(match_no)))
@@ -2011,7 +2119,7 @@ class Database:
         ids = [p["player_id"] for p in players]; ties = {p["player_id"]:int(p["tie_order"]) for p in players}; names={p["player_id"]:p["name"] for p in players}; teams={p["player_id"]:p["team"] for p in players}
         fair=self._group_fair_play_conn(conn,tid,group) if group not in ("L","S","F3") else {}
         lot={}
-        if group not in ("L","S","F3"):
+        if group not in ("S","F3"):
             _meta,_extra=self._meta_extra_conn(conn,tid)
             lot=dict(((_extra.get("group_lot_order") or {}).get(group) or {}))
         rows = group_table(ids,matches,ties,fair,lot)
@@ -2128,6 +2236,7 @@ class Database:
     def _swiss_table_conn(self, conn, tid: str) -> list[dict]:
         prows=self._fetchall(conn,"SELECT tp.player_id,tp.tie_order,p.name,tp.team FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))
         ids=[str(x["player_id"]) for x in prows]; names={str(x["player_id"]):x.get("name") for x in prows}; teams={str(x["player_id"]):x.get("team") for x in prows}; ties={str(x["player_id"]):int(x.get("tie_order") or 9999) for x in prows}
+        _meta,_extra=self._meta_extra_conn(conn,tid); lot={str(k):int(v) for k,v in ((_extra.get("swiss_lot_order") or {}).items())}
         stats={pid:{"player_id":pid,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0,"opponents":[]} for pid in ids}
         swiss=[m for m in self._matches_conn(conn,tid) if str(m.get("stage") or "").startswith("SWISS_") and m.get("home_score") is not None]
         h2h={}
@@ -2145,15 +2254,22 @@ class Database:
             h2h[frozenset((h,a))]=w
         for r in stats.values(): r["gd"]=r["gf"]-r["ga"]
         for pid,r in stats.items(): r["buchholz"]=sum(stats[o]["pts"] for o in r["opponents"] if o in stats)
-        rows=list(stats.values()); rows.sort(key=lambda r:(r["pts"],r["buchholz"],r["gd"],r["gf"],-ties.get(r["player_id"],9999)),reverse=True)
+        rows=list(stats.values()); rows.sort(key=lambda r:(r["pts"],r["buchholz"],r["gd"],r["gf"],-lot.get(r["player_id"],10**9),-ties.get(r["player_id"],9999)),reverse=True)
         # Exact two-player blocks use H2H after points/Buchholz/GD/GF, per spec.
+        # If H2H still does not resolve the block, mark it for a visible draw.
         i=0
         while i<len(rows):
             key=(rows[i]["pts"],rows[i]["buchholz"],rows[i]["gd"],rows[i]["gf"]); j=i+1
             while j<len(rows) and (rows[j]["pts"],rows[j]["buchholz"],rows[j]["gd"],rows[j]["gf"])==key:j+=1
+            block=rows[i:j]
+            resolved_by_h2h=False
             if j-i==2:
                 a,b=rows[i],rows[i+1]; w=h2h.get(frozenset((a["player_id"],b["player_id"])))
-                if w==b["player_id"]: rows[i],rows[i+1]=b,a
+                if w==b["player_id"]: rows[i],rows[i+1]=b,a; resolved_by_h2h=True
+                elif w==a["player_id"]: resolved_by_h2h=True
+            if j-i>1 and not resolved_by_h2h and not all(str(r["player_id"]) in lot for r in block):
+                lot_ids=sorted(str(r["player_id"]) for r in block)
+                for r in block:r["lot_needed_ids"]=lot_ids
             i=j
         for r in rows: r["name"]=names.get(r["player_id"],"?"); r["team"]=teams.get(r["player_id"],"")
         return rows
@@ -2309,14 +2425,29 @@ class Database:
 
     def ack_big_visible_draw(self, tid: str, kind: str) -> None:
         with self.connect() as conn:
-            meta,extra=self._meta_extra_conn(conn,tid);found=False
+            meta,extra=self._meta_extra_conn(conn,tid);found=None
             for item in (extra.get("visible_draws") or []):
                 if not item.get("ack") and str(item.get("special_kind"))==str(kind):
                     if not bool(item.get("revealed", True)): raise ValueError("Najpierw uruchom losowanie z telefonu.")
-                    item["ack"]=True;found=True;break
+                    found=item;break
             if not found:raise ValueError("Nie ma aktywnego losowania tego typu.")
+            if found.get("draw_mode")=="tiebreak":
+                order={str(x.get("player_id")):int(x.get("order") or 9999) for x in (found.get("selected_order") or []) if x.get("player_id")}
+                scope=str(found.get("apply_scope") or "")
+                if scope=="group":
+                    group=str(found.get("group") or "")
+                    lots=extra.setdefault("group_lot_order",{})
+                    existing=dict(lots.get(group) or {}); existing.update(order); lots[group]=existing
+                elif scope=="cross_group":
+                    existing=dict(extra.get("cross_group_lot_order") or {}); existing.update(order); extra["cross_group_lot_order"]=existing
+                elif scope=="swiss":
+                    existing=dict(extra.get("swiss_lot_order") or {}); existing.update(order); extra["swiss_lot_order"]=existing
+                elif scope=="final3":
+                    existing=dict(extra.get("final3_lot_order") or {}); existing.update(order); extra["final3_lot_order"]=existing
+            found["ack"]=True
             conn.execute(self._sql("UPDATE flex_tournament_meta SET extra_json=? WHERE tournament_id=?"),(json.dumps(extra,ensure_ascii=False),tid))
             self._resolve_all_conn(conn,tid,meta["format_key"])
+            self._maybe_finish_conn(conn,tid,meta["format_key"])
 
 
     @staticmethod
@@ -2533,6 +2664,9 @@ class Database:
         if kind == "L": return self._loser_of(match_map.get(int(rest[0])))
         if kind == "POS":
             group,pos = rest[0],int(rest[1])
+            _meta,_extra=self._meta_extra_conn(conn,tid)
+            if any(not e.get("ack") and e.get("draw_mode")=="tiebreak" and e.get("apply_scope")=="group" and str(e.get("group") or "")==str(group) for e in (_extra.get("visible_draws") or [])):
+                return None
             # Pozycja w tabeli może zasilić fazę pucharową dopiero po zamknięciu
             # wszystkich meczów tej ligi/grupy. Sam warunek „każdy zagrał choć raz”
             # był zbyt słaby: po awaryjnym przesunięciu meczu mógł przedwcześnie
@@ -2596,6 +2730,11 @@ class Database:
         return None
 
     def _resolve_all_conn(self, conn, tid: str, format_key: str) -> None:
+        # Before resolving any table-derived source, stop for a visible/manual lot if
+        # all sporting criteria are exhausted and the exact tie affects advancement
+        # or a bracket position used downstream.
+        if self._prepare_required_tiebreaks_conn(conn,tid,format_key):
+            return
         # Iterate because resolving one match may make later W/L sources available.
         for _ in range(6):
             if format_key=="double7":
@@ -2947,6 +3086,7 @@ class Database:
         group_formats=("groups6","groups6_full","groups7","groups7_sf","groups8_sf","groups8_barrage","groups10_sf")
         if fmt not in group_formats: return None
         if extra.get("playoff_sources"): return extra
+        if self._prepare_required_tiebreaks_conn(conn,tid,fmt): return None
         rows=self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,)); mm={int(m["match_no"]):m for m in rows}
         if fmt in ("groups6","groups6_full"): group_end=6
         elif fmt in ("groups7","groups7_sf"): group_end=9
@@ -4515,6 +4655,8 @@ class Database:
             self._maybe_finish_conn(conn,tid,fmt)
 
     def _maybe_finish_conn(self, conn, tid: str, fmt: str) -> None:
+        if self._prepare_required_tiebreaks_conn(conn,tid,fmt):
+            return
         rows=self._fetchall(conn,"SELECT * FROM matches WHERE tournament_id=? ORDER BY match_no",(tid,)); mm={int(m["match_no"]):m for m in rows}
         champion=None
         if fmt=="duel1v1": champion=mm[1].get("winner_player_id")
@@ -4565,13 +4707,24 @@ class Database:
             conn.execute(self._sql("UPDATE matches SET home_player_id=NULL,away_player_id=NULL WHERE tournament_id=? AND home_score IS NULL AND COALESCE(match_status,'pending')='pending'"),(tid,))
             conn.execute(self._sql("UPDATE tournaments SET status='active',phase='active',champion_player_id=NULL,completed_at=NULL WHERE id=?"),(tid,))
             meta,extra=self._meta_extra_conn(conn,tid);fmt=meta["format_key"]
-            undone_group=str(last.get("group_name") or "") if str(last.get("stage") or "")=="GROUP" else ""
+            last_stage=str(last.get("stage") or "")
+            undone_group=str(last.get("group_name") or "") if last_stage in ("GROUP","LEAGUE") else ""
+            reset_tiebreak_draws=False
             if undone_group:
                 group_lots=extra.get("group_lot_order") or {}
                 group_lots.pop(undone_group,None)
                 if group_lots: extra["group_lot_order"]=group_lots
                 else: extra.pop("group_lot_order",None)
                 extra.pop("cross_group_lot_order",None)
+                reset_tiebreak_draws=True
+            if fmt in ("swiss8","swiss10") and last_stage.startswith("SWISS_"):
+                extra.pop("swiss_lot_order",None)
+                reset_tiebreak_draws=True
+            if fmt=="groups9_barrage_final3" and last_stage=="FINAL3":
+                extra.pop("final3_lot_order",None)
+                reset_tiebreak_draws=True
+            if reset_tiebreak_draws:
+                extra["visible_draws"]=[e for e in (extra.get("visible_draws") or []) if e.get("draw_mode")!="tiebreak"]
             # DE5 opponent is now an early draw of the symbolic W1/W2 route.
             # Undoing M1/M2 must not silently reroll a draw the room has already seen.
             if fmt=="double7":
@@ -4603,6 +4756,7 @@ class Database:
             for pid in (m.get("home_player_id"),m.get("away_player_id")):
                 if pid and pid not in ids:ids.append(pid)
         if not ids:return []
+        _meta,extra=self._meta_extra_conn(conn,tid);lot={str(k):int(v) for k,v in (extra.get("final3_lot_order") or {}).items()}
         stats={pid:{"player_id":pid,"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0} for pid in ids};h2h={}
         for m in rows:
             h,a=m["home_player_id"],m["away_player_id"];hs,aw=int(m["home_score"]),int(m["away_score"]);w=m.get("winner_player_id")
@@ -4612,22 +4766,31 @@ class Database:
             else:stats[h]["d"]+=1;stats[a]["d"]+=1;stats[h]["pts"]+=1;stats[a]["pts"]+=1
             h2h[frozenset((h,a))]=w
         for r in stats.values():r["gd"]=r["gf"]-r["ga"]
-        out=list(stats.values());out.sort(key=lambda r:(r["pts"],r["gd"],r["gf"]),reverse=True)
-        # group-stage seed is final tie fallback.
-        seed={};
+        out=list(stats.values());out.sort(key=lambda r:(r["pts"],r["gd"],r["gf"],-lot.get(str(r["player_id"]),10**9)),reverse=True)
+        # Historical group-stage seed remains display-only until a visible lot is acknowledged.
+        seed={}
         for g in ("A","B","C"):
             for i,r in enumerate(self._table_from_conn(conn,tid,g),1):seed[r["player_id"]]=(i,-int(r.get("pts",0)),-int(r.get("gd",0)),-int(r.get("gf",0)))
         i=0
         while i<len(out):
             key=(out[i]["pts"],out[i]["gd"],out[i]["gf"]);j=i+1
             while j<len(out) and (out[j]["pts"],out[j]["gd"],out[j]["gf"])==key:j+=1
+            block=out[i:j];resolved_h2h=False
             if j-i==2:
                 a,b=out[i],out[i+1];w=h2h.get(frozenset((a["player_id"],b["player_id"])))
-                if w==b["player_id"]:out[i],out[i+1]=b,a
-            elif j-i>1:out[i:j]=sorted(out[i:j],key=lambda r:seed.get(r["player_id"],(99,0,0,0)))
+                if w==b["player_id"]:out[i],out[i+1]=b,a;resolved_h2h=True
+                elif w==a["player_id"]:resolved_h2h=True
+            if j-i>1 and not resolved_h2h:
+                if all(str(r["player_id"]) in lot for r in block):
+                    out[i:j]=sorted(block,key=lambda r:int(lot[str(r["player_id"])]))
+                else:
+                    lot_ids=sorted(str(r["player_id"]) for r in block)
+                    for r in block:r["lot_needed_ids"]=lot_ids
+                    out[i:j]=sorted(block,key=lambda r:seed.get(r["player_id"],(99,0,0,0)))
             i=j
         names={r["player_id"]:r for r in self._fetchall(conn,"SELECT tp.player_id,p.name,tp.team FROM tournament_players tp JOIN players p ON p.id=tp.player_id WHERE tp.tournament_id=?",(tid,))}
-        for r in out:r["name"]=(names.get(r["player_id"]) or {}).get("name","?");r["team"]=(names.get(r["player_id"]) or {}).get("team","")
+        for pos,r in enumerate(out,1):
+            r["position"]=pos;r["name"]=(names.get(r["player_id"]) or {}).get("name","?");r["team"]=(names.get(r["player_id"]) or {}).get("team","")
         return out
 
     def standings(self, tid: str) -> dict[str,list[dict]]:

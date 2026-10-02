@@ -391,6 +391,25 @@ def render_synced_setup_tv(tid: str, api_url: str):
     """,height=680,scrolling=False)
 
 
+
+def render_tiebreak_draw(state: dict):
+    """TV renderer for a standings/qualification lot after all sporting criteria tie."""
+    candidates=list(state.get("candidates") or [])
+    selected=list(state.get("selected_order") or [])
+    title=html.escape(str(state.get("title") or "Losowanie rozstrzygające"))
+    subtitle=html.escape(str(state.get("subtitle") or "Wszystkie kryteria są identyczne. O kolejności decyduje losowanie."))
+    pool="".join(f"<span>{html.escape(str(x.get('name') or '?'))}</span>" for x in candidates)
+    cards=[]
+    for i,x in enumerate(selected):
+        delay=.9+i*2.2
+        cards.append(
+            f"<div class='tbcard' style='--d:{delay:.2f}s'><small>{i+1}. LOS</small>"
+            f"<b>{html.escape(str(x.get('name') or '?'))}</b></div>"
+        )
+    finish=.9+max(len(cards)-1,0)*2.2+1.0
+    components.html(f"""<div class='tb'><div class='eye'>FIFA NIGHT • LOSOWANIE ROZSTRZYGAJĄCE</div><div class='title'>{title}</div><div class='sub'>{subtitle}</div><div class='pool'><small>KANDYDACI</small><div>{pool}</div></div><div class='grid'>{''.join(cards)}</div><div class='foot'>✅ Kolejność wylosowana — zatwierdź na telefonie.</div></div>
+    <style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.tb{{max-width:1100px;margin:3px auto;padding:26px;border-radius:26px;background:radial-gradient(circle at 50% 0,#4b2a0d,#1a1b29 44%,#0b1220);border:1px solid rgba(251,191,36,.28);color:#f8fafc;text-align:center}}.eye{{font-size:11px;font-weight:950;letter-spacing:.18em;color:#fbbf24}}.title{{font-size:31px;font-weight:1000;margin:6px 0 3px}}.sub{{color:#cbd5e1;font-size:14px;max-width:850px;margin:0 auto 16px}}.pool{{padding:11px;border:1px dashed #475569;border-radius:16px;background:#101827;margin-bottom:15px}}.pool small{{display:block;color:#94a3b8;font-size:9px;font-weight:1000;letter-spacing:.15em;margin-bottom:8px}}.pool>div{{display:flex;justify-content:center;gap:8px;flex-wrap:wrap}}.pool span{{padding:7px 11px;border-radius:999px;background:#1e293b;font-size:13px;font-weight:850}}.grid{{display:grid;grid-template-columns:repeat({max(2,min(4,len(cards) or 2))},minmax(0,1fr));gap:12px}}.tbcard{{padding:20px 12px;border-radius:18px;background:#3b2a08;border:1px solid #a16207;opacity:0;transform:translateY(10px) scale(.97);animation:show .45s cubic-bezier(.16,.86,.2,1) var(--d) forwards}}.tbcard small{{display:block;color:#fde68a;font-size:10px;font-weight:1000;letter-spacing:.12em;margin-bottom:6px}}.tbcard b{{font-size:22px;overflow-wrap:anywhere}}.foot{{margin-top:15px;color:#86efac;font-weight:850;opacity:0;animation:show .35s ease {finish:.2f}s forwards}}@keyframes show{{to{{opacity:1;transform:none}}}}@media(max-width:760px){{.tb{{padding:16px 9px}}.grid{{grid-template-columns:1fr 1fr}}.title{{font-size:23px}}.tbcard b{{font-size:18px}}}}</style>{FIT_SCRIPT}""",height=max(430,320+((len(cards)+3)//4)*100),scrolling=True)
+
 def render_visible_pair_draw(state: dict, *, title: str | None = None):
     """Large controller/TV renderer for a genuine in-tournament pairing draw.
 

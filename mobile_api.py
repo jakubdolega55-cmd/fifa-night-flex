@@ -1827,7 +1827,7 @@ def special_reveal(tournament_id: str, kind: str, authorization: str | None = He
         if kind=="double7_combined": db.reveal_double7_combined_draw(tournament_id)
         elif kind=="double8_wb": db.reveal_double_wb_draw(tournament_id)
         elif kind=="double5_opponent": db.reveal_double5_opponent(tournament_id)
-        elif str(kind).startswith("double"): db.reveal_big_visible_draw(tournament_id,kind)
+        elif str(kind).startswith("double") or str(kind).startswith("tiebreak_"): db.reveal_big_visible_draw(tournament_id,kind)
         else: raise ValueError("To losowanie nie ma osobnej akcji losuj.")
     except ValueError as exc: raise HTTPException(422,str(exc)) from exc
     return live_payload()

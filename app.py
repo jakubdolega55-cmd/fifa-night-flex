@@ -17,7 +17,7 @@ from database import (
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, normalize_team_mode, effective_team_mode, allowed_teams, fixed_teams_for_version, real_helper_available
 from ui import (hero, inject_css, render_wheel, render_structure_draw, render_draft_order, standings_df, result_text,
-                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw,
+                render_double5_mid_draw, render_double7_combined_draw, render_double_wb_pairing_draw, render_playoff_reveal, render_synced_setup_tv, render_visible_pair_draw, render_tiebreak_draw,
                 render_awards_gala_tv)
 from team_visuals import team_visual_html
 
@@ -3392,7 +3392,13 @@ def render_tv_special_event(tid:str,b:dict) -> bool:
             return True
     state=db.big_visible_draw_state(tid)
     if state:
-        if state.get("selected"):
+        if state.get("draw_mode")=="tiebreak":
+            if state.get("selected"):
+                render_tiebreak_draw(state)
+            else:
+                st.markdown("### 🎲 Losowanie rozstrzygające")
+                st.info("📱 Wszystkie kryteria są identyczne. Uruchom losowanie rozstrzygające z telefonu/controllera.")
+        elif state.get("selected"):
             render_visible_pair_draw(state)
         else:
             st.markdown("### 🎲 Losowanie drabinki")

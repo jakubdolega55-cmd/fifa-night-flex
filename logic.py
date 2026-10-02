@@ -942,6 +942,18 @@ def group_table(group_player_ids: Iterable[str], matches: list[dict], tie_orders
             w=direct_penalty_winner(str(sub[0]["player_id"]),str(sub[1]["player_id"]))
             if w:
                 return sorted(sub,key=lambda r:0 if str(r["player_id"])==w else 1)
+        # Fair play is the final sporting criterion.  If 2+ players are still equal
+        # after it and no persisted lot exists yet, annotate the block so the caller
+        # can require a visible/manual draw instead of silently falling back to the
+        # original structure-draw order.
+        fair_groups={}
+        for r in sub:
+            fair_groups.setdefault(int(fair.get(str(r["player_id"]),0)),[]).append(r)
+        for members in fair_groups.values():
+            if len(members)>1 and not all(str(r["player_id"]) in lot for r in members):
+                ids=sorted(str(r["player_id"]) for r in members)
+                for r in members:
+                    r["lot_needed_ids"]=ids
         sub=sorted(sub,key=lambda r:(int(fair.get(str(r["player_id"]),0)),
                                      int(lot.get(str(r["player_id"]),10**9)),
                                      int(tie_orders.get(r["player_id"],9999))))
