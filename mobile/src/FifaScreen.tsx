@@ -232,8 +232,8 @@ function SetupStage({t,controller,refresh,setBusy}:{t:LiveTournament;controller:
  const act=async(fn:()=>Promise<any>,onResult?:(r:any)=>void)=>{setError('');setBusy(true);try{const r=await fn();onResult?.(r); if(r?.setup)setSetup(r.setup);else if(r?.meta)setSetup(r);else await load(); await refresh()}catch(e:any){await refresh();setError(e.message)}finally{setBusy(false)}};
  useEffect(()=>{
   if(!setup)return;
-  const phaseNow=setup.tournament?.phase||t.phase; const ps=setup.players||[]; const pendingNow=setup.pending_wildcard; const unrevealed=ps.filter((p:any)=>!p.team_revealed); const editableNow=controller||t.is_test;
-  if(phaseNow!=='team_draw'||!editableNow||pendingNow||wheelReveal||unrevealed.length!==1)return;
+  const phaseNow=setup.tournament?.phase||t.phase; const ps=setup.players||[]; const pendingNow=setup.pending_wildcard; const unrevealed=ps.filter((p:any)=>!p.team_revealed); const editableNow=controller||t.is_test; const remainingPool=setup.remaining_wheel_pool||[];
+  if(phaseNow!=='team_draw'||!editableNow||pendingNow||wheelReveal||unrevealed.length!==1||remainingPool.length!==1)return;
   const key=`${t.id}:${unrevealed[0]?.player_id||''}`; if(autoFinalRef.current===key)return; autoFinalRef.current=key;
   (async()=>{setError('');setBusy(true);try{const r=await api.teamReveal(t.id);const revealed=r?.revealed;if(revealed&&!revealed.auto_assigned&&!revealed.wildcard)setWheelReveal(revealed);if(r?.setup)setSetup(r.setup);else await load();await refresh()}catch(e:any){autoFinalRef.current='';await refresh();setError(e.message)}finally{setBusy(false)}})();
  },[setup,t.id,t.phase,t.is_test,controller,wheelReveal]);
