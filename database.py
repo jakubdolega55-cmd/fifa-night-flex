@@ -6389,9 +6389,9 @@ class Database:
                      "gd_before":c.get("early_gd_per_match"),"gd_after":c.get("late_gd_per_match")}
         elif key=="outsider":
             teaser=[f"{int(c.get('starts') or 0)} turniejów • {int(c.get('finals') or 0)} finały",f"bilans bramek {signed(c.get('gd'),0)}"]
-            winner=[f"{int(c.get('wins') or 0)} zwycięstw • {pct(c.get('win_pct'))} W",
-                    f"bramki {int(c.get('gf') or 0)}:{int(c.get('ga') or 0)} • bilans {signed(c.get('gd'),0)}",
-                    f"{int(c.get('starts') or 0)} turniejów • {int(c.get('finals') or 0)} finały • {int(c.get('titles') or 0)} tytuł(y)"]
+            winner=[f"{pct(c.get('win_pct'))} W • GD/mecz {signed(c.get('gd_per_match'),2)}",
+                    f"finały {int(c.get('finals') or 0)}/{int(c.get('starts') or 0)} • {pct(c.get('final_pct'))}",
+                    f"maks. 1 tytuł • zdobyte: {int(c.get('titles') or 0)}"]
         elif key=="rivalry":
             detail=[]
             if int(c.get("finals") or 0):detail.append(f"{int(c.get('finals') or 0)} finał(y)")
@@ -6412,8 +6412,8 @@ class Database:
             if c.get("fouls_total") is not None:winner.append(f"{int(c.get('fouls_total'))} fauli w {int(c.get('fouls_matches') or 0)} meczach Summary")
         elif key=="universal":
             teaser=[f"{int(c.get('teams_count') or 0)} różnych drużyn"]
-            winner=[f"{int(c.get('teams_count') or 0)} różnych drużyn • {int(c.get('successful_teams') or 0)} z sukcesem",
-                    f"{int(c.get('starts') or 0)} turniejów • {pct(c.get('win_pct'))} W"]
+            winner=[f"{int(c.get('successful_teams') or 0)}/{int(c.get('teams_count') or 0)} drużyn z sukcesem • {pct(c.get('successful_team_pct'))}",
+                    f"różnorodność: {int(c.get('teams_count') or 0)} drużyn • W% {pct(c.get('win_pct'))}"]
         elif key=="comeback_king":
             _cw=int(c.get('comeback_wins') or 0); _cd=int(c.get('comeback_draws') or 0); _cp=float(c.get('comeback_points') or 0)
             _cm=_cw+_cd
@@ -6421,10 +6421,10 @@ class Database:
             _best=(f"{c.get('best_comeback_from')} → {c.get('best_comeback_final')}" if c.get("best_comeback_from") and c.get("best_comeback_final") else "—")
             # Gala TOP3 deliberately hides points; reveal them only for the laureate.
             teaser=[f"{_cm} meczów z comebackiem",f"max: {_best}"]
-            winner=[f"{_cp_txt} pkt comebacku",f"{_cm} meczów z comebackiem",f"największy comeback: {_best}"]
+            winner=[f"{num(c.get('comeback_points_per10'),2)} pkt comebacku / 10 meczów",f"{_cp_txt} pkt łącznie • {_cm} meczów z comebackiem",f"największy comeback: {_best}"]
         elif key=="late_king":
-            teaser=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
-            winner=[f"{int(c.get('late_goals') or 0)} goli od 85'",f"{int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
+            teaser=[f"{int(c.get('matches') or 0)} meczów z pełnymi Events"]
+            winner=[f"{num(c.get('late_goals_per10'),2)} gola 85+ / 10 meczów",f"{int(c.get('late_goals') or 0)} goli łącznie • {int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
             special={"type":"late_clock","latest":None}
         elif key=="spectacle":
             teaser=[f"{int(c.get('matches') or 0)} meczów",f"{num(c.get('avg_goals'),2)} gola/mecz w jego spotkaniach"]
@@ -6447,7 +6447,7 @@ class Database:
             special={"type":"match_vs","winner_name":c.get("winner_name"),"loser_name":c.get("loser_name")}
         elif key=="clutch":
             teaser=[f"{int(c.get('clutch_matches') or 0)} meczów o życie"]
-            winner=[f"{int(c.get('clutch_wins') or 0)}/{int(c.get('clutch_matches') or 0)} wygranych clutch • {pct(c.get('clutch_pct'))}"]
+            winner=[f"{int(c.get('clutch_wins') or 0)}/{int(c.get('clutch_matches') or 0)} wygranych clutch • {pct(c.get('clutch_pct'))}",f"skorygowana skuteczność {pct(c.get('clutch_adjusted_pct'))}"]
             by=c.get("clutch_by_stage") or {}
             finals=sum(int((by.get(k) or {}).get("m") or 0) for k in ("FINAL","RESET_FINAL")); fw=sum(int((by.get(k) or {}).get("w") or 0) for k in ("FINAL","RESET_FINAL"))
             semis=int((by.get("SF") or {}).get("m") or 0); sw=int((by.get("SF") or {}).get("w") or 0)
@@ -6462,13 +6462,13 @@ class Database:
             winner=[f"{int(c.get('goals') or c.get('score') or 0)} goli",f"{int(c.get('matches') or 0)} meczów • {int(c.get('hattricks') or 0)} hat-tricki"]
         elif key=="defense":
             teaser=[f"{int(c.get('matches') or 0)} meczów • {int(c.get('clean_sheets') or 0)} czystych kont"]
-            winner=[f"{num(c.get('ga_per_match'),2)} gola straconego/mecz",f"{int(c.get('ga') or 0)} straconych • {int(c.get('clean_sheets') or 0)} czystych kont",f"{int(c.get('matches') or 0)} meczów"]
+            winner=[f"{num(c.get('ga_per_match'),2)} gola straconego/mecz",f"{pct(c.get('clean_sheet_pct'))} czystych kont • {int(c.get('clean_sheets') or 0)}/{int(c.get('matches') or 0)}"]
             if c.get("xga_per_match") is not None:winner.append(f"xGA {num(c.get('xga_per_match'),2)}/mecz")
         elif key=="offensive":
             teaser=[f"{int(c.get('matches') or 0)} meczów • {int(c.get('big_wins') or 0)} wysokich zwycięstw 3+"]
-            winner=[f"{num(c.get('goals_per_match'),2)} gola/mecz • {int(c.get('goals') or 0)} goli",f"{int(c.get('big_wins') or 0)} zwycięstw 3+ • największa wygrana +{int(c.get('max_margin') or 0)}"]
+            winner=[f"{num(c.get('goals_per_match'),2)} gola/mecz",f"{pct(c.get('big_win_pct'))} meczów wygranych 3+ • największa wygrana +{int(c.get('max_margin') or 0)}"]
             if c.get("xg_per_match") is not None:winner.append(f"xG {num(c.get('xg_per_match'),2)}/mecz")
-            if c.get("shots_per_match") is not None or c.get("sot_per_match") is not None:winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz • celne {num(c.get('sot_per_match'),1)}/mecz")
+            if c.get("shots_per_match") is not None:winner.append(f"strzały {num(c.get('shots_per_match'),1)}/mecz")
         elif key=="player_year":
             teaser=[f"{int(c.get('starts') or 0)} turniejów • {int(c.get('matches') or 0)} meczów • {int(c.get('finals') or 0)} finałów",
                     f"{int(c.get('wins') or 0)} W • {int(c.get('draws') or 0)} R • {int(c.get('losses') or 0)} P • {pct(c.get('win_pct'))} W",
@@ -7248,7 +7248,9 @@ class Database:
         for pid,v in ps.items():
             if v["m"]<5:continue
             wp=pc(pid,v);cl=(v["clutch_w"]/v["clutch_m"]*100 if v["clutch_m"] else 0);gdpm=(v["gf"]-v["ga"])/v["m"]
-            score=v["titles"]*27+v["finals"]*14+wp*.28+cl*.11+gdpm*4+len(participant_tournaments[pid])
+            # Frekwencja sama w sobie nie daje punktów. Tytuły i finały zostają
+            # absolutnymi osiągnięciami sezonu, ale nie dokładamy już +1 za każdy start.
+            score=v["titles"]*27+v["finals"]*14+wp*.28+cl*.11+gdpm*4
             reason=f"{v['titles']} tytuł(y), {v['finals']} finał(y), W% {wp}, bilans {v['gf']}:{v['ga']}"
             sp=summary_ps.get(pid) or {};xn=int(sp.get("xg_n") or 0)
             if xn>0:
@@ -7264,36 +7266,42 @@ class Database:
                 starts=len(participant_tournaments[pid]),
                 summary_xgd_per_match=(round(xgdpm,2) if xn>0 else None),summary_matches=int(xn)
             ))
-        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, wyniki i najważniejsze mecze. Summary dodaje tylko lekki komponent xGD zależny od pokrycia. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, W%, bilans/mecz i najważniejsze mecze. Sama liczba startów nie daje punktów; Summary dodaje tylko lekki komponent xGD zależny od pokrycia. Minimum 5 oficjalnych meczów turniejowych.",items)
 
         items=[]
         for pid,v in ps.items():
             if v["m"]<5:continue
-            base=(v["gf"]/v["m"])*18+v["gf"]*.6+v["big_wins"]*5+v["max_margin"]*2
-            score=base;reason=f"{v['gf']/v['m']:.2f} gola strzelonego/mecz • {v['gf']} goli • {v['big_wins']} wygrane 3+"
+            gpm=v["gf"]/v["m"]
+            big_win_rate=v["big_wins"]/v["m"]*100
+            # Ofensywa ma mierzyć intensywność, nie sam wolumen sezonu.
+            # Łączne gole i surowa liczba wysokich zwycięstw nie dają już punktów.
+            base=gpm*22+big_win_rate*.22+min(v["max_margin"],6)*1.5
+            score=base;reason=f"{gpm:.2f} gola/mecz • {big_win_rate:.1f}% meczów wygranych 3+ • największa wygrana +{v['max_margin']}"
             sp=summary_ps.get(pid) or {}
             xn=int(sp.get("xg_n") or 0);shn=int(sp.get("shots_n") or 0);son=int(sp.get("sot_n") or 0)
             if xn>0:
                 xgpm=float(sp.get("xg_for") or 0)/xn;score+=min(xgpm,4.0)*1.5*_summary_strength(pid,xn);reason+=f" • xG {xgpm:.2f}/m"
             if shn>0:
                 shpm=float(sp.get("shots_for") or 0)/shn;score+=min(shpm,20.0)*.12*_summary_strength(pid,shn);reason+=f" • strzały {shpm:.1f}/m"
-            if son>0:
-                sopm=float(sp.get("sot_for") or 0)/son;score+=min(sopm,10.0)*.15*_summary_strength(pid,son);reason+=f" • celne {sopm:.1f}/m"
+            # SOT nie jest składnikiem rankingu: z Summary ufamy xG i liczbie strzałów,
+            # ale nie wyliczamy celnych strzałów z shot accuracy.
             items.append(cand(pid,score,reason,
-                matches=int(v["m"]),goals=int(v["gf"]),goals_per_match=round(v["gf"]/v["m"],2),
-                big_wins=int(v["big_wins"]),max_margin=int(v["max_margin"]),
+                matches=int(v["m"]),goals=int(v["gf"]),goals_per_match=round(gpm,2),
+                big_wins=int(v["big_wins"]),big_win_pct=round(big_win_rate,1),max_margin=int(v["max_margin"]),
                 xg_per_match=(round(float(sp.get("xg_for") or 0)/xn,2) if xn>0 else None),
                 shots_per_match=(round(float(sp.get("shots_for") or 0)/shn,1) if shn>0 else None),
                 sot_per_match=(round(float(sp.get("sot_for") or 0)/son,1) if son>0 else None)
             ))
-        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Rdzeń to gole i wysokie zwycięstwa; Summary dodaje kontrolowany bonus za xG i aktywność strzelecką. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Liczymy przede wszystkim gole/mecz i odsetek wysokich zwycięstw; Summary dodaje kontrolowany bonus za xG i strzały/mecz. Minimum 5 oficjalnych meczów turniejowych.",items)
 
         items=[]
         for pid,v in ps.items():
             if v["m"]<5:continue
             ga_pm=v["ga"]/v["m"];cs_rate=v["clean_sheets"]/v["m"]*100
-            score=110-ga_pm*25+min(v["m"],20)+cs_rate*.18+v["clean_sheets"]*1.5
-            reason=f"{ga_pm:.2f} gola straconego/mecz • {v['clean_sheets']} czystych kont • {v['ga']} straconych • {v['m']} meczów"
+            # Zero punktów za samą liczbę rozegranych meczów i zero surowego bonusu
+            # za każde clean sheet. Liczy się jakość defensywy na mecz.
+            score=110-ga_pm*28+cs_rate*.28
+            reason=f"{ga_pm:.2f} gola straconego/mecz • {cs_rate:.1f}% czystych kont • {v['m']} meczów"
             sp=summary_ps.get(pid) or {};xn=int(sp.get("xg_n") or 0)
             if xn>0:
                 xgapm=float(sp.get("xg_against") or 0)/xn
@@ -7304,13 +7312,19 @@ class Database:
                 clean_sheets=int(v["clean_sheets"]),clean_sheet_pct=round(cs_rate,1),
                 xga_per_match=(round(float(sp.get("xg_against") or 0)/xn,2) if xn>0 else None),summary_matches=int(xn)
             ))
-        add("defense","🧱 Beton Roku","Tu gole wpuszcza się niechętnie, a najlepiej wcale. Summary dodaje kontrolowany komponent xGA; stare mecze bez Summary są neutralne. Minimum 5 oficjalnych meczów turniejowych.",items)
-        items=[cand(pid,(v["clutch_w"]/v["clutch_m"]*100)+v["clutch_w"]*4,f"{v['clutch_w']}/{v['clutch_m']} wygranych w meczach clutch",
-                    clutch_wins=int(v["clutch_w"]),clutch_matches=int(v["clutch_m"]),clutch_pct=round(v["clutch_w"]/v["clutch_m"]*100,1),
-                    finals=int(v["finals"]),titles=int(v["titles"]),
-                    clutch_by_stage={k:{"m":int(x["m"]),"w":int(x["w"])} for k,x in v["clutch_by_stage"].items()})
-               for pid,v in ps.items() if v["clutch_m"]>=5]
-        add("clutch","🎯 Clutch Player Roku","Najważniejsze są mecze bez marginesu błędu. Przegrywasz — kończy się droga po tytuł. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi. Minimum 5 meczów clutch.",items)
+        add("defense","🧱 Beton Roku","Tu liczy się jakość defensywy na mecz: gole stracone/mecz i procent czystych kont. Summary dodaje kontrolowany komponent xGA; sama liczba rozegranych meczów nie daje punktów. Minimum 5 oficjalnych meczów turniejowych.",items)
+        items=[]
+        for pid,v in ps.items():
+            if v["clutch_m"]<5:continue
+            clutch_pct=v["clutch_w"]/v["clutch_m"]*100
+            # Korekta Beta(3,3): małe próbki są delikatnie ściągane do 50%,
+            # dzięki czemu 5/5 nie dostaje automatycznej przewagi nad bardzo mocnym 12/14.
+            adjusted=(v["clutch_w"]+3)/(v["clutch_m"]+6)*100
+            items.append(cand(pid,adjusted,f"{v['clutch_w']}/{v['clutch_m']} clutch • skuteczność {clutch_pct:.1f}% • skorygowana {adjusted:.1f}%",
+                    clutch_wins=int(v["clutch_w"]),clutch_matches=int(v["clutch_m"]),clutch_pct=round(clutch_pct,1),
+                    clutch_adjusted_pct=round(adjusted,1),finals=int(v["finals"]),titles=int(v["titles"]),
+                    clutch_by_stage={k:{"m":int(x["m"]),"w":int(x["w"])} for k,x in v["clutch_by_stage"].items()}))
+        add("clutch","🎯 Clutch Player Roku","Najważniejsza jest skuteczność w meczach bez marginesu błędu, skorygowana o wielkość próbki. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi. Minimum 5 meczów clutch.",items)
         items=[cand(
             pid,
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
@@ -7372,15 +7386,21 @@ class Database:
         items=[]
         for pid,v in late_stats.items():
             if v["late_goals"]<=0: continue
+            # Denominator = mecze z zapisanym detailed Events, bo tylko w nich potrafimy
+            # uczciwie wykryć gola 85+. Mały bonus za wolumen jest ograniczony do 8 goli.
+            late_matches=int(detailed_matches_by_player.get(pid) or 0)
+            if late_matches<=0: continue
+            late_per10=float(v["late_goals"])/late_matches*10
+            score=late_per10+min(int(v["late_goals"]),8)*.25
             items.append({
                 "id":str(pid),"name":name_by.get(str(pid),"?"),
-                "score":float(v["late_goals"]),
-                "_sort":(int(v["late_goals"]),int(v["goals_90_marked"])),
-                "reason":f"{v['late_goals']} goli od 85. minuty • {v['goals_90_marked']} oznaczonych jako 90'",
-                "matches":int(ps.get(pid,{}).get("m") or 0),"late_goals":int(v["late_goals"]),
+                "score":round(score,4),
+                "_sort":(round(score,4),round(late_per10,4),int(v["late_goals"]),int(v["goals_90_marked"])),
+                "reason":f"{late_per10:.2f} gola 85+ / 10 meczów • {v['late_goals']} łącznie • {v['goals_90_marked']} oznaczonych jako 90'",
+                "matches":late_matches,"late_goals":int(v["late_goals"]),"late_goals_per10":round(late_per10,2),
                 "goals_90plus":int(v["goals_90_marked"]),"latest_goal":None
             })
-        add("late_king","⏰ Król Końcówek","Od 85. minuty zaczyna się jego ulubiona część meczu. Im później boli rywala, tym lepiej.",items)
+        add("late_king","⏰ Król Końcówek","Liczymy przede wszystkim gole od 85. minuty na 10 meczów ze szczegółowymi Events; łączna liczba takich goli daje tylko mały, ograniczony bonus.",items)
 
         items=[]
         for pid,v in comeback_stats.items():
@@ -7389,18 +7409,22 @@ class Database:
             best_transition=(f"{v.get('best_from_score')} → {v.get('best_final_score')}" if v.get("best_from_score") and v.get("best_final_score") else "—")
             points=float(v["points"]); points_txt=(str(int(points)) if points.is_integer() else str(points).replace('.',','))
             comeback_matches=int(v["wins"])+int(v["draw_comebacks"])
+            all_matches=int(ps.get(pid,{}).get("m") or 0)
+            if all_matches<=0: continue
+            points_per10=points/all_matches*10
+            score=points_per10+int(v["max_deficit"])*2.0
             items.append({
-                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":points,
-                "_sort":(points,int(v["max_deficit"]),int(v["wins"]),int(v["draw_comebacks"])),
-                "reason":f"{points_txt} pkt • {comeback_matches} meczów z comebackiem • max: {best_transition}",
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(score,4),
+                "_sort":(round(score,4),round(points_per10,4),int(v["max_deficit"]),points),
+                "reason":f"{points_per10:.2f} pkt comebacku / 10 meczów • {points_txt} pkt łącznie • max: {best_transition}",
                 "comeback_wins":int(v["wins"]),"comeback_draws":int(v["draw_comebacks"]),"comeback_points":points,
-                "comeback_matches":comeback_matches,
+                "comeback_points_per10":round(points_per10,2),"comeback_matches":comeback_matches,
                 "best_comeback_from":v.get("best_from_score"),"best_comeback_final":v.get("best_final_score"),
                 "best_comeback_match_id":v.get("best_match_id"),
                 "comeback_breakdown":{str(k):int(n) for k,n in v["from_deficits"].items()},
                 "matches":int(ps.get(pid,{}).get("m") or 0),
             })
-        add("comeback_king","🔄 Comeback King","Najpierw kłopoty, potem odrabianie.",items)
+        add("comeback_king","🔄 Comeback King","Punkty za comebacki przeliczamy na 10 oficjalnych meczów; największy odrobiony deficyt daje dodatkowy bonus jakościowy.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
@@ -7495,11 +7519,16 @@ class Database:
             cats[-1]["debut_first5"]=top(debut5)
             cats[-1]["debut_first10"]=top(debut10)
             cats[-1]["debut_primary_window"]=10 if debut10 else 5
-        items=[cand(pid,pc(pid,v)+v["w"]*2+(v["gf"]-v["ga"])*.4,f"maks. 1 tytuł • W% {pc(pid,v)} • {v['w']} W",
-                    matches=int(v["m"]),wins=int(v["w"]),win_pct=pc(pid,v),gf=int(v["gf"]),ga=int(v["ga"]),gd=int(v["gf"]-v["ga"]),
-                    starts=len(participant_tournaments[pid]),finals=int(v["finals"]),titles=int(v["titles"]))
-               for pid,v in ps.items() if v["m"]>=5 and v["titles"]<=1]
-        add("outsider","🏅 Najlepszy spoza dominatorów","Dla tych, którzy jeszcze nie zapełnili półki pucharami, ale regularnie depczą liderom po piętach. Minimum 5 oficjalnych meczów turniejowych.",items)
+        items=[]
+        for pid,v in ps.items():
+            if v["m"]<5 or v["titles"]>1:continue
+            wp=pc(pid,v);gdpm=(v["gf"]-v["ga"])/v["m"]
+            starts=len(participant_tournaments[pid]);final_rate=(v["finals"]/starts*100 if starts else 0.0)
+            score=wp*.55+gdpm*12+final_rate*.25+v["titles"]*5
+            items.append(cand(pid,score,f"maks. 1 tytuł • W% {wp} • GD/mecz {gdpm:+.2f} • finały {v['finals']}/{starts}",
+                    matches=int(v["m"]),wins=int(v["w"]),win_pct=wp,gf=int(v["gf"]),ga=int(v["ga"]),gd=int(v["gf"]-v["ga"]),gd_per_match=round(gdpm,2),
+                    starts=int(starts),finals=int(v["finals"]),final_pct=round(final_rate,1),titles=int(v["titles"])))
+        add("outsider","🏅 Najlepszy spoza dominatorów","Dla graczy z maksymalnie jednym tytułem. Liczą się W%, bilans bramek/mecz i odsetek turniejów zakończonych finałem, a nie surowa liczba zwycięstw. Minimum 5 oficjalnych meczów turniejowych.",items)
         successful_teams=defaultdict(set)
         for (tid,pid),stages in stages_by_player_tournament.items():
             fmt=str(event_by.get(tid,{}).get("format_key") or "")
@@ -7510,7 +7539,7 @@ class Database:
                 continue
             if fmt.startswith("double"):
                 success=bool(stages & {"WB_FINAL","LB_FINAL","FINAL","RESET_FINAL"})
-            elif fmt.startswith("groups"):
+            elif fmt.startswith(("groups","swiss","knockout")):
                 success=bool(stages & {"SF","FINAL","RESET_FINAL"})
             else:
                 # Formaty ligowe nie mają wyjścia z grupy — sukces oznacza dojście do finału.
@@ -7522,16 +7551,17 @@ class Database:
             good=len(successful_teams.get(pid,set()))
             starts=len(participant_tournaments[pid])
             if v["m"]>=5 and len(v["teams"])>=2:
+                teams_count=len(v["teams"]);success_rate=good/teams_count*100
+                score=success_rate*.45+min(teams_count,6)*7+pc(pid,v)*.15
                 items.append(cand(
-                    pid,
-                    good*12+len(v["teams"])*5+pc(pid,v)*.25,
-                    f"różne drużyny: {len(v['teams'])} • z sukcesem: {good} • starty: {starts} • W% {pc(pid,v)}",
-                    teams_count=len(v["teams"]),successful_teams=int(good),starts=int(starts),win_pct=pc(pid,v),matches=int(v["m"])
+                    pid,score,
+                    f"różne drużyny: {teams_count} • z sukcesem: {good}/{teams_count} ({success_rate:.1f}%) • W% {pc(pid,v)}",
+                    teams_count=teams_count,successful_teams=int(good),successful_team_pct=round(success_rate,1),starts=int(starts),win_pct=pc(pid,v),matches=int(v["m"])
                 ))
         add(
             "universal",
             "🔄 Najbardziej Uniwersalny Gracz",
-            "Liczy się gra różnymi drużynami i to, jak daleko gracz potrafił nimi dojść w turnieju. Minimum 5 oficjalnych meczów turniejowych i co najmniej 2 różne drużyny.",
+            "Liczy się różnorodność oraz procent użytych drużyn, którymi osiągnięto sukces. Sama liczba startów nie daje punktów. Minimum 5 oficjalnych meczów turniejowych i co najmniej 2 różne drużyny.",
             items
         )
         items=[]
@@ -7584,7 +7614,10 @@ class Database:
             if v["n"]<3:continue
             balance=1-abs(v["aw"]-v["bw"])/max(1,v["n"])
             rivalry_drama=min(10.0,float(v.get("drama_raw") or 0.0))
-            score=v["n"]*5+balance*20+v["importance_points"]*2+rivalry_drama
+            # Sama częstotliwość H2H pomaga tylko do 6 spotkań; dalej o jakości
+            # rywalizacji decydują wyrównanie, stawka i dramaturgia.
+            volume_bonus=min(int(v["n"]),6)*3
+            score=volume_bonus+balance*30+v["importance_points"]*2+rivalry_drama
             na,nb=v["names"] or (name_by.get(a,"?"),name_by.get(b,"?"))
 
             # Winner inside the selected rivalry: H2H wins -> aggregate goal balance
@@ -7618,11 +7651,11 @@ class Database:
                 "goals_a":int(v["goals_a"]),"goals_b":int(v["goals_b"]),
                 "finals":int(v.get("finals") or 0),"semifinals":int(v.get("semifinals") or 0),
                 "important_matches":int(v.get("important_matches") or 0),"penalty_matches":int(v.get("penalty_matches") or 0),
-                "drama_bonus":round(rivalry_drama,2),"winner_player_id":winner,"loser_player_id":loser,
+                "drama_bonus":round(rivalry_drama,2),"volume_bonus":int(volume_bonus),"winner_player_id":winner,"loser_player_id":loser,
                 "winner_name":name_by.get(winner) if winner else None,"loser_name":name_by.get(loser) if loser else None,
                 "winner_decider":decider,"fairplay_a":int(v.get("fairplay_a") or 0),"fairplay_b":int(v.get("fairplay_b") or 0),
             })
-        add("rivalry","⚔️ Rywalizacja Roku","Tylko turniejowe H2H: częstotliwość, wyrównanie, ważne mecze i mały bonus za dramatyczność. Minimum 3 bezpośrednie mecze w roku.",rivalry)
+        add("rivalry","⚔️ Rywalizacja Roku","Tylko turniejowe H2H: bonus za częstotliwość zatrzymuje się po 6 meczach; dalej liczą się głównie wyrównanie, ważne mecze i dramaturgia. Minimum 3 bezpośrednie mecze w roku.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
             if v["m"]<5:continue
