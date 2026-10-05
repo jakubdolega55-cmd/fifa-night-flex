@@ -25,7 +25,7 @@ from logic import (
     GAME_VERSIONS, TEAM_MODES, REAL_HELPER_TEAM, FRANCE_BANNED_TEAM, normalize_game_version, normalize_team_mode, effective_team_mode,
     fixed_teams_for_version, wildcard_suggestions_for_version, banned_team_names, real_helper_available, is_wildcard_slot, allowed_teams,
     build_draw, draw_signature, structure_match_preview, group_members, group_table,
-    schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_draft_order, reveal_order_with_previous_finalists, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, apply_de_playin_priority, weighted_bye_choice,
+    schedule_for_format, shuffled_assignments, weighted_team_assignments, weighted_team_assignments_with_unused, weighted_draft_order, reveal_order_with_previous_finalists, winner_from_result, optimize_opening_order, apply_cross_tournament_bye_priority, apply_de_playin_priority, weighted_bye_choice,
 )
 from scorer_seeds import SCORER_SEEDS
 
@@ -1222,9 +1222,15 @@ class Database:
         clean = [" ".join(str(x or "").strip().split()) for x in player_names]
         if any(not x for x in clean): raise ValueError("Wpisz nick każdego gracza.")
         if len({x.casefold() for x in clean}) != player_count: raise ValueError("Nicki w jednym turnieju muszą być unikalne.")
-        draft_mode = player_count in (3,4)
+        # FC27 uses the normal wheel already from 3 players. FC26 keeps the legacy
+        # 3–4 player draft. For FC27 3–5 the six-sector pool is larger than the
+        # lineup and unused sectors are intentionally left out of the tournament.
+        draft_mode = player_count in (3,4) and game_version!="FC27"
+        partial_wheel_mode = game_version=="FC27" and player_count in (3,4,5)
         if draft_mode:
             if len(teams) < player_count or len(set(teams)) != len(teams): raise ValueError("Pula draftu drużyn jest nieprawidłowa.")
+        elif partial_wheel_mode:
+            if len(teams) < player_count or len(set(teams)) != len(teams): raise ValueError("Pula koła drużyn jest nieprawidłowa.")
         elif len(teams) != player_count or len(set(teams)) != player_count:
             raise ValueError(f"Turniej wymaga dokładnie {player_count} różnych drużyn/slotów.")
         allowed={
@@ -1254,9 +1260,16 @@ class Database:
             placements=(carry or {}).get("placement_by_player_id") or {}
             ratings=self._live_team_ratings_conn(conn,game_version)
             previous_teams=(carry or {}).get("previous_team_by_player_id") or {}
-            assignments = {} if draft_mode else weighted_team_assignments(
-                pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode
-            )
+            if draft_mode:
+                assignments = {}
+            elif partial_wheel_mode:
+                assignments = weighted_team_assignments_with_unused(
+                    pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode
+                )
+            else:
+                assignments = weighted_team_assignments(
+                    pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode
+                )
             if draft_mode:
                 reveal=weighted_draft_order(pids,placements,(carry or {}).get("source_player_count"),player_count,rng)
             else:
@@ -1280,6 +1293,9 @@ class Database:
                 extra["cross_tournament_priority"]=carry
             if draft_mode:
                 extra.update({"draft_order_revealed":False,"draft_redraw_count":0})
+            if partial_wheel_mode:
+                extra["partial_wheel_pool"]=True
+                extra["wheel_slot_by_player_id"]={str(pid):str(assignments[pid]) for pid in pids}
             self._setting_set_conn(conn, CURRENT_KEY, tid)
             self._setting_set_conn(conn, LAST_COUNT_KEY, str(player_count))
             self._setting_set_conn(conn, f"flex_last_lineup_{player_count}", json.dumps(clean, ensure_ascii=False))
@@ -1633,13 +1649,31 @@ class Database:
         return " ".join(str(value or "").strip().casefold().replace("ł","l").split())
 
     def _remaining_wheel_pool_conn(self, conn, tid: str) -> list[str]:
-        """Technical wheel slots that are still in play, in reveal order.
+        """Technical wheel slots still visible for the next spin.
 
-        The wheel is visualised from exactly this list, so every completed pick
-        disappears from the next spin and the pointer can only land on a slot
-        that the backend can actually reveal. Wild Card slots stay distinct
-        (WC #1, WC #2, ...) until their owner confirms a concrete club.
+        Normal tournaments have one technical slot per player. FC27 3–5 player
+        tournaments deliberately keep the full six-sector pool; sectors assigned
+        to no player stay visible until the last real player has drawn and then
+        simply remain unused.
         """
+        meta=self._fetchone(conn,"SELECT team_pool_json,extra_json FROM flex_tournament_meta WHERE tournament_id=?",(tid,)) or {}
+        extra=json.loads(meta.get("extra_json") or "{}")
+        if extra.get("partial_wheel_pool"):
+            pool=[str(x) for x in json.loads(meta.get("team_pool_json") or "[]") if str(x or "").strip()]
+            slot_map={str(k):str(v) for k,v in (extra.get("wheel_slot_by_player_id") or {}).items()}
+            rows=self._fetchall(conn,"SELECT player_id,team_revealed FROM tournament_players WHERE tournament_id=?",(tid,))
+            consumed=[]
+            for r in rows:
+                if not int(r.get("team_revealed") or 0):
+                    continue
+                slot=slot_map.get(str(r.get("player_id") or ""))
+                if slot:
+                    consumed.append(slot)
+            remaining=pool.copy()
+            for slot in consumed:
+                try: remaining.remove(slot)
+                except ValueError: pass
+            return remaining
         rows=self._fetchall(conn,"""SELECT team FROM tournament_players
             WHERE tournament_id=? AND team_revealed=0
             ORDER BY team_reveal_order""",(tid,))
@@ -1714,12 +1748,12 @@ class Database:
                 ORDER BY tp.team_reveal_order LIMIT 1""",(tid,))
             if not row: return None
             remaining=self._fetchone(conn,"SELECT COUNT(*) AS c FROM tournament_players WHERE tournament_id=? AND team_revealed=0",(tid,)) or {}
-            last_assignment=int(remaining.get("c") or 0)==1
             extra=json.loads(row.get("extra_json") or "{}")
-            # Snapshot the wheel *before* this reveal. This is the exact set of
-            # sectors shown on phone + TV for this spin. After a confirmed pick
-            # the selected slot disappears from the next snapshot.
+            # Snapshot the wheel *before* this reveal. With FC27 partial wheels the
+            # final real player can still have several sectors available, so the
+            # no-spin shortcut is allowed only when exactly one sector remains.
             pool=self._remaining_wheel_pool_conn(conn,tid)
+            last_assignment=int(remaining.get("c") or 0)==1 and len(pool)==1
             pending=extra.get("pending_wildcard")
             if pending: return {**pending,"wheel_team":pending.get("team"),"pool":pool,"wildcard":True,"auto_assigned":last_assignment}
             if is_wildcard_slot(row.get("team")):

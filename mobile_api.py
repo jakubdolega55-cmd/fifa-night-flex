@@ -1486,6 +1486,10 @@ def _setup_payload(tid: str) -> dict[str, Any]:
             normalize_game_version(t.get("game_version")),
             effective_team_mode(t.get("game_version"),extra.get("team_mode") or "clubs"),
         )
+    try:
+        remaining_wheel_pool = db.remaining_wheel_pool(tid) if str(t.get("phase") or "") == "team_draw" else []
+    except Exception:
+        remaining_wheel_pool = []
     tournament_payload = {
         "id": tid, "status": t.get("status"), "phase": t.get("phase"),
         "is_test": bool(int(t.get("is_test") or 0)), "game_version": normalize_game_version(t.get("game_version")),
@@ -1514,6 +1518,7 @@ def _setup_payload(tid: str) -> dict[str, Any]:
         "tournament": tournament_payload, "meta": meta_payload, "players": player_rows,
         "draft_available": available, "wildcard_suggestions": wildcard_suggestions,
         "pending_wildcard": extra.get("pending_wildcard"),
+        "remaining_wheel_pool": remaining_wheel_pool,
         "structure_preview": b.get("structure_preview") or [],
         **tournament_payload,
         "team_pool": meta_payload["team_pool"], "draw": meta_payload["draw"],

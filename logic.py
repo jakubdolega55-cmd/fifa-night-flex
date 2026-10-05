@@ -120,16 +120,40 @@ def wildcard_slot_label(index: int | None, game_version: str, team_mode: str | N
 def allowed_teams(player_count: int, game_version: str = "FC26", team_mode: str | None = "clubs", fc27_real_banned: bool = False) -> list[str]:
     version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
     fixed=fixed_teams_for_version(version,mode,fc27_real_banned)
-    # FC27 clubs and FC27 national teams use five fixed wheel teams. Legacy FC26 clubs use four.
+    # FC27 always uses the same base wheel from 3 players upward: five fixed teams
+    # plus one Wild Card. With 3–5 players the unused sectors simply remain unused.
+    # Legacy FC26 behaviour stays unchanged (3–4 draft, 5+ wheel).
     normal_count=5 if (version=="FC27" or mode=="national") else 4
     fixed=fixed[:normal_count]
+    if version=="FC27" and 3 <= int(player_count) <= 6:
+        return fixed + [wildcard_slot_label(None,version,mode)]
     if player_count <= len(fixed):
-        # 3–4 use draft; FC26 clubs keep one optional Wild Card slot at five.
         if mode=="clubs" and version=="FC26" and player_count==5:
             return fixed + [wildcard_slot_label(None,version,mode)]
         return fixed
     wc_count=max(0,player_count-len(fixed))
     return fixed + [wildcard_slot_label(i+1,version,mode) for i in range(wc_count)]
+
+
+def weighted_team_assignments_with_unused(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random,
+                                          team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None,
+                                          game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
+    """Assign a subset of a larger wheel pool while preserving normal 6-slot weighting.
+
+    FC27 3–5 player tournaments use the same six-sector wheel as 6-player tournaments
+    (five fixed teams + one Wild Card). Neutral ghost players occupy the unused sectors
+    only for the hidden assignment calculation; their teams remain visible on the wheel
+    and simply go unused when all real players have drawn.
+    """
+    pids=[str(x) for x in player_ids]
+    if len(pids)>len(teams):
+        raise ValueError("Pula drużyn nie może być mniejsza niż liczba graczy.")
+    if len(pids)==len(teams):
+        return weighted_team_assignments(pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode)
+    ghosts=[f"__unused_wheel_slot_{i+1}__" for i in range(len(teams)-len(pids))]
+    all_pids=pids+ghosts
+    full=weighted_team_assignments(all_pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode)
+    return {pid:full[pid] for pid in pids}
 
 
 def _strong_team_key(team: str) -> str:

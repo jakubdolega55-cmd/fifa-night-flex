@@ -652,11 +652,13 @@ def render_fifa_night_setup(official_names:list[str], force_test:bool=False):
         teams=allowed_teams(count,game_version,team_mode,real_banned)
         fixed=fixed_teams_for_version(game_version,team_mode,real_banned)
         mode_label="reprezentacje" if team_mode=="national" else "kluby"
-        if count in (3,4):
+        if count in (3,4) and game_version!="FC27":
             st.markdown(f"**Wybór drużyn:** losujemy kolejność, potem każdy wybiera {'reprezentację' if team_mode=='national' else 'klub'} z puli normalnej albo dostępny Wild Card.")
         else:
-            wc=max(0,count-len(fixed))
+            wc=max(0,len(teams)-len(fixed))
             st.markdown(f"**Koło fortuny:** {len(fixed)} normalnych {mode_label}" + (f" + {wc} Wild Card" if wc else " • bez Wild Cardów"))
+            if game_version=="FC27" and count in (3,4,5):
+                st.caption(f"Losujemy tylko {count} razy. Niewylosowane pola z 6-polowej puli nie biorą udziału w turnieju.")
         if team_mode=="national":
             st.caption(f"{game_version} • Reprezentacje: " + " • ".join(fixed) + ". Francja jest banned i nie trafia na koło ani Wild Card.")
         elif game_version=="FC26":
@@ -843,9 +845,19 @@ def team_draw(tid:str):
     # Setup screens don't need match rows. One lightweight state read is enough.
     bundle=db.setup_bundle(tid);players=bundle["players"];meta=bundle["meta"];pool=meta["team_pool"]
     hidden=[p for p in players if not p["team_revealed"]]
-    # The visual wheel shrinks after every confirmed pick. Keep only technical
-    # slots that are still unrevealed; this mirrors the backend event snapshot.
-    remaining_pool=[str(p.get("team") or "") for p in sorted(hidden,key=lambda x:int(x.get("team_reveal_order") or 999)) if str(p.get("team") or "").strip()]
+    extra=meta.get("extra") or {}
+    # Normal wheels have exactly one slot per player. FC27 3–5 keeps the full
+    # six-sector pool; already drawn technical slots disappear, while unused
+    # sectors remain visible until all real players have received a team.
+    if extra.get("partial_wheel_pool"):
+        slot_map={str(k):str(v) for k,v in (extra.get("wheel_slot_by_player_id") or {}).items()}
+        consumed=[slot_map.get(str(p.get("player_id") or "")) for p in players if p.get("team_revealed")]
+        remaining_pool=list(pool)
+        for slot in [x for x in consumed if x]:
+            try: remaining_pool.remove(slot)
+            except ValueError: pass
+    else:
+        remaining_pool=[str(p.get("team") or "") for p in sorted(hidden,key=lambda x:int(x.get("team_reveal_order") or 999)) if str(p.get("team") or "").strip()]
     last=st.session_state.get("last_spin")
     pending=(meta.get("extra") or {}).get("pending_wildcard")
     if pending: pending={**pending,"wildcard":True}
@@ -867,12 +879,15 @@ def team_draw(tid:str):
         target=slot if slot is not None else st.empty()
         target.empty()
         with target.container():
-            if len(remaining)==1:
-                # Do NOT consume the final slot in the same run as the penultimate
-                # wheel. A rerun here used to erase the just-rendered penultimate
-                # animation, so users visually lost both the 8th and 9th assignments.
-                # Keep the penultimate wheel on screen; the next click only advances
-                # to the deterministic final assignment (still without a wheel).
+            result_pool=list(result.get("pool") or remaining_pool or pool)
+            chosen_slot=str(result.get("wheel_team") or result.get("team") or "")
+            after_pool=result_pool.copy()
+            if chosen_slot:
+                try: after_pool.remove(chosen_slot)
+                except ValueError: pass
+            if len(remaining)==1 and len(after_pool)==1:
+                # Only a truly deterministic final sector skips the wheel. FC27
+                # 3–5 still has several unused sectors at the last real player.
                 st.button("➡️ POKAŻ OSTATNI PRZYDZIAŁ",type="primary",use_container_width=True,key=f"show_final_{tid}_{new_done}")
             elif remaining:
                 nxt=sorted(remaining,key=lambda x:x["team_reveal_order"])[0]
@@ -935,7 +950,7 @@ def team_draw(tid:str):
     # Exactly one unrevealed slot is deterministic. Assign it without a wheel, but
     # KEEP its result visible on the controller. Do not jump directly to structure
     # draw, otherwise the user never sees who received the final team.
-    if len(hidden)==1:
+    if len(hidden)==1 and len(remaining_pool)==1:
         st.session_state.pop("last_spin",None)
         result=db.reveal_next_team(tid)
         if result:
