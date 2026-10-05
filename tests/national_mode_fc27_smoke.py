@@ -26,7 +26,7 @@ assert fixed_teams_for_version('FC27','clubs')==FC27_FIXED
 assert wildcard_suggestions_for_version('FC27','clubs')==FC27_WC
 assert 'real madryt' not in banned_team_names('FC27','clubs')
 assert not real_helper_available('FC27','clubs')
-assert allowed_teams(5,'FC27','clubs')==FC27_FIXED
+assert allowed_teams(5,'FC27','clubs')[:5]==FC27_FIXED and len(allowed_teams(5,'FC27','clubs'))==6 and 'Dowolna drużyna' in allowed_teams(5,'FC27','clubs')[5]
 assert len([x for x in allowed_teams(10,'FC27','clubs') if 'Dowolna drużyna' in x])==5
 print('PASS FC27 club pool: Real wheel, Man City WC, Real unbanned')
 
@@ -38,15 +38,15 @@ assert effective_team_mode('FC27','national')=='national'
 assert fixed_teams_for_version('FC27','national')==NAT_FIXED
 assert wildcard_suggestions_for_version('FC27','national')==NAT_WC
 assert {'france','francja'}<=banned_team_names('FC27','national')
-assert allowed_teams(5,'FC27','national')==NAT_FIXED
+assert allowed_teams(5,'FC27','national')[:5]==NAT_FIXED and len(allowed_teams(5,'FC27','national'))==6 and 'Dowolna reprezentacja' in allowed_teams(5,'FC27','national')[5]
 pool10=allowed_teams(10,'FC27','national')
 assert pool10[:5]==NAT_FIXED and len([x for x in pool10 if 'Dowolna reprezentacja' in x])==5,pool10
 assert all('Francja banned' in x for x in pool10[5:])
 print('PASS FC27 national pool + France ban')
 
 for team in ('PSG','Real Madryt'):
-    assert strong_team_multiplier(team,1,'FC27','clubs')==0.50
-    assert strong_team_multiplier(team,2,'FC27','clubs')==0.70
+    assert strong_team_multiplier(team,1,'FC27','clubs')==0.40
+    assert strong_team_multiplier(team,2,'FC27','clubs')==0.60
     assert strong_team_multiplier(team,3,'FC27','clubs')==1.0
 assert strong_team_multiplier('Arsenal',1,'FC27','clubs')==1.0
 for team in ('Hiszpania','Brazylia'):

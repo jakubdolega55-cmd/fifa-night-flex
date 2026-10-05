@@ -55,7 +55,7 @@ def req(method,path,*,json_data=None,headers=None,expect=200):
 # health/config/auth
 try:
     d,_=req('GET','/api/v1/health'); assert d['api_version']=='1.1.3'; ok('health')
-    d,_=req('GET','/api/v1/config'); assert all(str(n) in d['formats'] for n in range(3,11)); assert d['team_pools']['FC27']['5']==['Real Madryt','PSG','Bayern Monachium','FC Barcelona','Arsenal']; ok('config formats 3-10 + version team pools')
+    d,_=req('GET','/api/v1/config'); assert all(str(n) in d['formats'] for n in range(3,11)); assert d['team_pools']['FC27']['5'][:5]==['Real Madryt','PSG','Bayern Monachium','FC Barcelona','Arsenal'] and len(d['team_pools']['FC27']['5'])==6 and 'Dowolna drużyna' in d['team_pools']['FC27']['5'][5]; ok('config formats 3-10 + version team pools')
     _,_=req('POST','/api/v1/tournaments',json_data={'player_names':['A','B','C'],'player_count':3,'format_key':'league3_final','is_test':False},expect=401); ok('official create requires controller')
     d,_=req('POST','/api/v1/auth/controller',json_data={'password':'test-admin'}); token=d['token']; AUTH={'Authorization':f'Bearer {token}'}; ok('controller login')
     d,_=req('GET','/api/v1/auth/me',headers=AUTH); assert d.get('controller') is True; ok('controller me')
@@ -379,9 +379,9 @@ except Exception as e:
 try:
     payload={'player_names':['OA','OB','OC'],'player_count':3,'format_key':'league3_final','is_test':False,'stake_per_player':0,'cash_flags':[True,True,True]}
     d,_=req('POST','/api/v1/tournaments',json_data=payload,headers=AUTH); tid=d['id']
-    s0,_=req('GET',f'/api/v1/tournaments/{tid}/setup'); assert s0['phase']=='draft_order'
-    req('POST',f'/api/v1/tournaments/{tid}/draft/reveal',expect=401)
-    req('POST',f'/api/v1/tournaments/{tid}/draft/reveal',headers=AUTH)
+    s0,_=req('GET',f'/api/v1/tournaments/{tid}/setup'); assert s0['phase']=='team_draw'
+    req('POST',f'/api/v1/tournaments/{tid}/teams/reveal',expect=401)
+    req('POST',f'/api/v1/tournaments/{tid}/teams/reveal',headers=AUTH)
     ok('official setup requires controller')
     req('POST',f'/api/v1/tournaments/{tid}/reset',headers=AUTH)
 except Exception as e:

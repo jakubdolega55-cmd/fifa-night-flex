@@ -44,7 +44,7 @@ def play_all(db,tid):
         if b['tournament']['status']=='completed':return b,seen_pairs
         draw=db.big_visible_draw_state(tid)
         if draw:
-            db.ack_big_visible_draw(tid,draw['kind']);continue
+            db.reveal_big_visible_draw(tid,draw['kind']);db.ack_big_visible_draw(tid,draw['kind']);continue
         ready=[m for m in b['matches'] if m.get('home_score') is None and m.get('home_player_id') and m.get('away_player_id')]
         if not ready:raise AssertionError(f"stuck: {[(m['match_no'],m['stage']) for m in b['matches'] if m.get('home_score') is None]}")
         m=min(ready,key=lambda x:int(x['match_no']))
@@ -56,7 +56,7 @@ def play_all(db,tid):
     raise AssertionError('play loop')
 
 def main():
-    assert allowed_teams(5,'FC27')==['Real Madryt','PSG','Bayern Monachium','FC Barcelona','Arsenal']
+    assert allowed_teams(5,'FC27')[:5]==['Real Madryt','PSG','Bayern Monachium','FC Barcelona','Arsenal'] and len(allowed_teams(5,'FC27'))==6 and 'Dowolna drużyna' in allowed_teams(5,'FC27')[5]
     assert sum('Dowolna drużyna' in x for x in allowed_teams(10,'FC27'))==5
     assert sum('Dowolna drużyna' in x for x in allowed_teams(10,'FC26'))==6
 
