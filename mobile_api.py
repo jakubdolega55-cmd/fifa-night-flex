@@ -1500,9 +1500,13 @@ def _setup_payload(tid: str) -> dict[str, Any]:
         "format_matches": FORMAT_MATCH_COUNTS.get(fmt, ""),
         "stake_per_player": float(extra.get("stake_per_player") or 0),
     }
+    # PWA/APK must not receive the Streamlit-only administrative draw-profile
+    # configuration.  It has already been applied server-side when assignments
+    # were created, so clients neither need nor should see its snapshot.
+    mobile_extra={k:v for k,v in extra.items() if k!="fc27_real_player_handicap_snapshot"}
     meta_payload = {
         "extra": {
-            **extra,
+            **mobile_extra,
             "draft_order_revealed": bool(extra.get("draft_order_revealed")),
             "draft_redraw_count": int(extra.get("draft_redraw_count") or 0),
             "pending_wildcard": extra.get("pending_wildcard"),

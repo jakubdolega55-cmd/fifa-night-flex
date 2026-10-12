@@ -412,79 +412,90 @@ def render_fc27_real_ban_settings():
 
 
 def render_fc27_real_player_handicap_settings():
+    # This is deliberately a Streamlit-controller-only administrative control.
+    # Do not render even a heading until the browser has taken controller access
+    # with the admin password.
+    if not controller_access():
+        return
+
     st.markdown("### 🎛️ Korekta profilu losowania")
-    st.caption("Możesz wskazać maksymalnie 3 graczy z historią oficjalnych turniejów i ustawić dla nich indywidualny współczynnik korekcyjny profilu losowania.")
-    st.caption("Domyślnie Real: poprzedni mistrz ×0,25 • poprzedni finalista ×0,45. PSG pozostaje bez zmian: ×0,40 / ×0,60.")
+    st.caption("Indywidualne współczynniki można dodawać, zmieniać i usuwać. Lista nie ma sztucznego limitu liczby graczy.")
     if not admin_password():
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Nie można zmienić tej opcji.")
-        return
-    if not st.session_state.get("fc27_real_handicap_admin_ok"):
-        with st.form("fc27_real_handicap_unlock_form"):
-            pwd=st.text_input("Hasło administratora",type="password",key="settings_fc27_real_handicap_unlock_pwd")
-            unlock=st.form_submit_button("🔐 ODBLOKUJ KOREKTĘ PROFILU",use_container_width=True)
-        if unlock:
-            if admin_ok(pwd):
-                st.session_state.fc27_real_handicap_admin_ok=True
-                rr()
-            else:
-                st.error("Nieprawidłowe hasło.")
         return
 
     candidates=db.fc27_real_handicap_candidates()
     current=db.fc27_real_player_handicaps()
     names={str(x.get("id")):str(x.get("name") or "?") for x in candidates}
     counts={str(x.get("id")):int(x.get("tournament_count") or 0) for x in candidates}
-    if current:
-        active=[]
-        for pid,pct in current.items():
-            active.append(f"{names.get(str(pid),str(pid))}: −{int(pct)}%")
-        st.info("Aktywne: " + " • ".join(active))
-    else:
-        st.info("Brak indywidualnych korekt profilu.")
+
     if not candidates:
         st.caption("Brak graczy z zakończoną historią oficjalnych turniejów.")
-        if st.button("🔒 ZABLOKUJ",key="settings_real_handicap_lock_empty"):
-            st.session_state.fc27_real_handicap_admin_ok=False; rr()
         return
-    options=[""]+list(names)
-    current_items=list(current.items())[:3]
-    with st.form("fc27_real_player_handicap_form"):
-        picked=[]
-        for i in range(3):
-            existing_pid=str(current_items[i][0]) if i<len(current_items) else ""
-            existing_pct=int(current_items[i][1]) if i<len(current_items) else 50
-            if existing_pid not in options:existing_pid=""
-            c1,c2=st.columns([1.35,1])
+
+    # Existing entries: edit or remove one at a time.  Keeping the row tied to
+    # player ID makes nickname changes safe and avoids duplicate selections.
+    if current:
+        st.caption("Aktywne korekty")
+        ordered=sorted(current.items(),key=lambda kv:names.get(str(kv[0]),str(kv[0])).casefold())
+        for pid,pct in ordered:
+            spid=str(pid)
+            c1,c2,c3,c4=st.columns([1.55,1.15,.75,.75])
+            with c1:
+                st.markdown(f"**{names.get(spid,spid)}**")
+                st.caption(f"{counts.get(spid,0)} turn.")
+            with c2:
+                new_pct=st.slider(
+                    "Współczynnik korekcyjny",0,90,int(pct),5,format="%d%%",
+                    key=f"settings_profile_pct_{spid}",label_visibility="collapsed",
+                )
+            with c3:
+                if st.button("💾 Zapisz",key=f"settings_profile_save_{spid}",use_container_width=True):
+                    updated=dict(current)
+                    if int(new_pct)>0: updated[spid]=int(new_pct)
+                    else: updated.pop(spid,None)
+                    try:
+                        db.set_fc27_real_player_handicaps(updated)
+                        st.success("Zapisano korektę profilu losowania.")
+                        rr()
+                    except ValueError as e:
+                        st.error(str(e))
+            with c4:
+                if st.button("🗑️ Usuń",key=f"settings_profile_delete_{spid}",use_container_width=True):
+                    updated=dict(current); updated.pop(spid,None)
+                    db.set_fc27_real_player_handicaps(updated)
+                    st.success("Usunięto korektę profilu.")
+                    rr()
+    else:
+        st.info("Brak indywidualnych korekt profilu.")
+
+    available=[str(x.get("id")) for x in candidates if str(x.get("id")) not in current]
+    if available:
+        with st.form("fc27_real_player_handicap_add_form",clear_on_submit=False):
+            st.caption("Dodaj kolejną korektę")
+            c1,c2=st.columns([1.55,1])
             with c1:
                 pid=st.selectbox(
-                    f"Faworyt {i+1}",options,index=options.index(existing_pid),
-                    format_func=lambda x: "— brak —" if not x else f"{names.get(str(x),str(x))} ({counts.get(str(x),0)} turn.)",
-                    key=f"settings_real_handicap_pid_{i}",
+                    "Gracz",available,
+                    format_func=lambda x:f"{names.get(str(x),str(x))} ({counts.get(str(x),0)} turn.)",
+                    key="settings_profile_add_pid",
                 )
             with c2:
                 pct=st.slider(
-                    f"Współczynnik korekcyjny {i+1}",0,90,existing_pct if existing_pid else 50,5,
-                    format="%d%%",key=f"settings_real_handicap_pct_{i}",
+                    "Współczynnik korekcyjny",5,90,50,5,format="%d%%",
+                    key="settings_profile_add_pct",
                 )
-            picked.append((str(pid or ""),int(pct)))
-        go=st.form_submit_button("💾 ZAPISZ KOREKTĘ PROFILU",use_container_width=True,type="primary")
-    if go:
-        ids=[pid for pid,_ in picked if pid]
-        if len(ids)!=len(set(ids)):
-            st.error("Ten sam gracz nie może być wybrany w więcej niż jednym polu.")
-        else:
+            go=st.form_submit_button("➕ DODAJ KOREKTĘ",use_container_width=True,type="primary")
+        if go:
             try:
-                saved=db.set_fc27_real_player_handicaps({pid:pct for pid,pct in picked if pid and pct>0})
-                if saved:
-                    st.success("Zapisano korektę profilu losowania.")
-                else:
-                    st.success("Usunięto indywidualne korekty profilu.")
+                updated=dict(current); updated[str(pid)]=int(pct)
+                db.set_fc27_real_player_handicaps(updated)
+                st.success("Dodano korektę profilu losowania.")
                 rr()
             except ValueError as e:
                 st.error(str(e))
-    if st.button("🔒 ZABLOKUJ KOREKTĘ PROFILU",key="settings_real_handicap_lock"):
-        st.session_state.fc27_real_handicap_admin_ok=False
-        rr()
+    else:
+        st.caption("Wszyscy gracze z historią oficjalnych turniejów mają już przypisaną korektę.")
 
 
 def render_access_settings():
@@ -495,7 +506,6 @@ def render_access_settings():
         if st.button("📺 WYŁĄCZ STEROWANIE NA TYM URZĄDZENIU",use_container_width=True,key="controller_disable"):
             st.session_state._controller_access=False
             st.session_state.awards_admin_ok=False
-            st.session_state.fc27_real_handicap_admin_ok=False
             st.session_state.start_view="stats"
             st.session_state.viewer_view="📺 LIVE"
             st.session_state.public_view="fifa"
@@ -522,8 +532,9 @@ def render_access_settings():
     render_team_mode_settings()
     st.divider()
     render_fc27_real_ban_settings()
-    st.divider()
-    render_fc27_real_player_handicap_settings()
+    if controller_access():
+        st.divider()
+        render_fc27_real_player_handicap_settings()
     st.divider()
     render_player_rename_settings()
     st.divider()

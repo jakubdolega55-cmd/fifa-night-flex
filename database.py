@@ -657,7 +657,7 @@ class Database:
             except (TypeError,ValueError):continue
             pct=max(0,min(90,pct))
             if pct>0:out[str(pid)]=pct
-        return dict(list(out.items())[:3])
+        return out
 
     def fc27_real_player_handicaps(self) -> dict[str,int]:
         """Persistent admin-only extra Real reductions by player ID (0-90%)."""
@@ -687,7 +687,6 @@ class Database:
             except (TypeError,ValueError):raise ValueError("Współczynnik korekcyjny musi być liczbą od 0 do 90%.")
             if pct<0 or pct>90:raise ValueError("Współczynnik korekcyjny musi mieścić się w zakresie 0–90%.")
             if pct>0:clean[spid]=pct
-        if len(clean)>3:raise ValueError("Korektę profilu można ustawić maksymalnie dla 3 graczy.")
         with self.connect() as conn:
             if clean:
                 marks=",".join(["?"]*len(clean))
