@@ -44,10 +44,12 @@ assert pool10[:5]==NAT_FIXED and len([x for x in pool10 if 'Dowolna reprezentacj
 assert all('Francja banned' in x for x in pool10[5:])
 print('PASS FC27 national pool + France ban')
 
-for team in ('PSG','Real Madryt'):
-    assert strong_team_multiplier(team,1,'FC27','clubs')==0.40
-    assert strong_team_multiplier(team,2,'FC27','clubs')==0.60
-    assert strong_team_multiplier(team,3,'FC27','clubs')==1.0
+assert strong_team_multiplier('PSG',1,'FC27','clubs')==0.40
+assert strong_team_multiplier('PSG',2,'FC27','clubs')==0.60
+assert strong_team_multiplier('PSG',3,'FC27','clubs')==1.0
+assert strong_team_multiplier('Real Madryt',1,'FC27','clubs')==0.25
+assert strong_team_multiplier('Real Madryt',2,'FC27','clubs')==0.45
+assert strong_team_multiplier('Real Madryt',3,'FC27','clubs')==1.0
 assert strong_team_multiplier('Arsenal',1,'FC27','clubs')==1.0
 for team in ('Hiszpania','Brazylia'):
     assert strong_team_multiplier(team,1,'FC27','national')==0.50
