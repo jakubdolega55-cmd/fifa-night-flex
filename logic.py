@@ -40,9 +40,12 @@ FC27_NATIONAL_WILDCARD_SUGGESTIONS = [
 ]
 
 # Strong-team soft handicap for previous champion/finalist.
-# FC27 clubs use a slightly stronger handicap for PSG/Real; national teams
-# intentionally keep their previous Spain/Brazil values.
-FC27_CLUB_STRONG_TEAM_MULTIPLIER = {1: 0.40, 2: 0.60}
+# In FC27 clubs Real is intentionally handicapped more strongly than PSG because
+# it proved too dominant in live play. National teams keep their existing values.
+FC27_CLUB_PSG_MULTIPLIER = {1: 0.40, 2: 0.60}
+FC27_CLUB_REAL_MULTIPLIER = {1: 0.25, 2: 0.45}
+# Backwards-compatible alias for older imports/tests that treated PSG + Real alike.
+FC27_CLUB_STRONG_TEAM_MULTIPLIER = FC27_CLUB_PSG_MULTIPLIER
 FC27_NATIONAL_STRONG_TEAM_MULTIPLIER = {1: 0.50, 2: 0.70}
 
 # Backwards-compatible aliases used by existing screens. FC26 clubs remain legacy/default.
@@ -137,7 +140,8 @@ def allowed_teams(player_count: int, game_version: str = "FC26", team_mode: str 
 
 def weighted_team_assignments_with_unused(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random,
                                           team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None,
-                                          game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
+                                          game_version: str = "FC26", team_mode: str = "clubs",
+                                          real_handicap_by_player_id: dict[str,float] | None = None) -> dict[str,str]:
     """Assign a subset of a larger wheel pool while preserving normal 6-slot weighting.
 
     FC27 3–5 player tournaments use the same six-sector wheel as 6-player tournaments
@@ -149,10 +153,10 @@ def weighted_team_assignments_with_unused(player_ids: list[str], teams: list[str
     if len(pids)>len(teams):
         raise ValueError("Pula drużyn nie może być mniejsza niż liczba graczy.")
     if len(pids)==len(teams):
-        return weighted_team_assignments(pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode)
+        return weighted_team_assignments(pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode,real_handicap_by_player_id)
     ghosts=[f"__unused_wheel_slot_{i+1}__" for i in range(len(teams)-len(pids))]
     all_pids=pids+ghosts
-    full=weighted_team_assignments(all_pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode)
+    full=weighted_team_assignments(all_pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode,real_handicap_by_player_id)
     return {pid:full[pid] for pid in pids}
 
 
@@ -170,19 +174,34 @@ def _strong_team_key(team: str) -> str:
 def strong_team_multiplier(team: str, placement: int | None, game_version: str, team_mode: str | None = "clubs") -> float:
     version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
     key=_strong_team_key(team)
-    strong=set()
+    place=int(placement or 0)
     if version=="FC27" and mode=="clubs":
-        strong={"psg","real madryt"}
-    elif version=="FC27" and mode=="national":
-        strong={"hiszpania","brazylia"}
-    if key not in strong:
+        if key=="real madryt":
+            return FC27_CLUB_REAL_MULTIPLIER.get(place,1.0)
+        if key=="psg":
+            return FC27_CLUB_PSG_MULTIPLIER.get(place,1.0)
         return 1.0
-    multipliers = (
-        FC27_NATIONAL_STRONG_TEAM_MULTIPLIER
-        if mode == "national"
-        else FC27_CLUB_STRONG_TEAM_MULTIPLIER
-    )
-    return multipliers.get(int(placement or 0),1.0)
+    if version=="FC27" and mode=="national" and key in {"hiszpania","brazylia"}:
+        return FC27_NATIONAL_STRONG_TEAM_MULTIPLIER.get(place,1.0)
+    return 1.0
+
+
+def fc27_real_player_multiplier(team: str, player_id: str, game_version: str, team_mode: str | None = "clubs",
+                                real_handicap_by_player_id: dict[str,float] | None = None) -> float:
+    """Additional persistent per-player Real handicap.
+
+    Values are multiplicative weights (1.00=no extra handicap, 0.50=50% of
+    normal Real weight). It applies only to Real in FC27 club mode and stacks
+    with previous-placement, live-rating and previous-team-repeat modifiers.
+    """
+    version=normalize_game_version(game_version); mode=effective_team_mode(version,team_mode)
+    if version!="FC27" or mode!="clubs" or _strong_team_key(team)!="real madryt":
+        return 1.0
+    raw=(real_handicap_by_player_id or {}).get(str(player_id),1.0)
+    try: value=float(raw)
+    except (TypeError,ValueError): value=1.0
+    # A custom handicap must reduce probability, never silently ban Real completely.
+    return min(1.0,max(0.10,value))
 
 
 FORMAT_LABELS = {
@@ -315,7 +334,8 @@ def _weighted_choice_pairs(options: list[tuple[object,float]], rng: random.Rando
 
 def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], placement_by_player_id: dict[str,int] | None,
                                  team_ratings: dict[str,float] | None, previous_team_by_player_id: dict[str,str] | None,
-                                 rng: random.Random, game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
+                                 rng: random.Random, game_version: str = "FC26", team_mode: str = "clubs",
+                                 real_handicap_by_player_id: dict[str,float] | None = None) -> dict[str,str]:
     """Assign fixed teams with soft live-strength handicap + anti-repeat.
 
     Every permutation remains possible. Previous top finishers are gently nudged
@@ -347,6 +367,7 @@ def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], 
             # but does NOT inherit Real's strong-team handicap. PSG is then the only
             # strong club receiving the extra previous-finalist soft handicap.
             w*=mult
+            w*=fc27_real_player_multiplier(team,pid,game_version,team_mode,real_handicap_by_player_id)
         opts.append((perm,w))
     chosen=_weighted_choice_pairs(opts,rng)
     return dict(zip(pids,chosen))
@@ -368,7 +389,8 @@ def reveal_order_with_previous_finalists(player_ids: list[str], placement_by_pla
 
 def weighted_team_assignments(player_ids: list[str], teams: list[str], placement_by_player_id: dict[str,int] | None, rng: random.Random,
                               team_ratings: dict[str,float] | None = None, previous_team_by_player_id: dict[str,str] | None = None,
-                              game_version: str = "FC26", team_mode: str = "clubs") -> dict[str,str]:
+                              game_version: str = "FC26", team_mode: str = "clubs",
+                              real_handicap_by_player_id: dict[str,float] | None = None) -> dict[str,str]:
     """Assign Wild Card slots softly by prior finish, then fixed clubs intelligently.
 
     Wild Card: 1st=1.70, 2nd=1.45, 3rd=1.15.
@@ -381,7 +403,7 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
     wild=[t for t in teams if is_wildcard_slot(t)]
     fixed=[t for t in teams if not is_wildcard_slot(t)]
     if not wild:
-        return weighted_fixed_team_matching(pids,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng,game_version,team_mode)
+        return weighted_fixed_team_matching(pids,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng,game_version,team_mode,real_handicap_by_player_id)
     weights=wildcard_assignment_weights(placement_by_player_id)
     weighted_order=weighted_sample_without_replacement(pids,weights,rng)
     wild_players=weighted_order[:len(wild)]
@@ -389,7 +411,7 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
     remaining=[pid for pid in pids if pid not in wild_set]
     wild_pool=wild.copy(); rng.shuffle(wild_pool)
     out={pid:team for pid,team in zip(wild_players,wild_pool,strict=True)}
-    out.update(weighted_fixed_team_matching(remaining,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng,game_version,team_mode))
+    out.update(weighted_fixed_team_matching(remaining,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,rng,game_version,team_mode,real_handicap_by_player_id))
     return out
 
 def build_draw(player_ids: list[str], format_key: str, rng: random.Random) -> dict:

@@ -411,6 +411,82 @@ def render_fc27_real_ban_settings():
             rr()
 
 
+def render_fc27_real_player_handicap_settings():
+    st.markdown("### 🎯 Dodatkowy handicap Realu — wybrani gracze")
+    st.caption("Tylko EA FC 27 • kluby. Możesz wskazać maksymalnie 3 graczy z historią oficjalnych turniejów i dodatkowo zmniejszyć im szansę na wylosowanie Realu. Ta redukcja mnoży się przez zwykły handicap mistrza/finalisty, Live Team Rating i karę za powtórzenie drużyny.")
+    st.caption("Domyślnie Real: poprzedni mistrz ×0,25 • poprzedni finalista ×0,45. PSG pozostaje bez zmian: ×0,40 / ×0,60.")
+    if not admin_password():
+        st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Nie można zmienić tej opcji.")
+        return
+    if not st.session_state.get("fc27_real_handicap_admin_ok"):
+        with st.form("fc27_real_handicap_unlock_form"):
+            pwd=st.text_input("Hasło administratora",type="password",key="settings_fc27_real_handicap_unlock_pwd")
+            unlock=st.form_submit_button("🔐 ODBLOKUJ USTAWIENIA HANDICAPU REALU",use_container_width=True)
+        if unlock:
+            if admin_ok(pwd):
+                st.session_state.fc27_real_handicap_admin_ok=True
+                rr()
+            else:
+                st.error("Nieprawidłowe hasło.")
+        return
+
+    candidates=db.fc27_real_handicap_candidates()
+    current=db.fc27_real_player_handicaps()
+    names={str(x.get("id")):str(x.get("name") or "?") for x in candidates}
+    counts={str(x.get("id")):int(x.get("tournament_count") or 0) for x in candidates}
+    if current:
+        active=[]
+        for pid,pct in current.items():
+            active.append(f"{names.get(str(pid),str(pid))}: −{int(pct)}%")
+        st.info("Aktywne: " + " • ".join(active))
+    else:
+        st.info("Brak ręcznych handicapów Realu dla konkretnych graczy.")
+    if not candidates:
+        st.caption("Brak graczy z zakończoną historią oficjalnych turniejów.")
+        if st.button("🔒 ZABLOKUJ",key="settings_real_handicap_lock_empty"):
+            st.session_state.fc27_real_handicap_admin_ok=False; rr()
+        return
+    options=[""]+list(names)
+    current_items=list(current.items())[:3]
+    with st.form("fc27_real_player_handicap_form"):
+        picked=[]
+        for i in range(3):
+            existing_pid=str(current_items[i][0]) if i<len(current_items) else ""
+            existing_pct=int(current_items[i][1]) if i<len(current_items) else 50
+            if existing_pid not in options:existing_pid=""
+            c1,c2=st.columns([1.35,1])
+            with c1:
+                pid=st.selectbox(
+                    f"Faworyt {i+1}",options,index=options.index(existing_pid),
+                    format_func=lambda x: "— brak —" if not x else f"{names.get(str(x),str(x))} ({counts.get(str(x),0)} turn.)",
+                    key=f"settings_real_handicap_pid_{i}",
+                )
+            with c2:
+                pct=st.slider(
+                    f"Dodatkowa redukcja {i+1}",0,90,existing_pct if existing_pid else 50,5,
+                    format="%d%%",key=f"settings_real_handicap_pct_{i}",
+                )
+            picked.append((str(pid or ""),int(pct)))
+        go=st.form_submit_button("💾 ZAPISZ HANDICAPY REALU",use_container_width=True,type="primary")
+    if go:
+        ids=[pid for pid,_ in picked if pid]
+        if len(ids)!=len(set(ids)):
+            st.error("Ten sam gracz nie może być wybrany w więcej niż jednym polu.")
+        else:
+            try:
+                saved=db.set_fc27_real_player_handicaps({pid:pct for pid,pct in picked if pid and pct>0})
+                if saved:
+                    st.success("Zapisano dodatkowe handicapy Realu dla wybranych graczy.")
+                else:
+                    st.success("Usunięto wszystkie ręczne handicapy Realu.")
+                rr()
+            except ValueError as e:
+                st.error(str(e))
+    if st.button("🔒 ZABLOKUJ USTAWIENIA HANDICAPU REALU",key="settings_real_handicap_lock"):
+        st.session_state.fc27_real_handicap_admin_ok=False
+        rr()
+
+
 def render_access_settings():
     st.subheader("⚙️ Ustawienia dostępu")
     if controller_access():
@@ -419,6 +495,7 @@ def render_access_settings():
         if st.button("📺 WYŁĄCZ STEROWANIE NA TYM URZĄDZENIU",use_container_width=True,key="controller_disable"):
             st.session_state._controller_access=False
             st.session_state.awards_admin_ok=False
+            st.session_state.fc27_real_handicap_admin_ok=False
             st.session_state.start_view="stats"
             st.session_state.viewer_view="📺 LIVE"
             st.session_state.public_view="fifa"
@@ -445,6 +522,8 @@ def render_access_settings():
     render_team_mode_settings()
     st.divider()
     render_fc27_real_ban_settings()
+    st.divider()
+    render_fc27_real_player_handicap_settings()
     st.divider()
     render_player_rename_settings()
     st.divider()

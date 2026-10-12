@@ -42,6 +42,7 @@ LAST_COUNT_KEY = "flex_last_player_count"
 LAST_STAKE_KEY = "flex_last_stake_pln"
 TEAM_MODE_KEY = "flex_team_mode"
 FC27_REAL_BANNED_KEY = "flex_fc27_real_banned"
+FC27_REAL_PLAYER_HANDICAPS_KEY = "flex_fc27_real_player_handicaps"
 
 # One canonical Awards order shared by Streamlit and mobile clients.
 # Keep selection flow and public display in the same order so the gala reads
@@ -643,6 +644,66 @@ class Database:
         with self.connect() as conn:
             self._setting_set_conn(conn,FC27_REAL_BANNED_KEY,value)
         return bool(enabled)
+
+    def _fc27_real_player_handicaps_conn(self, conn) -> dict[str,int]:
+        raw=self._setting_get_conn(conn,FC27_REAL_PLAYER_HANDICAPS_KEY)
+        if not raw:return {}
+        try:data=json.loads(raw)
+        except Exception:return {}
+        if not isinstance(data,dict):return {}
+        out={}
+        for pid,value in data.items():
+            try:pct=int(round(float(value)))
+            except (TypeError,ValueError):continue
+            pct=max(0,min(90,pct))
+            if pct>0:out[str(pid)]=pct
+        return dict(list(out.items())[:3])
+
+    def fc27_real_player_handicaps(self) -> dict[str,int]:
+        """Persistent admin-only extra Real reductions by player ID (0-90%)."""
+        with self.connect() as conn:
+            return self._fc27_real_player_handicaps_conn(conn)
+
+    def fc27_real_handicap_candidates(self) -> list[dict]:
+        """Players with history in at least one official FIFA Night tournament."""
+        with self.connect() as conn:
+            return self._fetchall(conn,"""
+                SELECT p.id,p.name,COUNT(DISTINCT t.id) AS tournament_count
+                FROM players p
+                JOIN tournament_players tp ON tp.player_id=p.id
+                JOIN tournaments t ON t.id=tp.tournament_id
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.is_test=0 AND t.status IN ('completed','abandoned') AND fm.format_key<>'duel1v1'
+                GROUP BY p.id,p.name
+                ORDER BY p.name
+            """)
+
+    def set_fc27_real_player_handicaps(self, reductions_by_player_id: dict[str,int|float]) -> dict[str,int]:
+        clean={}
+        for pid,value in (reductions_by_player_id or {}).items():
+            spid=str(pid or "").strip()
+            if not spid:continue
+            try:pct=int(round(float(value)))
+            except (TypeError,ValueError):raise ValueError("Redukcja szansy na Real musi być liczbą od 0 do 90%.")
+            if pct<0 or pct>90:raise ValueError("Redukcja szansy na Real musi mieścić się w zakresie 0–90%.")
+            if pct>0:clean[spid]=pct
+        if len(clean)>3:raise ValueError("Można ustawić dodatkowy handicap Realu maksymalnie dla 3 graczy.")
+        with self.connect() as conn:
+            if clean:
+                marks=",".join(["?"]*len(clean))
+                rows=self._fetchall(conn,f"""
+                    SELECT DISTINCT p.id
+                    FROM players p
+                    JOIN tournament_players tp ON tp.player_id=p.id
+                    JOIN tournaments t ON t.id=tp.tournament_id
+                    JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                    WHERE p.id IN ({marks}) AND t.is_test=0 AND t.status IN ('completed','abandoned') AND fm.format_key<>'duel1v1'
+                """,tuple(clean))
+                eligible={str(r.get("id") or "") for r in rows}
+                missing=[pid for pid in clean if pid not in eligible]
+                if missing:raise ValueError("Handicap Realu można ustawić tylko graczom, którzy mają już historię oficjalnego turnieju.")
+            self._setting_set_conn(conn,FC27_REAL_PLAYER_HANDICAPS_KEY,json.dumps(clean,ensure_ascii=False))
+        return clean
 
     def last_player_count(self) -> int:
         with self.connect() as conn:
@@ -1260,15 +1321,17 @@ class Database:
             placements=(carry or {}).get("placement_by_player_id") or {}
             ratings=self._live_team_ratings_conn(conn,game_version)
             previous_teams=(carry or {}).get("previous_team_by_player_id") or {}
+            real_reductions=self._fc27_real_player_handicaps_conn(conn) if game_version=="FC27" and team_mode=="clubs" else {}
+            real_multipliers={pid:max(0.10,1.0-(float(pct)/100.0)) for pid,pct in real_reductions.items()}
             if draft_mode:
                 assignments = {}
             elif partial_wheel_mode:
                 assignments = weighted_team_assignments_with_unused(
-                    pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode
+                    pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode, real_multipliers
                 )
             else:
                 assignments = weighted_team_assignments(
-                    pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode
+                    pids, teams, placements, rng, ratings, previous_teams, game_version, team_mode, real_multipliers
                 )
             if draft_mode:
                 reveal=weighted_draft_order(pids,placements,(carry or {}).get("source_player_count"),player_count,rng)
@@ -1287,6 +1350,8 @@ class Database:
                 and any(self._norm_team_name(x)==self._norm_team_name("Manchester City") for x in teams if not is_wildcard_slot(x))
                 and not any(self._norm_team_name(x)==self._norm_team_name("Real Madryt") for x in teams if not is_wildcard_slot(x))
             )
+            if game_version=="FC27" and team_mode=="clubs":
+                extra["fc27_real_player_handicap_snapshot"]={str(pid):int(real_reductions[pid]) for pid in pids if str(pid) in real_reductions}
             if carry:
                 draw=apply_cross_tournament_bye_priority(draw,format_key,carry.get("priority_by_player_id") or {},rng,carry.get("new_player_ids") or [])
                 draw=apply_de_playin_priority(draw,format_key,carry.get("placement_by_player_id") or {},rng,carry.get("new_player_ids") or [])

@@ -26,3 +26,21 @@ NOT PHYSICALLY TESTED HERE:
 - phone-to-TV network sync
 - EAS APK build/install
 - real Summary screenshots
+
+2026-10-01 FC27 draw-weight tuning:
+- WC 1st/2nd/3rd = 1.70 / 1.45 / 1.15
+- FC27 clubs PSG/Real 1st/2nd = 0.40 / 0.60
+- City neutral when Real ban active
+- mobile_api 51/51 PASS + draw/scheduler regressions PASS
+
+2026-10-12 FC27 Real handicap R11:
+- Real previous champion multiplier x0.25; previous finalist x0.45.
+- PSG remains x0.40 / x0.60.
+- Streamlit-only password-protected admin panel: up to 3 historical tournament players, extra Real reduction 0-90%.
+- Manual reduction stacks multiplicatively with placement, live rating and previous-team repeat modifiers.
+- FC27 Real player handicap smoke PASS.
+- FC27 3/4/5 small wheel smoke PASS.
+- FC27 Real ban smoke PASS.
+- FC27 national mode smoke PASS.
+- mobile_api_smoke.py 52/52 PASS.
+- Python compile PASS (existing ui.py invalid-escape SyntaxWarning unchanged).
