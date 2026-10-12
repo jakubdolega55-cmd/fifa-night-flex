@@ -342,7 +342,7 @@ def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], 
     toward currently weaker teams. Extra strong-team soft handicaps apply to
     PSG+Real in FC27 clubs and Spain+Brazil in FC27 national-team mode.
     Repeating exactly the same team as the immediately previous tournament keeps
-    35% of normal weight, never zero.
+    10% of normal weight, never zero.
     """
     import itertools, math
     pids=[str(x) for x in player_ids]
@@ -361,7 +361,7 @@ def weighted_fixed_team_matching(player_ids: list[str], fixed_teams: list[str], 
             # rating >50 means stronger; top finishers are slightly less likely to get it.
             w*=math.exp((50.0-rating)*coef)
             if previous.get(pid) and previous.get(pid).casefold()==str(team).casefold():
-                w*=0.35
+                w*=0.10
             mult=strong_team_multiplier(team,placements.get(pid),game_version,team_mode)
             # When the optional FC27 Real ban is active, City moves onto the wheel
             # but does NOT inherit Real's strong-team handicap. PSG is then the only
@@ -395,7 +395,7 @@ def weighted_team_assignments(player_ids: list[str], teams: list[str], placement
 
     Wild Card: 1st=1.70, 2nd=1.45, 3rd=1.15.
     Fixed clubs: live strength is a soft handicap for top finishers and exact previous-team
-    repeats are reduced to 35% normal weight. Every valid assignment remains possible.
+    repeats are reduced to 10% normal weight. Every valid assignment remains possible.
     """
     if len(player_ids)!=len(teams):
         raise ValueError("Liczba drużyn musi odpowiadać liczbie graczy.")
