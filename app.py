@@ -412,8 +412,8 @@ def render_fc27_real_ban_settings():
 
 
 def render_fc27_real_player_handicap_settings():
-    st.markdown("### 🎯 Dodatkowy handicap Realu — wybrani gracze")
-    st.caption("Tylko EA FC 27 • kluby. Możesz wskazać maksymalnie 3 graczy z historią oficjalnych turniejów i dodatkowo zmniejszyć im szansę na wylosowanie Realu. Ta redukcja mnoży się przez zwykły handicap mistrza/finalisty, Live Team Rating i karę za powtórzenie drużyny.")
+    st.markdown("### 🎛️ Korekta profilu losowania")
+    st.caption("Możesz wskazać maksymalnie 3 graczy z historią oficjalnych turniejów i ustawić dla nich indywidualny współczynnik korekcyjny profilu losowania.")
     st.caption("Domyślnie Real: poprzedni mistrz ×0,25 • poprzedni finalista ×0,45. PSG pozostaje bez zmian: ×0,40 / ×0,60.")
     if not admin_password():
         st.error("Brak ADMIN_PASSWORD w Streamlit Secrets. Nie można zmienić tej opcji.")
@@ -421,7 +421,7 @@ def render_fc27_real_player_handicap_settings():
     if not st.session_state.get("fc27_real_handicap_admin_ok"):
         with st.form("fc27_real_handicap_unlock_form"):
             pwd=st.text_input("Hasło administratora",type="password",key="settings_fc27_real_handicap_unlock_pwd")
-            unlock=st.form_submit_button("🔐 ODBLOKUJ USTAWIENIA HANDICAPU REALU",use_container_width=True)
+            unlock=st.form_submit_button("🔐 ODBLOKUJ KOREKTĘ PROFILU",use_container_width=True)
         if unlock:
             if admin_ok(pwd):
                 st.session_state.fc27_real_handicap_admin_ok=True
@@ -440,7 +440,7 @@ def render_fc27_real_player_handicap_settings():
             active.append(f"{names.get(str(pid),str(pid))}: −{int(pct)}%")
         st.info("Aktywne: " + " • ".join(active))
     else:
-        st.info("Brak ręcznych handicapów Realu dla konkretnych graczy.")
+        st.info("Brak indywidualnych korekt profilu.")
     if not candidates:
         st.caption("Brak graczy z zakończoną historią oficjalnych turniejów.")
         if st.button("🔒 ZABLOKUJ",key="settings_real_handicap_lock_empty"):
@@ -463,11 +463,11 @@ def render_fc27_real_player_handicap_settings():
                 )
             with c2:
                 pct=st.slider(
-                    f"Dodatkowa redukcja {i+1}",0,90,existing_pct if existing_pid else 50,5,
+                    f"Współczynnik korekcyjny {i+1}",0,90,existing_pct if existing_pid else 50,5,
                     format="%d%%",key=f"settings_real_handicap_pct_{i}",
                 )
             picked.append((str(pid or ""),int(pct)))
-        go=st.form_submit_button("💾 ZAPISZ HANDICAPY REALU",use_container_width=True,type="primary")
+        go=st.form_submit_button("💾 ZAPISZ KOREKTĘ PROFILU",use_container_width=True,type="primary")
     if go:
         ids=[pid for pid,_ in picked if pid]
         if len(ids)!=len(set(ids)):
@@ -476,13 +476,13 @@ def render_fc27_real_player_handicap_settings():
             try:
                 saved=db.set_fc27_real_player_handicaps({pid:pct for pid,pct in picked if pid and pct>0})
                 if saved:
-                    st.success("Zapisano dodatkowe handicapy Realu dla wybranych graczy.")
+                    st.success("Zapisano korektę profilu losowania.")
                 else:
-                    st.success("Usunięto wszystkie ręczne handicapy Realu.")
+                    st.success("Usunięto indywidualne korekty profilu.")
                 rr()
             except ValueError as e:
                 st.error(str(e))
-    if st.button("🔒 ZABLOKUJ USTAWIENIA HANDICAPU REALU",key="settings_real_handicap_lock"):
+    if st.button("🔒 ZABLOKUJ KOREKTĘ PROFILU",key="settings_real_handicap_lock"):
         st.session_state.fc27_real_handicap_admin_ok=False
         rr()
 

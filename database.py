@@ -684,10 +684,10 @@ class Database:
             spid=str(pid or "").strip()
             if not spid:continue
             try:pct=int(round(float(value)))
-            except (TypeError,ValueError):raise ValueError("Redukcja szansy na Real musi być liczbą od 0 do 90%.")
-            if pct<0 or pct>90:raise ValueError("Redukcja szansy na Real musi mieścić się w zakresie 0–90%.")
+            except (TypeError,ValueError):raise ValueError("Współczynnik korekcyjny musi być liczbą od 0 do 90%.")
+            if pct<0 or pct>90:raise ValueError("Współczynnik korekcyjny musi mieścić się w zakresie 0–90%.")
             if pct>0:clean[spid]=pct
-        if len(clean)>3:raise ValueError("Można ustawić dodatkowy handicap Realu maksymalnie dla 3 graczy.")
+        if len(clean)>3:raise ValueError("Korektę profilu można ustawić maksymalnie dla 3 graczy.")
         with self.connect() as conn:
             if clean:
                 marks=",".join(["?"]*len(clean))
@@ -701,7 +701,7 @@ class Database:
                 """,tuple(clean))
                 eligible={str(r.get("id") or "") for r in rows}
                 missing=[pid for pid in clean if pid not in eligible]
-                if missing:raise ValueError("Handicap Realu można ustawić tylko graczom, którzy mają już historię oficjalnego turnieju.")
+                if missing:raise ValueError("Korektę profilu można ustawić tylko graczom, którzy mają już historię oficjalnego turnieju.")
             self._setting_set_conn(conn,FC27_REAL_PLAYER_HANDICAPS_KEY,json.dumps(clean,ensure_ascii=False))
         return clean
 
