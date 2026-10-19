@@ -2293,10 +2293,10 @@ def export_settlement_png(ids: str = Query(default="")) -> Response:
 def export_year_png(year: int) -> Response:
     data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or []
     highlights=[]
-    if overview.get("top_player"):highlights.append({"label":"Lider klasyfikacji Gracza Roku","value":overview.get("top_player")})
+    if overview.get("top_player"):highlights.append({"label":"Lider klasyfikacji Gracza Sezonu","value":overview.get("top_player")})
     if overview.get("top_team"):highlights.append({"label":"Najwyżej sklasyfikowana drużyna","value":overview.get("top_team")})
     match_cat=next((c for c in cats if c.get("key")=="match_year"),None)
-    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Roku — lider na teraz","value":match_cat["candidates"][0].get("name")})
+    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Sezonu — lider na teraz","value":match_cat["candidates"][0].get("name")})
     return Response(content=generate_year_summary_png(year,overview,highlights),media_type="image/png")
 
 

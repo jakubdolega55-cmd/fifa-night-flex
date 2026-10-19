@@ -415,8 +415,8 @@ def generate_year_summary_png(year: int, overview: dict, highlights: list[dict] 
     draw.text((90, 594), "NAJWAŻNIEJSZE", font=_font(26, True), fill=GOLD)
     items = list(highlights or [])
     if not items:
-        if overview.get("top_player"): items.append({"label":"Lider roku","value":overview.get("top_player")})
-        if overview.get("top_team"): items.append({"label":"Drużyna roku — ranking live","value":overview.get("top_team")})
+        if overview.get("top_player"): items.append({"label":"Lider sezonu","value":overview.get("top_player")})
+        if overview.get("top_team"): items.append({"label":"Drużyna sezonu — ranking live","value":overview.get("top_team")})
     y = 650
     for row in items[:5]:
         label = str(row.get("label") or row.get("title") or "—")

@@ -78,14 +78,33 @@ DIRECT_PLAYER_AWARD_KEYS = {
     "player_year", "offensive", "defense", "clutch", "comeback_king", "late_king",
     "fair_play", "spectacle", "universal", "debut", "progress", "outsider", "finance",
 }
-# Categories that have a physical trophy and therefore count in the
-# "Najczęściej nominowani" summary. Match of the Year is special: both
-# participants of a nominated match receive the nomination credit.
-TROPHY_NOMINATION_KEYS = {
+# Awards that create a nomination for a FIFA Night participant. This is
+# deliberately independent from the physical-trophy list: Rywalizacja Sezonu
+# still counts as a nomination even though it has no statuette. Team of the
+# Year and Superscorer are excluded because their candidates are a club and a
+# real footballer, not a FIFA Night participant. Pair awards credit both
+# participants of the nominated pair/match.
+PLAYER_NOMINATION_KEYS = {
     "player_year", "offensive", "defense", "player_scorers", "clutch",
     "comeback_king", "late_king", "fair_play", "spectacle", "universal",
-    "debut", "outsider", "finance", "match_year", "progress",
+    "debut", "outsider", "finance", "match_year", "progress", "rivalry",
 }
+PAIR_PLAYER_AWARD_KEYS = {"match_year", "rivalry"}
+
+def award_nomination_player_ids(category_key: str, candidate: dict) -> list[str]:
+    """Map one Award candidate to the FIFA Night participant(s) it nominates."""
+    key=str(category_key or "")
+    if key not in PLAYER_NOMINATION_KEYS:
+        return []
+    if key in DIRECT_PLAYER_AWARD_KEYS:
+        pid=str(candidate.get("id") or "")
+        return [pid] if pid else []
+    if key=="player_scorers":
+        pid=str(candidate.get("id") or "").split("|",1)[0]
+        return [pid] if pid else []
+    if key in PAIR_PLAYER_AWARD_KEYS:
+        return [str(pid or "") for pid in (candidate.get("participant_ids") or []) if str(pid or "")]
+    return []
 
 # Physical trophy engraving labels. These are presentation metadata only: they do
 # not affect Award scoring, nominations or winner selection. Categories omitted
@@ -107,6 +126,23 @@ AWARD_ENGRAVINGS = {
     "match_year": "Match of the Year",
     "progress": "Most Improved Player",
 }
+
+def award_trophy_player_ids(category_key: str, candidate: dict) -> list[str]:
+    """Map a selected Award candidate to recipients of physical statuettes."""
+    key=str(category_key or "")
+    if key not in AWARD_ENGRAVINGS:
+        return []
+    if key in DIRECT_PLAYER_AWARD_KEYS:
+        pid=str(candidate.get("id") or "")
+        return [pid] if pid else []
+    if key=="player_scorers":
+        pid=str(candidate.get("id") or "").split("|",1)[0]
+        return [pid] if pid else []
+    if key=="match_year":
+        return [str(pid or "") for pid in (candidate.get("participant_ids") or []) if str(pid or "")]
+    return []
+
+PHYSICAL_TROPHY_COUNT = sum(2 if key=="match_year" else 1 for key in AWARD_ENGRAVINGS)
 
 # Gala order is deliberately the reverse of the organizer's winner-selection flow:
 # lighter/statistical awards first, Player of the Year as the finale.
@@ -150,12 +186,12 @@ GALA_TIMING = {
 # every required laureate is selected.
 GALA_TEST_MODE = str(os.getenv("FIFA_GALA_TEST_MODE", "0")).strip().lower() not in {"0", "false", "no", "off"}
 GALA_AWARD_LABELS = {
-    "superscorer": "Supersnajper Roku", "team_best": "Drużyna Roku", "finance": "Rekin Finansowy",
-    "debut": "Debiut Roku", "progress": "Największy Progres", "outsider": "Najlepszy spoza dominatorów",
-    "rivalry": "Rywalizacja Roku", "fair_play": "Fair Play", "universal": "Najbardziej Uniwersalny Gracz",
+    "superscorer": "Supersnajper Sezonu", "team_best": "Drużyna Sezonu", "finance": "Rekin Finansowy",
+    "debut": "Debiut Sezonu", "progress": "Największy Progres", "outsider": "Najlepszy spoza dominatorów",
+    "rivalry": "Rywalizacja Sezonu", "fair_play": "Fair Play", "universal": "Najbardziej Uniwersalny Gracz",
     "comeback_king": "Comeback King", "late_king": "Król Końcówek", "spectacle": "Najbardziej Widowiskowy Gracz",
-    "match_year": "Mecz Roku", "clutch": "Clutch Player Roku", "player_scorers": "Król Strzelców FIFA Night",
-    "defense": "Beton Roku", "offensive": "Ofensywny Gracz Roku", "player_year": "Gracz Roku",
+    "match_year": "Mecz Sezonu", "clutch": "Clutch Player Sezonu", "player_scorers": "Król Strzelców FIFA Night",
+    "defense": "Beton Sezonu", "offensive": "Ofensywny Gracz Sezonu", "player_year": "Gracz Sezonu",
 }
 
 
@@ -5287,12 +5323,12 @@ class Database:
         pid=str(player_id or "")
         if not pid:return []
         titles={
-            "player_year":"Gracz Roku","offensive":"Ofensywny Gracz Roku","defense":"Beton Roku",
-            "player_scorers":"Król Strzelców FIFA Night","clutch":"Clutch Player Roku",
+            "player_year":"Gracz Sezonu","offensive":"Ofensywny Gracz Sezonu","defense":"Beton Sezonu",
+            "player_scorers":"Król Strzelców FIFA Night","clutch":"Clutch Player Sezonu",
             "late_king":"Król Końcówek","comeback_king":"Comeback King","fair_play":"Fair Play",
             "regular":"Najbardziej Regularny","progress":"Największy Progres","spectacle":"Najbardziej Widowiskowy Gracz",
             "penalties":"Król Karnych","duel":"Król 1 vs 1","universal":"Najbardziej Uniwersalny Gracz",
-            "wildcards":"Król Wild Cardów","debut":"Debiut Roku","outsider":"Najlepszy spoza dominatorów",
+            "wildcards":"Król Wild Cardów","debut":"Debiut Sezonu","outsider":"Najlepszy spoza dominatorów",
             "finance":"Rekin Finansowy",
         }
         direct=set(titles)-{"player_scorers"}
@@ -6485,10 +6521,10 @@ class Database:
             _best=(f"{c.get('best_comeback_from')} → {c.get('best_comeback_final')}" if c.get("best_comeback_from") and c.get("best_comeback_final") else "—")
             # Gala TOP3 deliberately hides points; reveal them only for the laureate.
             teaser=[f"{_cm} meczów z comebackiem",f"max: {_best}"]
-            winner=[f"{num(c.get('comeback_points_per10'),2)} pkt comebacku / 10 meczów",f"{_cp_txt} pkt łącznie • {_cm} meczów z comebackiem",f"największy comeback: {_best}"]
+            winner=[f"{num(c.get('comeback_points_per_match'),2)} pkt comebacku / mecz",f"{_cp_txt} pkt łącznie • {_cm} meczów z comebackiem",f"największy comeback: {_best}"]
         elif key=="late_king":
             teaser=[f"{int(c.get('matches') or 0)} meczów z pełnymi Events"]
-            winner=[f"{num(c.get('late_goals_per10'),2)} gola 85+ / 10 meczów",f"{int(c.get('late_goals') or 0)} goli łącznie • {int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
+            winner=[f"{num(c.get('late_goals_per_match'),2)} gola 85+ / mecz",f"{int(c.get('late_goals') or 0)} goli łącznie • {int(c.get('goals_90plus') or 0)} oznaczonych jako 90'"]
             special={"type":"late_clock","latest":None}
         elif key=="spectacle":
             teaser=[f"{int(c.get('matches') or 0)} meczów",f"{num(c.get('avg_goals'),2)} gola/mecz w jego spotkaniach"]
@@ -6511,7 +6547,7 @@ class Database:
             special={"type":"match_vs","winner_name":c.get("winner_name"),"loser_name":c.get("loser_name")}
         elif key=="clutch":
             teaser=[f"{int(c.get('clutch_matches') or 0)} meczów o życie"]
-            winner=[f"{int(c.get('clutch_wins') or 0)}/{int(c.get('clutch_matches') or 0)} wygranych clutch • {pct(c.get('clutch_pct'))}",f"skorygowana skuteczność {pct(c.get('clutch_adjusted_pct'))}"]
+            winner=[f"{int(c.get('clutch_wins') or 0)}/{int(c.get('clutch_matches') or 0)} wygranych clutch • skuteczność {pct(c.get('clutch_pct'))}"]
             by=c.get("clutch_by_stage") or {}
             finals=sum(int((by.get(k) or {}).get("m") or 0) for k in ("FINAL","RESET_FINAL")); fw=sum(int((by.get(k) or {}).get("w") or 0) for k in ("FINAL","RESET_FINAL"))
             semis=int((by.get("SF") or {}).get("m") or 0); sw=int((by.get("SF") or {}).get("w") or 0)
@@ -6787,7 +6823,7 @@ class Database:
                         version=normalize_game_version((event_by.get(tid) or {}).get("game_version"))
                         if self._is_wildcard_team(fteam,version):
                             ps[pid]["wc_finals"]+=1
-                        # Drużyna Roku teaser may show finals, but not titles. Count
+                        # Drużyna Sezonu teaser may show finals, but not titles. Count
                         # at most one final appearance per club per tournament.
                         if fteam and not (version=="FC26" and self._is_helper_team(fteam)):
                             team_final_tournaments[self._norm_team_name(fteam)].add(tid)
@@ -6797,7 +6833,7 @@ class Database:
             if not h or not a:continue
             raw_hs,raw_ass=int(m["home_score"]),int(m["away_score"]); hs,ass=_awards_real_score(m); stage=str(m.get("stage") or "")
             rh=self._result_for_player(m,h);ra=self._result_for_player(m,a)
-            # Rywalizacja Roku deliberately ignores standalone 1 VS 1. It is a
+            # Rywalizacja Sezonu deliberately ignores standalone 1 VS 1. It is a
             # season-long tournament rivalry, while duels keep their own ranking.
             rec=None
             if tid in tournament_ids:
@@ -6901,7 +6937,7 @@ class Database:
                     margin=gf-ga;v["max_margin"]=max(v["max_margin"],margin);v["big_wins"]+=int(margin>=3);v["one_goal_wins"]+=int(margin==1)
                 if r=="L":v["narrow_losses"]+=int((ga-gf)==1 or m.get("home_penalties") is not None)
                 if m.get("home_penalties") is not None and m.get("away_penalties") is not None:v["pen"]+=1;v["pen_w"]+=int(m.get("winner_player_id")==pid)
-            # Mecz Roku: wynik końcowy jest ważniejszy niż sama etykieta fazy.
+            # Mecz Sezonu: wynik końcowy jest ważniejszy niż sama etykieta fazy.
             # W rankingu dominują (1) bliskość meczu i (2) realna stawka / ryzyko odpadnięcia.
             # Ranga fazy i liczba goli są tylko czynnikami pomocniczymi. Wartość score jest
             # wyłącznie techniczna do sortowania i nigdy nie jest pokazywana w UI.
@@ -6920,7 +6956,7 @@ class Database:
             elif margin==3:
                 # Od tego miejsca oba wyniki są już wyraźne. Nie robimy ogromnej
                 # przepaści między np. 4:1 i 7:3 — przy podobnej stawce bardziej
-                # bramkowy 7:3 może być ciekawszym kandydatem do Meczu Roku.
+                # bramkowy 7:3 może być ciekawszym kandydatem do Meczu Sezonu.
                 closeness=.25; closeness_text="różnica 3 goli"
             elif margin==4:
                 closeness=.20; closeness_text="różnica 4 goli"
@@ -6953,7 +6989,7 @@ class Database:
             }.get(stage,stage or "mecz")
             goals_value=min(hs+ass,8)/8.0
 
-            # Mecz Roku: zgodnie z balansem ustalonym dla Awards. Nadal nie pokazujemy
+            # Mecz Sezonu: zgodnie z balansem ustalonym dla Awards. Nadal nie pokazujemy
             # punktów technicznych w UI — użytkownik widzi wyłącznie wynik i uzasadnienie.
             # Pula turnieju ma tylko lekki wpływ: +0.01 do technicznego score za każde
             # pełne 100 zł wpłat w danym FIFA Night, maksymalnie +0.04. Dzięki temu
@@ -6964,7 +7000,7 @@ class Database:
             cash_pot_cents=max(0,int(finance_event.get("contribution_cents") or 0))
             cash_bonus=min(cash_pot_cents/1_000_000.0,.04)
 
-            # Mały bonus Meczu Roku za PRAWDZIWY przebieg spotkania. Liczymy go
+            # Mały bonus Meczu Sezonu za PRAWDZIWY przebieg spotkania. Liczymy go
             # wyłącznie, gdy komplet realnych goli da się odtworzyć z match_events.
             # Dzięki temu np. naprzemienne 4:3 jest trochę wyżej niż 4:0 -> 4:3,
             # ale przebieg nie może przykryć wyniku, stawki ani rangi meczu.
@@ -7026,7 +7062,7 @@ class Database:
             )
 
             # Najbardziej Widowiskowy Gracz bazuje na charakterze KAŻDEGO meczu, nie na
-            # randze fazy ani wyniku gracza. Dzięki temu nie jest kopią Gracza Roku.
+            # randze fazy ani wyniku gracza. Dzięki temu nie jest kopią Gracza Sezonu.
             spectacle_match=closeness*.45 + goals_value*.40 + penalties_drama*.15
             for pid in (h,a):
                 ps[pid]["spectacle_scores"].append(spectacle_match)
@@ -7330,7 +7366,7 @@ class Database:
                 starts=len(participant_tournaments[pid]),
                 summary_xgd_per_match=(round(xgdpm,2) if xn>0 else None),summary_matches=int(xn)
             ))
-        add("player_year","🏆 Gracz Roku","Cały sezon w jednym miejscu: tytuły, finały, W%, bilans/mecz i najważniejsze mecze. Sama liczba startów nie daje punktów; Summary dodaje tylko lekki komponent xGD zależny od pokrycia. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("player_year","🏆 Gracz Sezonu","Cały sezon w jednym miejscu: tytuły, finały, W%, bilans/mecz i najważniejsze mecze. Sama liczba startów nie daje punktów; Summary dodaje tylko lekki komponent xGD zależny od pokrycia. Minimum 5 oficjalnych meczów turniejowych.",items)
 
         items=[]
         for pid,v in ps.items():
@@ -7356,7 +7392,7 @@ class Database:
                 shots_per_match=(round(float(sp.get("shots_for") or 0)/shn,1) if shn>0 else None),
                 sot_per_match=(round(float(sp.get("sot_for") or 0)/son,1) if son>0 else None)
             ))
-        add("offensive","🔥 Ofensywny Gracz Roku","Dla tych, którzy nie lubią wygrywać 1:0. Liczymy przede wszystkim gole/mecz i odsetek wysokich zwycięstw; Summary dodaje kontrolowany bonus za xG i strzały/mecz. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("offensive","🔥 Ofensywny Gracz Sezonu","Dla tych, którzy nie lubią wygrywać 1:0. Liczymy przede wszystkim gole/mecz i odsetek wysokich zwycięstw; Summary dodaje kontrolowany bonus za xG i strzały/mecz. Minimum 5 oficjalnych meczów turniejowych.",items)
 
         items=[]
         for pid,v in ps.items():
@@ -7376,7 +7412,7 @@ class Database:
                 clean_sheets=int(v["clean_sheets"]),clean_sheet_pct=round(cs_rate,1),
                 xga_per_match=(round(float(sp.get("xg_against") or 0)/xn,2) if xn>0 else None),summary_matches=int(xn)
             ))
-        add("defense","🧱 Beton Roku","Tu liczy się jakość defensywy na mecz: gole stracone/mecz i procent czystych kont. Summary dodaje kontrolowany komponent xGA; sama liczba rozegranych meczów nie daje punktów. Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("defense","🧱 Beton Sezonu","Tu liczy się jakość defensywy na mecz: gole stracone/mecz i procent czystych kont. Summary dodaje kontrolowany komponent xGA; sama liczba rozegranych meczów nie daje punktów. Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[]
         for pid,v in ps.items():
             if v["clutch_m"]<5:continue
@@ -7384,11 +7420,11 @@ class Database:
             # Korekta Beta(3,3): małe próbki są delikatnie ściągane do 50%,
             # dzięki czemu 5/5 nie dostaje automatycznej przewagi nad bardzo mocnym 12/14.
             adjusted=(v["clutch_w"]+3)/(v["clutch_m"]+6)*100
-            items.append(cand(pid,adjusted,f"{v['clutch_w']}/{v['clutch_m']} clutch • skuteczność {clutch_pct:.1f}% • skorygowana {adjusted:.1f}%",
+            items.append(cand(pid,adjusted,f"{v['clutch_w']}/{v['clutch_m']} clutch • skuteczność {clutch_pct:.1f}%",
                     clutch_wins=int(v["clutch_w"]),clutch_matches=int(v["clutch_m"]),clutch_pct=round(clutch_pct,1),
                     clutch_adjusted_pct=round(adjusted,1),finals=int(v["finals"]),titles=int(v["titles"]),
                     clutch_by_stage={k:{"m":int(x["m"]),"w":int(x["w"])} for k,x in v["clutch_by_stage"].items()}))
-        add("clutch","🎯 Clutch Player Roku","Najważniejsza jest skuteczność w meczach bez marginesu błędu, skorygowana o wielkość próbki. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi. Minimum 5 meczów clutch.",items)
+        add("clutch","🎯 Clutch Player Sezonu","Najważniejsza jest skuteczność w meczach bez marginesu błędu. Ranking uwzględnia też wielkość próbki, żeby kilka pojedynczych zwycięstw nie dawało automatycznej przewagi. Winners Bracket daje jeszcze drugie życie, więc tu nie wchodzi. Minimum 5 meczów clutch.",items)
         items=[cand(
             pid,
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
@@ -7404,7 +7440,7 @@ class Database:
             items.append(cand(pid,(lpts-epts)*30+(lgd-egd)*10,f"punkty/mecz {epts:.2f} → {lpts:.2f} • bilans bramek/mecz {egd:+.2f} → {lgd:+.2f}",
                 matches=int(v["m"]),win_pct=pc(pid,v),early_points_per_match=round(epts,2),late_points_per_match=round(lpts,2),
                 early_gd_per_match=round(egd,2),late_gd_per_match=round(lgd,2)))
-        add("progress","📈 Największy Progres","Kto zaczął rok jednym graczem, a kończy go jak zupełnie inny zawodnik? Minimum 5 oficjalnych meczów turniejowych.",items)
+        add("progress","📈 Największy Progres","Kto zaczął sezon jednym graczem, a kończy go jak zupełnie inny zawodnik? Minimum 5 oficjalnych meczów turniejowych.",items)
         items=[]
         for pid,v in ps.items():
             vals=v["spectacle_scores"]
@@ -7454,17 +7490,17 @@ class Database:
             # uczciwie wykryć gola 85+. Mały bonus za wolumen jest ograniczony do 8 goli.
             late_matches=int(detailed_matches_by_player.get(pid) or 0)
             if late_matches<=0: continue
-            late_per10=float(v["late_goals"])/late_matches*10
-            score=late_per10+min(int(v["late_goals"]),8)*.25
+            late_per_match=float(v["late_goals"])/late_matches
+            score=(late_per_match*10)+min(int(v["late_goals"]),8)*.25
             items.append({
                 "id":str(pid),"name":name_by.get(str(pid),"?"),
                 "score":round(score,4),
-                "_sort":(round(score,4),round(late_per10,4),int(v["late_goals"]),int(v["goals_90_marked"])),
-                "reason":f"{late_per10:.2f} gola 85+ / 10 meczów • {v['late_goals']} łącznie • {v['goals_90_marked']} oznaczonych jako 90'",
-                "matches":late_matches,"late_goals":int(v["late_goals"]),"late_goals_per10":round(late_per10,2),
+                "_sort":(round(score,4),round(late_per_match,4),int(v["late_goals"]),int(v["goals_90_marked"])),
+                "reason":f"{late_per_match:.2f} gola 85+ / mecz • {v['late_goals']} łącznie • {v['goals_90_marked']} oznaczonych jako 90'",
+                "matches":late_matches,"late_goals":int(v["late_goals"]),"late_goals_per_match":round(late_per_match,2),
                 "goals_90plus":int(v["goals_90_marked"]),"latest_goal":None
             })
-        add("late_king","⏰ Król Końcówek","Liczymy przede wszystkim gole od 85. minuty na 10 meczów ze szczegółowymi Events; łączna liczba takich goli daje tylko mały, ograniczony bonus.",items)
+        add("late_king","⏰ Król Końcówek","Liczymy przede wszystkim średnią goli od 85. minuty na mecz ze szczegółowymi Events; łączna liczba takich goli daje tylko mały, ograniczony bonus.",items)
 
         items=[]
         for pid,v in comeback_stats.items():
@@ -7475,20 +7511,20 @@ class Database:
             comeback_matches=int(v["wins"])+int(v["draw_comebacks"])
             all_matches=int(ps.get(pid,{}).get("m") or 0)
             if all_matches<=0: continue
-            points_per10=points/all_matches*10
-            score=points_per10+int(v["max_deficit"])*2.0
+            points_per_match=points/all_matches
+            score=(points_per_match*10)+int(v["max_deficit"])*2.0
             items.append({
                 "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(score,4),
-                "_sort":(round(score,4),round(points_per10,4),int(v["max_deficit"]),points),
-                "reason":f"{points_per10:.2f} pkt comebacku / 10 meczów • {points_txt} pkt łącznie • max: {best_transition}",
+                "_sort":(round(score,4),round(points_per_match,4),int(v["max_deficit"]),points),
+                "reason":f"{points_per_match:.2f} pkt comebacku / mecz • {points_txt} pkt łącznie • max: {best_transition}",
                 "comeback_wins":int(v["wins"]),"comeback_draws":int(v["draw_comebacks"]),"comeback_points":points,
-                "comeback_points_per10":round(points_per10,2),"comeback_matches":comeback_matches,
+                "comeback_points_per_match":round(points_per_match,2),"comeback_matches":comeback_matches,
                 "best_comeback_from":v.get("best_from_score"),"best_comeback_final":v.get("best_final_score"),
                 "best_comeback_match_id":v.get("best_match_id"),
                 "comeback_breakdown":{str(k):int(n) for k,n in v["from_deficits"].items()},
                 "matches":int(ps.get(pid,{}).get("m") or 0),
             })
-        add("comeback_king","🔄 Comeback King","Punkty za comebacki przeliczamy na 10 oficjalnych meczów; największy odrobiony deficyt daje dodatkowy bonus jakościowy.",items)
+        add("comeback_king","🔄 Comeback King","Liczymy średnią punktów comebacku na oficjalny mecz; największy odrobiony deficyt daje dodatkowy bonus jakościowy.",items)
 
         items=[]
         for pid,matches_n in detailed_matches_by_player.items():
@@ -7539,7 +7575,7 @@ class Database:
         add("penalty_misses","❌🎯 Niewykorzystane karne","Wapno było. Gol już niekoniecznie. Serie po meczu zostają poza tą klasyfikacją.",items,award=False)
 
         first_by={str(x["player_id"]):str(x.get("first_date") or "") for x in first_dates}
-        # Debiut Roku ma własną tożsamość: oceniamy wyłącznie początek kariery FIFA Night,
+        # Debiut Sezonu ma własną tożsamość: oceniamy wyłącznie początek kariery FIFA Night,
         # zamiast całorocznych wyników. Pokazujemy dwa niezależne rankingi (pierwsze 5 i 10
         # oficjalnych meczów turniejowych). Ranking pierwszych 10 jest główną podstawą nagrody;
         # pierwsze 5 daje kontekst, jak mocny był sam start.
@@ -7557,8 +7593,8 @@ class Database:
                 if str(event_by.get(tid,{}).get("champion_player_id") or "")!=str(pid):continue
                 closes_title=(x["stage"]=="RESET_FINAL") or (x["stage"]=="FINAL" and not has_reset_by_tid.get(tid,False))
                 if closes_title and x["result"]=="W":title_tids.add(tid)
-            # Wyniki dominują, osiągnięcia fazowe są dodatkiem. Dzięki temu Debiut Roku
-            # nie staje się miniaturową kopią Gracza Roku opartą głównie na trofeach.
+            # Wyniki dominują, osiągnięcia fazowe są dodatkiem. Dzięki temu Debiut Sezonu
+            # nie staje się miniaturową kopią Gracza Sezonu opartą głównie na trofeach.
             score=wp*.35+ppm*15+gdpm*6+len(semi_tids)*3+len(final_tids)*7+len(title_tids)*12
             return {
                 "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(float(score),2),
@@ -7576,7 +7612,7 @@ class Database:
         if debut5 or debut10:
             primary=debut10 if debut10 else debut5
             add(
-                "debut","🚀 Debiut Roku",
+                "debut","🚀 Debiut Sezonu",
                 "Pierwsze mecze pamięta się najlepiej. Patrzymy osobno na start po 5 i 10 oficjalnych spotkaniach.",
                 primary
             )
@@ -7719,7 +7755,7 @@ class Database:
                 "winner_name":name_by.get(winner) if winner else None,"loser_name":name_by.get(loser) if loser else None,
                 "winner_decider":decider,"fairplay_a":int(v.get("fairplay_a") or 0),"fairplay_b":int(v.get("fairplay_b") or 0),
             })
-        add("rivalry","⚔️ Rywalizacja Roku","Tylko turniejowe H2H: bonus za częstotliwość zatrzymuje się po 6 meczach; dalej liczą się głównie wyrównanie, ważne mecze i dramaturgia. Minimum 3 bezpośrednie mecze w roku.",rivalry)
+        add("rivalry","⚔️ Rywalizacja Sezonu","Tylko turniejowe H2H: bonus za częstotliwość zatrzymuje się po 6 meczach; dalej liczą się głównie wyrównanie, ważne mecze i dramaturgia. Minimum 3 bezpośrednie mecze w sezonie.",rivalry)
         teamitems=[]
         for nt,v in teamagg.items():
             if v["m"]<5:continue
@@ -7731,7 +7767,7 @@ class Database:
                               "finals":len(team_final_tournaments.get(nt,set())),"rating":round(rating,1)})
         worst=[{**x,"score":100-float(x["score"])} for x in teamitems]
         worst_team=top(worst,1)[0] if worst else None
-        add("team_best","🏟️ Drużyna Roku","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje. Minimum 5 oficjalnych meczów danej drużyny.",teamitems,secondary=worst_team)
+        add("team_best","🏟️ Drużyna Sezonu","Który klub najlepiej służył graczom FIFA Night — i który zdecydowanie mniej? Wyniki mówią swoje. Minimum 5 oficjalnych meczów danej drużyny.",teamitems,secondary=worst_team)
         _match_order={(str(m["tournament_id"]),int(m["match_no"])):i for i,m in enumerate(matches)}
         scorer_items=[]
         for sn,goals in scorer_totals.items():
@@ -7746,34 +7782,29 @@ class Database:
                 "scoring_matches":len(scorer_goals_by_match.get(sn) or {}),
                 "hattricks":int(scorer_hattricks.get(sn,0)),"goal_progress":progress,
             })
-        add("superscorer","⚡ Supersnajper Roku","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
-        add("match_year","🎬 Mecz Roku","Taki mecz, o którym jeszcze długo ktoś będzie mówił: „pamiętasz to…?”.",match_candidates)
+        add("superscorer","⚡ Supersnajper Sezonu","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
+        add("match_year","🎬 Mecz Sezonu","Taki mecz, o którym jeszcze długo ktoś będzie mówił: „pamiętasz to…?”.",match_candidates)
         items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
         add("minimalist","📐 Król Minimalistów","Po co strzelać pięć, skoro jedna bramka przewagi też daje zwycięstwo?",items,award=False)
         items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
-        add("unlucky","🤕 Pechowiec Roku","Prawie się nie liczy. Statystyki i tak pamiętają każdą porażkę o włos.",items,award=False)
+        add("unlucky","🤕 Pechowiec Sezonu","Prawie się nie liczy. Statystyki i tak pamiętają każdą porażkę o włos.",items,award=False)
 
-        # Summary of nominations only for categories that have a physical trophy.
-        # Each category counts at most once per FIFA Night participant. Match of the
-        # Year credits both players from the nominated match; Król Strzelców credits
-        # the FIFA Night participant for whom the real footballer scored.
+        # Summary of nominations for every Award that nominates a FIFA Night
+        # participant, regardless of whether a physical statuette exists. Each
+        # category counts at most once per participant. Pair awards (Rywalizacja
+        # Sezonu and Mecz Sezonu) credit both participants; Król Strzelców credits the
+        # FIFA Night participant for whom the real footballer scored.
         nomination_sets=defaultdict(lambda:{"top2":set(),"top3":set(),"top5":set(),"first":set()})
         nomination_title_by_key={}
         for cat in cats:
             if not cat.get("award"):continue
             key=str(cat.get("key") or "")
-            if key not in TROPHY_NOMINATION_KEYS:
+            if key not in PLAYER_NOMINATION_KEYS:
                 continue
             nomination_title_by_key[key]=str(cat.get("title") or key)
             candidates=cat.get("candidates") or []
             for pos,x in enumerate(candidates[:5],1):
-                pids=[]
-                if key in DIRECT_PLAYER_AWARD_KEYS:
-                    pids=[str(x.get("id") or "")]
-                elif key=="player_scorers":
-                    pids=[str(x.get("id") or "").split("|",1)[0]]
-                elif key=="match_year":
-                    pids=[str(pid or "") for pid in (x.get("participant_ids") or [])]
+                pids=award_nomination_player_ids(key,x)
                 for pid in dict.fromkeys(pids):
                     if not pid or pid not in name_by:continue
                     nomination_sets[pid]["top5"].add(key)
@@ -7785,7 +7816,7 @@ class Database:
             categories_top2=[
                 nomination_title_by_key.get(key,key)
                 for key in AWARD_DISPLAY_ORDER
-                if key in v["top2"] and key in TROPHY_NOMINATION_KEYS
+                if key in v["top2"] and key in PLAYER_NOMINATION_KEYS
             ]
             nomination_summary.append({
                 "player_id":pid,

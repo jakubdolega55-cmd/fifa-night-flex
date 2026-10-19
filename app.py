@@ -12,7 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from database import (
-    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, TROPHY_NOMINATION_KEYS, GALA_TEST_MODE,
+    Database, AWARD_DISPLAY_ORDER, AWARD_PRIORITY_GROUPS, CLASSIFICATION_DISPLAY_ORDER, DIRECT_PLAYER_AWARD_KEYS, PLAYER_NOMINATION_KEYS, AWARD_ENGRAVINGS, PHYSICAL_TROPHY_COUNT, award_trophy_player_ids, GALA_TEST_MODE,
 )
 from export_utils import generate_summary_png, generate_settlement_png, generate_awards_png, generate_year_summary_png
 from logic import BASE_TEAMS, FIXED_TEAMS, SIX_TEAMS, SEVEN_TEAMS, EIGHT_TEAMS, FORMAT_LABELS, FORMAT_MATCH_COUNTS, GAME_VERSIONS, normalize_game_version, normalize_team_mode, effective_team_mode, allowed_teams, fixed_teams_for_version, real_helper_available
@@ -2034,7 +2034,7 @@ def live(tid:str):
                 st.info(f"💰 Zwycięzca otrzymuje **{pln_cents(finance['prize_cents'])} zł**. Mecz 1v1 nie rusza jackpotu turniejowego.")
             elif float((meta.get("extra") or {}).get("stake_per_player") or 0)<=0:
                 st.caption("Mecz bezpłatny.")
-            st.caption("Wynik liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów, finałów ani Gracza Roku.")
+            st.caption("Wynik liczy się do H2H, formy i statystyk meczowych, ale nie do tytułów, finałów ani Gracza Sezonu.")
             if t["is_test"]:st.info("Mecz testowy — nie liczy się do statystyk oficjalnych.")
             if st.button("➕ NOWY MECZ 1 VS 1",type="primary",use_container_width=True,key=f"new_duel_{tid}"):
                 db.start_new()
@@ -3073,7 +3073,7 @@ def render_awards(readonly:bool=False):
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🏆 Turnieje",overview.get("tournaments",0));c2.metric("⚔️ 1v1",overview.get("duels",0));c3.metric("🎮 Mecze",overview.get("matches",0));c4.metric("⚽ Gole",overview.get("goals",0));c5.metric("👥 Gracze",overview.get("players",0))
     if not cats:
-        st.warning(f"Brak wystarczających oficjalnych danych do Awards w {year} roku.")
+        st.warning("Brak wystarczających oficjalnych danych do Awards w tym sezonie.")
         return
 
     award_cats=[c for c in cats if c.get("award")]
@@ -3144,7 +3144,7 @@ def render_awards(readonly:bool=False):
 
                 first5=cat.get("debut_first5") or []
                 first10=cat.get("debut_first10") or []
-                # Zgodność z sesją / backendem sprzed rozszerzenia Debiutu Roku:
+                # Zgodność z sesją / backendem sprzed rozszerzenia Debiutu Sezonu:
                 # jeśli główny ranking już ma rekordy z informacją o oknie, nie pokazuj
                 # fałszywego komunikatu „nikt nie ma 5/10 meczów”.
                 if not first5 and not first10 and candidates:
@@ -3157,7 +3157,7 @@ def render_awards(readonly:bool=False):
                     st.dataframe(pd.DataFrame(debut_table_rows(first5)),hide_index=True,use_container_width=True)
                 else:
                     st.caption("Nikt z tegorocznych debiutantów nie ma jeszcze 5 oficjalnych meczów turniejowych.")
-                st.markdown("**🏁 Pierwsze 10 meczów — główna próba Debiutu Roku**")
+                st.markdown("**🏁 Pierwsze 10 meczów — główna próba Debiutu Sezonu**")
                 if first10:
                     st.dataframe(pd.DataFrame(debut_table_rows(first10)),hide_index=True,use_container_width=True)
                 else:
@@ -3169,11 +3169,11 @@ def render_awards(readonly:bool=False):
                 if secondary and cat.get("key")=="finance":
                     st.caption(f"📉 Sponsor FIFA Night: **{secondary.get('name')}** — {secondary.get('reason','')}")
                 elif secondary and cat.get("key")=="team_best":
-                    st.caption(f"📉 Najgorsza drużyna roku: **{secondary.get('name')}** — {secondary.get('reason','')}")
+                    st.caption(f"📉 Najgorsza drużyna sezonu: **{secondary.get('name')}** — {secondary.get('reason','')}")
 
     if nomination_summary:
         st.divider();st.markdown("### 🌟 Najczęściej nominowani")
-        st.caption("Liczymy wyłącznie kategorie, za które jest fizyczny puchar. Każda kategoria liczy się maksymalnie raz na gracza. W Królu Strzelców nominacja trafia do gracza, dla którego strzelał dany piłkarz, a Mecz Roku liczy się obu uczestnikom nominowanego spotkania. Z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2.")
+        st.caption("Liczymy wszystkie kategorie Awards, w których nominowany jest gracz FIFA Night — niezależnie od tego, czy dana kategoria ma fizyczną statuetkę. Każda kategoria liczy się maksymalnie raz na gracza. Rywalizacja Sezonu i Mecz Sezonu liczą obu uczestników, a w Królu Strzelców nominacja trafia do gracza, dla którego strzelał dany piłkarz. Drużyna Sezonu i Supersnajper Sezonu nie są przypisane do konkretnego gracza FIFA Night. Z nazw wypisujemy tylko kategorie, w których gracz jest w TOP 2.")
 
         # Budujemy nazwy kategorii TOP 2 bezpośrednio z aktualnie wyświetlanych
         # rankingów. Dzięki temu kolumna nie zależy od pomocniczego pola zwracanego
@@ -3182,9 +3182,9 @@ def render_awards(readonly:bool=False):
         top2_titles_by_player={}
         for cat in award_cats:
             key=str(cat.get("key") or "")
-            if key not in TROPHY_NOMINATION_KEYS or key=="match_year":
-                # Mecz Roku ma dwóch właścicieli nominacji; listę dla niego bierze
-                # bezpośrednio z nomination_summary policzonego w backendzie.
+            if key not in PLAYER_NOMINATION_KEYS or key in ("match_year","rivalry"):
+                # Nagrody par mają dwóch właścicieli nominacji; listę dla nich
+                # bierzemy bezpośrednio z nomination_summary policzonego w backendzie.
                 continue
             title=str(cat.get("title") or key)
             # Usuń wyłącznie emoji/pierwszy znacznik z tytułu, zachowując pełną nazwę nagrody.
@@ -3203,7 +3203,7 @@ def render_awards(readonly:bool=False):
             pid=str(x.get("player_id") or "")
             live_titles=list(top2_titles_by_player.get(pid,[]))
             backend_titles=[str(c).split(" ",1)[1] if " " in str(c) else str(c) for c in (x.get("categories_top2") or [])]
-            # Backend jest źródłem prawdy dla Meczu Roku, bo jedna nominacja należy
+            # Backend jest źródłem prawdy dla Meczu Sezonu, bo jedna nominacja należy
             # jednocześnie do obu uczestników. Dla pozostałych kategorii scalamy listy,
             # żeby zachować zgodność przy przejściowym cache/session state.
             for title in backend_titles:
@@ -3233,27 +3233,42 @@ def render_awards(readonly:bool=False):
         # podpowiedzią, a licznik nagród pomaga świadomie rozłożyć wyróżnienia.
         direct_player_awards=DIRECT_PLAYER_AWARD_KEYS
 
-        def award_owner_name(cat_key,candidate_id,candidate_name):
-            cat_key=str(cat_key or ""); candidate_name=str(candidate_name or "")
-            if cat_key in direct_player_awards:
-                return candidate_name
-            if cat_key=="player_scorers":
-                # Kandydat ma postać „Piłkarz — Gracz”; nagrodę liczymy do osoby,
-                # dla której dany piłkarz strzelał.
-                if " — " in candidate_name:
-                    return candidate_name.rsplit(" — ",1)[1].strip()
-            return None
-
-        counts={}
+        cat_by_key={str(c.get("key") or ""):c for c in award_cats}
+        trophy_counts_by_id={}
+        trophy_names_by_id={}
         for key,sel in selections.items():
-            sel=sel or {}
-            owner=award_owner_name(key,sel.get("id"),sel.get("name"))
-            if owner:counts[owner]=counts.get(owner,0)+1
+            key=str(key or ""); sel=sel or {}
+            if key not in AWARD_ENGRAVINGS:
+                continue
+            cat=cat_by_key.get(key) or {}
+            selected_id=str(sel.get("id") or "")
+            picked=next((x for x in (cat.get("candidates") or []) if str(x.get("id") or "")==selected_id),None)
+            if not picked:
+                continue
+            owners=award_trophy_player_ids(key,picked)
+            for owner_id in dict.fromkeys(owners):
+                owner_name=""
+                if key in direct_player_awards:
+                    owner_name=str(picked.get("name") or sel.get("name") or "")
+                elif key=="player_scorers":
+                    candidate_name=str(picked.get("name") or sel.get("name") or "")
+                    owner_name=(candidate_name.rsplit(" — ",1)[1].strip() if " — " in candidate_name else candidate_name)
+                elif key=="match_year":
+                    ids=[str(x or "") for x in (picked.get("participant_ids") or [])]
+                    names=[str(picked.get("home_name") or ""),str(picked.get("away_name") or "")]
+                    try: owner_name=names[ids.index(owner_id)]
+                    except Exception: owner_name=owner_id
+                trophy_counts_by_id[owner_id]=trophy_counts_by_id.get(owner_id,0)+1
+                if owner_name:trophy_names_by_id[owner_id]=owner_name
+
+        counts={trophy_names_by_id.get(pid,pid):n for pid,n in trophy_counts_by_id.items()}
 
         if counts:
-            spread_rows=[{"Gracz":name,"Wybrane nagrody":n} for name,n in sorted(counts.items(),key=lambda x:(-x[1],x[0]))]
-            st.markdown("#### 🎁 Rozkład nagród do tej pory")
+            spread_rows=[{"Gracz":name,"Wybrane statuetki":n} for name,n in sorted(counts.items(),key=lambda x:(-x[1],x[0]))]
+            st.markdown("#### 🎁 Rozkład statuetek do tej pory")
             st.dataframe(pd.DataFrame(spread_rows),hide_index=True,use_container_width=True)
+            assigned_trophies=sum(counts.values())
+            st.caption(f"Łącznie przypisanych statuetek: **{assigned_trophies} / {PHYSICAL_TROPHY_COUNT}**. Rywalizacja Sezonu, Drużyna Sezonu i Supersnajper Sezonu pozostają pełnoprawnymi kategoriami Gali, ale nie zwiększają tego licznika.")
         else:
             st.caption("🎁 Nikt nie ma jeszcze wybranej nagrody — zaczynamy od najważniejszych kategorii.")
 
@@ -3309,7 +3324,7 @@ def render_awards(readonly:bool=False):
             st.divider()
         if GALA_TEST_MODE:
             with st.expander("🧪 Testy gali — reset laureatów",expanded=False):
-                st.caption("Tylko na czas prób. Czyści wszystkie zapisane wybory laureatów tego roku i resetuje stan gali. Rankingi, mecze i statystyki zostają bez zmian.")
+                st.caption("Tylko na czas prób. Czyści wszystkie zapisane wybory laureatów tego sezonu i resetuje stan gali. Rankingi, mecze i statystyki zostają bez zmian.")
                 with st.form(f"awards_reset_all_test_{year}"):
                     confirm=st.text_input("Wpisz RESET, aby potwierdzić",key=f"awards_reset_all_confirm_{year}")
                     wipe=st.form_submit_button("🗑️ RESETUJ WSZYSTKICH LAUREATÓW",use_container_width=True)
@@ -3333,10 +3348,10 @@ def render_awards(readonly:bool=False):
     st.divider();st.markdown("### 🖼️ Grafiki roczne")
     c1,c2=st.columns(2)
     highlights=[]
-    if overview.get("top_player"):highlights.append({"label":"Lider kandydatów do Gracza Roku","value":overview.get("top_player")})
+    if overview.get("top_player"):highlights.append({"label":"Lider kandydatów do Gracza Sezonu","value":overview.get("top_player")})
     if overview.get("top_team"):highlights.append({"label":"Najwyżej sklasyfikowana drużyna","value":overview.get("top_team")})
     match_cat=next((c for c in cats if c.get("key")=="match_year"),None)
-    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Roku — lider kandydatów","value":match_cat["candidates"][0].get("name")})
+    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Sezonu — lider kandydatów","value":match_cat["candidates"][0].get("name")})
     with c1:
         year_png=generate_year_summary_png(year,overview,highlights)
         st.download_button("⬇️ FIFA Night — Rok w liczbach (PNG)",data=year_png,file_name=f"fifa-night-{year}-rok-w-liczbach.png",mime="image/png",use_container_width=True,key=f"year_png_{year}")
