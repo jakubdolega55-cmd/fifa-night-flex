@@ -25,6 +25,8 @@ for n in (3,4,5):
     assert b['tournament']['phase']=='team_draw',(n,b['tournament']['phase'])
     assert (b['meta']['extra'] or {}).get('partial_wheel_pool') is True
     assert len(db.remaining_wheel_pool(tid))==6
+    feed=db.tv_feed(tid)
+    assert feed['meta']['remaining_wheel_pool']==pool,(n,feed['meta'].get('remaining_wheel_pool'),pool)
     for draw_no in range(1,n+1):
         before=db.remaining_wheel_pool(tid)
         assert len(before)==7-draw_no,(n,draw_no,before)
@@ -37,6 +39,7 @@ for n in (3,4,5):
             db.confirm_wildcard_team(tid,r['player_id'],choice)
         after=db.remaining_wheel_pool(tid)
         assert len(after)==len(before)-1,(n,draw_no,after)
+        assert db.tv_feed(tid)['meta']['remaining_wheel_pool']==after,(n,draw_no,after)
     assert len(db.remaining_wheel_pool(tid))==6-n,(n,db.remaining_wheel_pool(tid))
     b=db.setup_bundle(tid)
     assert all(int(p['team_revealed']) for p in b['players'])
