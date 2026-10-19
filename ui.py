@@ -361,8 +361,8 @@ def render_synced_setup_tv(tid: str, api_url: str):
       }}
       function idle(feed){{if(playing)return; const t=feed?.tournament||{{}}, ps=feed?.players||[], meta=feed?.meta||{{}}; headline.textContent=phaseName(t.phase); let body='';
         if(t.phase==='team_draw'){{
-          const waitingPlayers=ps.filter(p=>!Number(p.team_revealed)); const pool=waitingPlayers.map(p=>String(p.team||'')).filter(Boolean); const waiting=waitingPlayers[0]; const player=waiting?.name||'Losowanie drużyn zakończone';
-          body=wheelMarkup(pool.length?pool:(meta.team_pool||[]),player,false,'','');
+          const waitingPlayers=ps.filter(p=>!Number(p.team_revealed)); const assignedFallback=waitingPlayers.map(p=>String(p.team||'')).filter(Boolean); const livePool=(meta.remaining_wheel_pool||[]); const waiting=waitingPlayers[0]; const player=waiting?.name||'Losowanie drużyn zakończone';
+          body=wheelMarkup(livePool.length?livePool:(assignedFallback.length?assignedFallback:(meta.team_pool||[])),player,false,'','');
         }} else if(!ps.length) body='<div class="muted">Czekam na uczestników…</div>'; else body='<div class="grid">'+ps.map((p,i)=>`<div class="card"><small>${{i+1}}. GRACZ</small><b>${{esc(p.name)}}</b><div class="muted">${{p.team_revealed?esc(p.team||'—'):'oczekuje na losowanie'}}</div></div>`).join('')+'</div>';
         root.innerHTML=body;
       }}

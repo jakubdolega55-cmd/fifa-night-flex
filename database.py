@@ -1792,6 +1792,7 @@ class Database:
                 FROM tournament_players tp JOIN players p ON p.id=tp.player_id
                 WHERE tp.tournament_id=? ORDER BY tp.team_reveal_order""",(tid,))
             rows=self._fetchall(conn,"SELECT id,kind,payload_json,created_at FROM flex_live_events WHERE tournament_id=? ORDER BY created_at DESC",(tid,))[:max(1,min(int(limit),80))]
+            remaining_wheel_pool=self._remaining_wheel_pool_conn(conn,tid) if str(t.get("phase") or "")=="team_draw" else []
         events=[]
         for r in reversed(rows):
             try: payload=json.loads(r.get("payload_json") or "{}")
@@ -1806,7 +1807,7 @@ class Database:
         return {
             "tournament":{**t,"player_count":int(meta.get("player_count") or 0),"format_key":meta.get("format_key") or ""},
             "players":players,
-            "meta":{"team_pool":pool,"draw":draw,"draw_revealed":bool(int(meta.get("draw_revealed") or 0)),"redraw_count":int(meta.get("redraw_count") or 0),"extra":extra},
+            "meta":{"team_pool":pool,"remaining_wheel_pool":remaining_wheel_pool,"draw":draw,"draw_revealed":bool(int(meta.get("draw_revealed") or 0)),"redraw_count":int(meta.get("redraw_count") or 0),"extra":extra},
             "events":events,
         }
 

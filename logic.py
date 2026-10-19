@@ -48,6 +48,11 @@ FC27_CLUB_REAL_MULTIPLIER = {1: 0.25, 2: 0.45}
 FC27_CLUB_STRONG_TEAM_MULTIPLIER = FC27_CLUB_PSG_MULTIPLIER
 FC27_NATIONAL_STRONG_TEAM_MULTIPLIER = {1: 0.50, 2: 0.70}
 
+# FC27 3–5 player wheel: keep Wild Card possible, but strongly prefer the
+# five named wheel teams. A real player receives only 10% of the normal
+# Wild Card-owner weight; unused/ghost wheel slots remain neutral.
+PARTIAL_WHEEL_WILDCARD_REAL_MULTIPLIER = 0.10
+
 # Backwards-compatible aliases used by existing screens. FC26 clubs remain legacy/default.
 FIXED_TEAMS = FC26_FIXED_TEAMS
 BASE_TEAMS = FIXED_TEAMS + ["Dowolna drużyna (Real Madryt banned)"]
@@ -156,7 +161,30 @@ def weighted_team_assignments_with_unused(player_ids: list[str], teams: list[str
         return weighted_team_assignments(pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode,real_handicap_by_player_id)
     ghosts=[f"__unused_wheel_slot_{i+1}__" for i in range(len(teams)-len(pids))]
     all_pids=pids+ghosts
-    full=weighted_team_assignments(all_pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode,real_handicap_by_player_id)
+
+    # Partial FC27 wheel has exactly one Wild Card sector. Do not treat the
+    # real players and unused sectors equally here: otherwise WC is used in
+    # roughly 50% / 67% / 83% of 3/4/5-player tournaments. Instead, keep the
+    # normal previous-placement preference *within* the real-player group but
+    # multiply every real player's WC-owner weight by 0.10. Ghost slots remain
+    # neutral, so WC is usually one of the unused sectors.
+    wild=[t for t in teams if is_wildcard_slot(t)]
+    fixed=[t for t in teams if not is_wildcard_slot(t)]
+    if len(wild)==1 and len(fixed)==len(all_pids)-1:
+        wc_weights=wildcard_assignment_weights(placement_by_player_id)
+        owner_options=[
+            (pid, float(wc_weights.get(pid,1.0))*PARTIAL_WHEEL_WILDCARD_REAL_MULTIPLIER)
+            for pid in pids
+        ] + [(ghost,1.0) for ghost in ghosts]
+        wc_owner=str(_weighted_choice_pairs(owner_options,rng))
+        remaining=[pid for pid in all_pids if pid!=wc_owner]
+        full={wc_owner:wild[0]}
+        full.update(weighted_fixed_team_matching(
+            remaining,fixed,placement_by_player_id,team_ratings,previous_team_by_player_id,
+            rng,game_version,team_mode,real_handicap_by_player_id
+        ))
+    else:
+        full=weighted_team_assignments(all_pids,teams,placement_by_player_id,rng,team_ratings,previous_team_by_player_id,game_version,team_mode,real_handicap_by_player_id)
     return {pid:full[pid] for pid in pids}
 
 
