@@ -43,6 +43,9 @@ LAST_STAKE_KEY = "flex_last_stake_pln"
 TEAM_MODE_KEY = "flex_team_mode"
 FC27_REAL_BANNED_KEY = "flex_fc27_real_banned"
 FC27_REAL_PLAYER_HANDICAPS_KEY = "flex_fc27_real_player_handicaps"
+AWARDS_SEASON_NO_KEY = "flex_awards_current_season_no"
+AWARDS_SEASON_START_KEY = "flex_awards_current_season_started_at"
+AWARDS_SEASON_HISTORY_KEY = "flex_awards_season_history_v1"
 
 # One canonical Awards order shared by Streamlit and mobile clients.
 # Keep selection flow and public display in the same order so the gala reads
@@ -657,6 +660,112 @@ class Database:
 
     def _setting_set_conn(self, conn, key: str, value: str) -> None:
         conn.execute(self._sql("INSERT INTO app_settings (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"), (key, value))
+
+    def _current_awards_season_conn(self, conn) -> dict:
+        """Return the active Awards season, initializing Season 1 lazily.
+
+        Season 1 intentionally mirrors the old calendar-year Awards scope so an
+        upgrade does not make the current rankings disappear. Later seasons begin
+        exactly when the organizer closes the previous Gala.
+        """
+        raw_no=self._setting_get_conn(conn,AWARDS_SEASON_NO_KEY)
+        raw_start=self._setting_get_conn(conn,AWARDS_SEASON_START_KEY)
+        try: season_no=max(1,int(raw_no or 1))
+        except Exception: season_no=1
+        if not raw_start:
+            current_year=datetime.now(timezone.utc).year
+            raw_start=f"{current_year}-01-01T00:00:00+00:00"
+            self._setting_set_conn(conn,AWARDS_SEASON_START_KEY,raw_start)
+        if not raw_no:
+            self._setting_set_conn(conn,AWARDS_SEASON_NO_KEY,str(season_no))
+        return {"season_no":season_no,"label":f"Sezon {season_no}","started_at":str(raw_start),"ended_at":None,"closed":False}
+
+    def current_awards_season(self) -> dict:
+        with self.connect() as conn:
+            return self._current_awards_season_conn(conn)
+
+    def awards_season_history(self) -> list[dict]:
+        with self.connect() as conn:
+            raw=self._setting_get_conn(conn,AWARDS_SEASON_HISTORY_KEY)
+        try:
+            rows=json.loads(raw) if raw else []
+            return rows if isinstance(rows,list) else []
+        except Exception:
+            return []
+
+    def _award_scope_token_conn(self, conn, year: int) -> str:
+        """Keep old API signatures while storing the active Gala by season.
+
+        Mobile/PWA still send the current calendar year. Mapping that year to the
+        active season lets the backend reset selections/Gala cleanly without a
+        client update. Historical/future explicit years keep their legacy keys.
+        """
+        y=int(year)
+        if y==datetime.now(timezone.utc).year:
+            season=self._current_awards_season_conn(conn)
+            return f"season_{int(season['season_no'])}"
+        return str(y)
+
+    def _award_scope_token(self, year: int) -> str:
+        with self.connect() as conn:
+            return self._award_scope_token_conn(conn,year)
+
+    def _migrate_legacy_awards_scope_conn(self, conn, year: int, kind: str, new_key: str) -> None:
+        """Copy the pre-season current-year state once, without deleting it."""
+        if int(year)!=datetime.now(timezone.utc).year:
+            return
+        season=self._current_awards_season_conn(conn)
+        if int(season.get("season_no") or 1)!=1 or self._setting_get_conn(conn,new_key) is not None:
+            return
+        legacy_key=(f"flex_award_selections_{int(year)}" if kind=="selections" else f"flex_awards_gala_{int(year)}")
+        legacy=self._setting_get_conn(conn,legacy_key)
+        if legacy is not None:
+            self._setting_set_conn(conn,new_key,legacy)
+
+    def close_current_awards_season(self) -> dict:
+        """Freeze the finished Gala and start a fresh Awards season.
+
+        General match/history statistics are untouched. The boundary is only used
+        by Awards/Gala. Closing is blocked while an official event is active so a
+        single tournament can never be split across two seasons.
+        """
+        year=datetime.now(timezone.utc).year
+        season=self.current_awards_season()
+        with self.connect() as conn:
+            active=self._fetchone(conn,"SELECT id FROM tournaments WHERE status='active' AND is_test=0 LIMIT 1")
+        if active:
+            raise ValueError("Najpierw zakończ aktywny oficjalny turniej / 1 VS 1. Sezonu nie dzielimy w trakcie rozgrywek.")
+        gala=self.awards_gala_status(year)
+        if str(gala.get("status") or "")!="finished":
+            raise ValueError("Sezon można zakończyć dopiero po zakończeniu Gali.")
+        snapshot=self.annual_awards(year)
+        now=now_iso(); no=int(season.get("season_no") or 1)
+        record={
+            "season_no":no,"label":f"Sezon {no}","started_at":season.get("started_at"),
+            "ended_at":now,"closed_at":now,"gala_winner_summary":list(gala.get("winner_summary") or []),
+            "overview":dict(snapshot.get("overview") or {}),
+        }
+        with self.connect() as conn:
+            raw=self._setting_get_conn(conn,AWARDS_SEASON_HISTORY_KEY)
+            try: history=json.loads(raw) if raw else []
+            except Exception: history=[]
+            if not isinstance(history,list): history=[]
+            history=[x for x in history if int((x or {}).get("season_no") or -1)!=no]
+            history.append(record);history.sort(key=lambda x:int((x or {}).get("season_no") or 0))
+            self._setting_set_conn(conn,AWARDS_SEASON_HISTORY_KEY,json.dumps(history,ensure_ascii=False))
+            self._setting_set_conn(conn,f"flex_awards_season_snapshot_{no}",json.dumps({**snapshot,"season":record,"gala":gala},ensure_ascii=False))
+            self._setting_set_conn(conn,AWARDS_SEASON_NO_KEY,str(no+1))
+            self._setting_set_conn(conn,AWARDS_SEASON_START_KEY,now)
+        return {"closed":record,"current":self.current_awards_season()}
+
+    def awards_season_snapshot(self, season_no: int) -> dict | None:
+        with self.connect() as conn:
+            raw=self._setting_get_conn(conn,f"flex_awards_season_snapshot_{int(season_no)}")
+        try:
+            data=json.loads(raw) if raw else None
+            return data if isinstance(data,dict) else None
+        except Exception:
+            return None
 
     def team_mode_setting(self) -> str:
         """Global default for NEW tournaments. Clubs remain the safe default."""
@@ -6218,7 +6327,10 @@ class Database:
 
     def award_selections(self, year: int) -> dict:
         with self.connect() as conn:
-            raw=self._setting_get_conn(conn,f"flex_award_selections_{int(year)}")
+            token=self._award_scope_token_conn(conn,year)
+            key=f"flex_award_selections_{token}"
+            self._migrate_legacy_awards_scope_conn(conn,year,"selections",key)
+            raw=self._setting_get_conn(conn,key)
         try:return json.loads(raw) if raw else {}
         except Exception:return {}
 
@@ -6226,48 +6338,49 @@ class Database:
         data=self.award_selections(year)
         data[str(category_key)]={"id":str(candidate_id),"name":str(candidate_name),"selected_at":now_iso()}
         with self.connect() as conn:
-            self._setting_set_conn(conn,f"flex_award_selections_{int(year)}",json.dumps(data,ensure_ascii=False))
+            token=self._award_scope_token_conn(conn,year)
+            self._setting_set_conn(conn,f"flex_award_selections_{token}",json.dumps(data,ensure_ascii=False))
 
     def clear_award_selection(self, year: int, category_key: str) -> bool:
-        """Remove only one organizer-selected annual award winner."""
+        """Remove only one organizer-selected Award winner in the active scope."""
         data=self.award_selections(year)
         key=str(category_key)
         existed=key in data
         if existed:
             data.pop(key,None)
             with self.connect() as conn:
-                self._setting_set_conn(conn,f"flex_award_selections_{int(year)}",json.dumps(data,ensure_ascii=False))
+                token=self._award_scope_token_conn(conn,year)
+                self._setting_set_conn(conn,f"flex_award_selections_{token}",json.dumps(data,ensure_ascii=False))
         return existed
 
     def clear_all_award_selections_for_test(self, year: int) -> int:
-        """TEST MODE only: clear all annual laureate choices and reset gala state."""
+        """TEST MODE only: clear all current-season laureate choices and Gala state."""
         if not GALA_TEST_MODE:
             raise ValueError("Reset wszystkich laureatów jest dostępny tylko w trybie testowym gali.")
         data=self.award_selections(year)
         count=len(data)
         with self.connect() as conn:
-            self._setting_set_conn(conn,f"flex_award_selections_{int(year)}","{}")
+            token=self._award_scope_token_conn(conn,year)
+            self._setting_set_conn(conn,f"flex_award_selections_{token}","{}")
         self.reset_awards_gala(year)
         return count
 
     def _gala_state_key(self, year: int) -> str:
-        return f"flex_awards_gala_{int(year)}"
+        return f"flex_awards_gala_{self._award_scope_token(year)}"
 
     def awards_gala_nav_visible(self, year: int) -> bool:
         """Cheap navigation gate; the full readiness validation still happens at START."""
         if GALA_TEST_MODE:
             return True
-        with self.connect() as conn:
-            raw=self._setting_get_conn(conn,f"flex_award_selections_{int(year)}")
-        try:
-            selections=json.loads(raw) if raw else {}
-        except Exception:
-            selections={}
+        selections=self.award_selections(year)
         return all(bool((selections.get(key) or {}).get("id")) for key in GALA_AWARD_ORDER)
 
     def _gala_load_state(self, year: int) -> dict:
         with self.connect() as conn:
-            raw=self._setting_get_conn(conn,self._gala_state_key(year))
+            token=self._award_scope_token_conn(conn,year)
+            key=f"flex_awards_gala_{token}"
+            self._migrate_legacy_awards_scope_conn(conn,year,"gala",key)
+            raw=self._setting_get_conn(conn,key)
         try:
             data=json.loads(raw) if raw else {}
             return data if isinstance(data,dict) else {}
@@ -6276,7 +6389,8 @@ class Database:
 
     def _gala_save_state(self, year: int, state: dict) -> None:
         with self.connect() as conn:
-            self._setting_set_conn(conn,self._gala_state_key(year),json.dumps(state,ensure_ascii=False))
+            token=self._award_scope_token_conn(conn,year)
+            self._setting_set_conn(conn,f"flex_awards_gala_{token}",json.dumps(state,ensure_ascii=False))
 
     def _gala_base(self, year: int) -> dict:
         data=self.annual_awards(int(year))
@@ -6694,13 +6808,21 @@ class Database:
         """
         import math, statistics
         year=int(year); like=f"{year}-%"
+        season_scope=self.current_awards_season() if year==datetime.now(timezone.utc).year else None
         with self.connect() as conn:
-            events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,t.game_version,fm.format_key
-                FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
-                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
-                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""",(like,))
+            if season_scope:
+                events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,t.game_version,fm.format_key
+                    FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                    WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0
+                      AND COALESCE(t.completed_at,t.created_at) >= ?
+                    ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""",(str(season_scope.get("started_at") or ""),))
+            else:
+                events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,t.game_version,fm.format_key
+                    FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                    WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0 AND COALESCE(t.completed_at,t.created_at) LIKE ?
+                    ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""",(like,))
             if not events:
-                return {"year":year,"categories":[],"overview":{"tournaments":0,"duels":0,"matches":0,"goals":0,"players":0}}
+                return {"year":year,"season":season_scope,"categories":[],"overview":{"tournaments":0,"duels":0,"matches":0,"goals":0,"players":0},"selections":self.award_selections(year),"nomination_summary":[]}
             tids=[str(x["id"]) for x in events]; q=','.join('?' for _ in tids)
             matches=self._fetchall(conn,f"""SELECT m.*,t.completed_at,t.created_at,hp.name home_name,ap.name away_name,
                 htp.team home_team,atp.team away_team
@@ -7605,7 +7727,11 @@ class Database:
 
         debut5=[];debut10=[]
         for pid in ps:
-            if not first_by.get(pid,"").startswith(str(year)):continue
+            first_date=str(first_by.get(pid,"") or "")
+            if season_scope:
+                if not first_date or first_date < str(season_scope.get("started_at") or ""):continue
+            elif not first_date.startswith(str(year)):
+                continue
             r5=debut_window(pid,5);r10=debut_window(pid,10)
             if r5:debut5.append(r5)
             if r10:debut10.append(r10)
@@ -7841,7 +7967,7 @@ class Database:
                 str(c.get("title") or ""),
             )
         )
-        return {"year":year,"categories":cats,"overview":overview,"selections":self.award_selections(year),"nomination_summary":nomination_summary}
+        return {"year":year,"season":season_scope,"categories":cats,"overview":overview,"selections":self.award_selections(year),"nomination_summary":nomination_summary}
 
     def all_time_stats(self) -> list[dict]:
         """Shared official stats, including already-played matches in an active event.

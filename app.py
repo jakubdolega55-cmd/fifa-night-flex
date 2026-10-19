@@ -3067,8 +3067,20 @@ def render_awards(readonly:bool=False):
         st.info("🏅 TOP 5 układają wyniki. 🏆 Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎 Kandydaci zmieniają się razem z sezonem.")
     else:
         st.info("🎯 Tu zbieramy dodatkowe klasyfikacje sezonu — bez statuetek i bez napinki. Te oparte na kartkach, karnych i przebiegu meczu korzystają tylko ze spotkań zapisanych ze szczegółami.")
-    current_year=datetime.now().year
-    year=int(st.number_input("Rok",min_value=2024,max_value=current_year+1,value=current_year,step=1,key="awards_year"))
+    year=datetime.now().year
+    season_info=db.current_awards_season();season_no=int(season_info.get("season_no") or 1);scope_key=f"{year}_s{season_no}"
+    started_label=fmt_history_datetime(season_info.get("started_at")) if season_info.get("started_at") else "—"
+    st.markdown(f"### 🗓️ Sezon {season_no}")
+    st.caption(f"Aktualny okres Awards • start: **{started_label}**. Po zakończeniu Gali możesz zamknąć sezon — statystyki ogólne i historia meczów nie są resetowane.")
+    history=db.awards_season_history()
+    if history:
+        with st.expander(f"📚 Zamknięte sezony ({len(history)})",expanded=False):
+            hist_rows=[]
+            for h in reversed(history):
+                winners=h.get("gala_winner_summary") or []
+                player_winner=next((x.get("name") for x in winners if str(x.get("key") or "")=="player_year"),"—")
+                hist_rows.append({"Sezon":h.get("label") or f"Sezon {h.get('season_no')}","Od":fmt_history_datetime(h.get("started_at")),"Do":fmt_history_datetime(h.get("ended_at")),"Gracz Sezonu":player_winner})
+            st.dataframe(pd.DataFrame(hist_rows),hide_index=True,use_container_width=True)
     data=db.annual_awards(year);overview=data.get("overview") or {};cats=data.get("categories") or [];selections=data.get("selections") or {};nomination_summary=data.get("nomination_summary") or []
     c1,c2,c3,c4,c5=st.columns(5)
     c1.metric("🏆 Turnieje",overview.get("tournaments",0));c2.metric("⚔️ 1v1",overview.get("duels",0));c3.metric("🎮 Mecze",overview.get("matches",0));c4.metric("⚽ Gole",overview.get("goals",0));c5.metric("👥 Gracze",overview.get("players",0))
@@ -3309,13 +3321,13 @@ def render_awards(readonly:bool=False):
                 if selected.get("name"):
                     extra=f" • {current_owner} ma łącznie {counts.get(current_owner,0)} nagr." if current_owner else ""
                     st.caption(f"✅ Aktualnie wybrano: **{selected.get('name')}**{extra}")
-                    if st.button("🗑️ USUŃ LAUREATA / RESETUJ WYBÓR",use_container_width=True,key=f"award_reset_{year}_{cat['key']}"):
+                    if st.button("🗑️ USUŃ LAUREATA / RESETUJ WYBÓR",use_container_width=True,key=f"award_reset_{scope_key}_{cat['key']}"):
                         db.clear_award_selection(year,cat["key"])
                         st.success(f"Usunięto laureata: {cat['title']}. Możesz wybrać ponownie.")
                         rr()
-                with st.form(f"award_pick_{year}_{cat['key']}"):
+                with st.form(f"award_pick_{scope_key}_{cat['key']}"):
                     engraving_note=f" — grawer: {cat['engraving']}" if cat.get("engraving") else ""
-                    choice=st.selectbox(f"{pick_no}. {cat['title']}{engraving_note}",options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{year}_{cat['key']}")
+                    choice=st.selectbox(f"{pick_no}. {cat['title']}{engraving_note}",options=ids,index=default_index,format_func=lambda x,m=label_by:m.get(x,x),key=f"award_choice_{scope_key}_{cat['key']}")
                     save=st.form_submit_button("🏅 ZAPISZ LAUREATA",use_container_width=True)
                 if save:
                     cand=next(x for x in candidates if str(x.get("id"))==str(choice))
@@ -3325,8 +3337,8 @@ def render_awards(readonly:bool=False):
         if GALA_TEST_MODE:
             with st.expander("🧪 Testy gali — reset laureatów",expanded=False):
                 st.caption("Tylko na czas prób. Czyści wszystkie zapisane wybory laureatów tego sezonu i resetuje stan gali. Rankingi, mecze i statystyki zostają bez zmian.")
-                with st.form(f"awards_reset_all_test_{year}"):
-                    confirm=st.text_input("Wpisz RESET, aby potwierdzić",key=f"awards_reset_all_confirm_{year}")
+                with st.form(f"awards_reset_all_test_{scope_key}"):
+                    confirm=st.text_input("Wpisz RESET, aby potwierdzić",key=f"awards_reset_all_confirm_{scope_key}")
                     wipe=st.form_submit_button("🗑️ RESETUJ WSZYSTKICH LAUREATÓW",use_container_width=True)
                 if wipe:
                     if str(confirm or "").strip().upper()!="RESET":
@@ -3335,7 +3347,29 @@ def render_awards(readonly:bool=False):
                         removed=db.clear_all_award_selections_for_test(year)
                         st.success(f"Wyczyszczono {removed} wyborów laureatów. Gala wróciła do stanu przed startem.")
                         rr()
-        if st.button("🔒 Zablokuj wybór laureatów",use_container_width=True,key="awards_lock"):
+        st.markdown("#### 🏁 Zakończenie sezonu")
+        gala_state=db.awards_gala_status(year)
+        if str(gala_state.get("status") or "")!="finished":
+            st.caption("Przycisk zakończenia sezonu odblokuje się dopiero po pełnym zakończeniu Gali. Dzięki temu laureaci i przebieg ceremonii zostaną zamrożeni w historii.")
+        else:
+            with st.expander(f"🏁 Zakończ Sezon {season_no}",expanded=False):
+                st.warning("To zamrozi wyniki Awards i Galę tego sezonu. Następny oficjalny mecz/turniej będzie już liczony do nowego sezonu. Historia meczów, statystyki ogólne, H2H, odznaki i kamienie milowe zostają bez zmian.")
+                with st.form(f"close_awards_season_{scope_key}"):
+                    close_confirm=st.text_input("Wpisz ZAKOŃCZ SEZON",key=f"close_awards_season_confirm_{scope_key}")
+                    close_submit=st.form_submit_button("🏁 ZAKOŃCZ SEZON I OTWÓRZ NOWY",use_container_width=True)
+                if close_submit:
+                    if str(close_confirm or "").strip().upper()!="ZAKOŃCZ SEZON":
+                        st.error("Wpisz dokładnie: ZAKOŃCZ SEZON")
+                    else:
+                        try:
+                            result=db.close_current_awards_season()
+                            new_no=int((result.get("current") or {}).get("season_no") or season_no+1)
+                            st.session_state.awards_admin_ok=False
+                            st.success(f"Sezon {season_no} zamknięty. Rozpoczął się Sezon {new_no}.")
+                            rr()
+                        except ValueError as e:
+                            st.error(str(e))
+        if st.button("🔒 Zablokuj wybór laureatów",use_container_width=True,key=f"awards_lock_{scope_key}"):
             st.session_state.awards_admin_ok=False;rr()
 
     # Share cards. The Awards graphic intentionally contains only organizer-selected winners.
@@ -3345,7 +3379,7 @@ def render_awards(readonly:bool=False):
         if sel.get("name"):
             raw_title=str(cat["title"]);plain_title=raw_title.split(" ",1)[1] if " " in raw_title else raw_title
             selected_rows.append({"title":plain_title,"name":sel["name"]})
-    st.divider();st.markdown("### 🖼️ Grafiki roczne")
+    st.divider();st.markdown("### 🖼️ Grafiki sezonu")
     c1,c2=st.columns(2)
     highlights=[]
     if overview.get("top_player"):highlights.append({"label":"Lider kandydatów do Gracza Sezonu","value":overview.get("top_player")})
@@ -3354,10 +3388,10 @@ def render_awards(readonly:bool=False):
     if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Sezonu — lider kandydatów","value":match_cat["candidates"][0].get("name")})
     with c1:
         year_png=generate_year_summary_png(year,overview,highlights)
-        st.download_button("⬇️ FIFA Night — Rok w liczbach (PNG)",data=year_png,file_name=f"fifa-night-{year}-rok-w-liczbach.png",mime="image/png",use_container_width=True,key=f"year_png_{year}")
+        st.download_button("⬇️ FIFA Night — Sezon w liczbach (PNG)",data=year_png,file_name=f"fifa-night-sezon-{season_no}-w-liczbach.png",mime="image/png",use_container_width=True,key=f"year_png_{scope_key}")
     with c2:
         awards_png=generate_awards_png(year,selected_rows)
-        st.download_button("⬇️ FIFA Night Awards — laureaci (PNG)",data=awards_png,file_name=f"fifa-night-awards-{year}.png",mime="image/png",use_container_width=True,key=f"awards_png_{year}")
+        st.download_button("⬇️ FIFA Night Awards — laureaci (PNG)",data=awards_png,file_name=f"fifa-night-awards-sezon-{season_no}.png",mime="image/png",use_container_width=True,key=f"awards_png_{scope_key}")
         if not selected_rows:st.caption("Grafika Awards będzie uzupełniać się dopiero po wyborze laureatów przez organizatora.")
 
 
