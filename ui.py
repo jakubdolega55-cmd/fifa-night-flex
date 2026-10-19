@@ -302,7 +302,7 @@ def render_playoff_reveal(format_key: str, pairs: list[dict], direct: list[dict]
     components.html(f"""<div class='po'><div class='eye'>FAZA GRUPOWA ZAKOŃCZONA</div><div class='title'>{headline}</div>{direct_html}<div class='pairs'>{''.join(cards)}</div><div class='foot'>VAR przeliczył tabelę. Reklamacji brak.</div></div><style>html,body{{margin:0;background:transparent;font-family:Inter,system-ui}}*{{box-sizing:border-box}}.po{{max-width:850px;margin:auto;padding:24px;border-radius:24px;background:radial-gradient(circle at 50% 0,#163b46,#101d32 45%,#0b1220);border:1px solid rgba(148,163,184,.22);color:#f8fafc;text-align:center}}.eye{{font-size:11px;font-weight:950;letter-spacing:.18em;color:#67e8f9}}.title{{font-size:27px;font-weight:1000;margin:5px 0 16px}}.direct{{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}}.bye{{padding:14px;border-radius:16px;background:#052e2b;border:1px solid #10b981;display:flex;flex-direction:column}}.bye span{{font-size:10px;color:#6ee7b7;font-weight:900}}.bye b{{font-size:18px}}.bye em{{font-style:normal;font-size:10px;color:#a7f3d0;font-weight:900}}.pairs{{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}}.pair{{padding:17px 12px;border-radius:18px;background:#111c31;border:1px solid #334155;display:grid;gap:4px;opacity:0;transform:translateY(8px);animation:reveal .42s ease var(--d) forwards}}.pair span{{font-size:10px;letter-spacing:.1em;color:#94a3b8;font-weight:900}}.pair b{{font-size:18px}}.pair i{{font-style:normal;color:#64748b;font-size:11px;font-weight:900}}.foot{{margin-top:14px;color:#86efac;opacity:0;animation:reveal .35s ease {finish_delay:.2f}s forwards}}@keyframes reveal{{to{{opacity:1;transform:none}}}}@media(max-width:620px){{.po{{padding:16px 8px;border-radius:18px}}.direct,.pairs{{grid-template-columns:1fr;gap:8px}}.pair b,.bye b{{overflow-wrap:anywhere;word-break:break-word}}.title{{font-size:22px}}}}</style>{FIT_SCRIPT}""",height=430 if direct else 330,scrolling=True)
 
 
-def render_synced_setup_tv(tid: str, api_url: str):
+def render_synced_setup_tv(tid: str, api_url: str, compact: bool = False):
     """Browser-side TV view for pre-tournament draws controlled from the phone.
 
     JavaScript polls the lightweight API feed directly.  This avoids Streamlit's
@@ -312,12 +312,14 @@ def render_synced_setup_tv(tid: str, api_url: str):
     import json as _json
     feed_url=f"{str(api_url).rstrip('/')}/api/v1/tv/feed/{tid}"
     url_js=_json.dumps(feed_url)
+    compact_class=" compact" if compact else ""
+    iframe_height=600 if compact else 680
     _club_names=["Real Madryt","PSG","Bayern Monachium","FC Barcelona","Arsenal","Manchester City","Liverpool","Atletico","Inter","Man United","BVB","Tottenham","AC Milan","Bayer Leverkusen"]
     _flag_names=["Hiszpania","Anglia","Brazylia","Niemcy","Portugalia","Włochy","Argentyna","Holandia","Belgia","Chorwacja","Dania","Maroko","Turcja","Szwajcaria"]
     club_visual_js=_json.dumps({x.casefold():team_logo_data_uri(x) for x in _club_names if team_logo_data_uri(x)},ensure_ascii=False)
     flag_visual_js=_json.dumps({x.casefold():team_flag_data_uri(x) for x in _flag_names if team_flag_data_uri(x)},ensure_ascii=False)
     components.html(f"""
-    <div id="tvroot" class="tvroot">
+    <div id="tvroot" class="tvroot{compact_class}">
       <div class="top"><div><div class="eyebrow">FIFA NIGHT • TV SYNC</div><div id="headline" class="headline">Łączę ekran z losowaniem…</div></div><div class="live"><i></i> TELEFON STERUJE</div></div>
       <div id="stage" class="stage"><div class="loader"></div><div class="muted">Czekam na stan turnieju.</div></div>
       <div class="foot">Losowania są kolejkowane — ekran nie pomija szybkich akcji z telefonu.</div>
@@ -325,6 +327,7 @@ def render_synced_setup_tv(tid: str, api_url: str):
     <style>
     html,body{{margin:0;background:transparent;font-family:Inter,Segoe UI,system-ui;color:#f8fafc}}*{{box-sizing:border-box}}
     .tvroot{{width:100%;max-width:none;margin:0 auto;padding:28px 34px 22px;border-radius:26px;background:radial-gradient(circle at 50% 0,#173853 0,#0f1d31 43%,#091321 100%);border:1px solid rgba(148,163,184,.22);min-height:590px;box-shadow:0 18px 55px rgba(2,8,23,.25)}}
+.tvroot.compact{{padding:14px 20px 12px;border-radius:22px;min-height:500px}}.tvroot.compact .top{{margin-bottom:8px}}.tvroot.compact .headline{{font-size:clamp(22px,3vw,32px)}}.tvroot.compact .stage{{min-height:400px}}.tvroot.compact .wheelWrap{{grid-template-columns:minmax(460px,600px) minmax(330px,1fr);gap:32px}}.tvroot.compact .wheelBox{{width:min(38vw,540px)}}.tvroot.compact .foot{{margin-top:2px;font-size:10px}}
     .top{{display:flex;justify-content:space-between;gap:18px;align-items:center;margin-bottom:18px}}.eyebrow{{font-size:11px;letter-spacing:.18em;font-weight:950;color:#7dd3fc}}.headline{{font-size:clamp(25px,4vw,38px);font-weight:1000;margin-top:3px}}
     .live{{font-size:11px;font-weight:950;letter-spacing:.08em;color:#86efac;background:#062c25;border:1px solid #145c48;border-radius:999px;padding:8px 12px;white-space:nowrap}}.live i{{display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;margin-right:6px;box-shadow:0 0 0 4px rgba(52,211,153,.12)}}
     .stage{{min-height:450px;display:grid;place-items:center}}.muted{{color:#94a3b8}}.foot{{text-align:center;color:#64748b;font-size:12px;margin-top:8px}}
@@ -338,6 +341,7 @@ def render_synced_setup_tv(tid: str, api_url: str):
     .bigReveal{{text-align:center;padding:36px 24px;border-radius:24px;background:linear-gradient(145deg,#10293b,#101827);border:1px solid #31536f;min-width:min(720px,100%)}}.bigReveal .icon{{font-size:54px}}.bigReveal h2{{font-size:34px;margin:8px 0}}.bigReveal p{{font-size:22px;color:#86efac;font-weight:900}}
     .loader{{width:45px;height:45px;border-radius:50%;border:4px solid #25405d;border-top-color:#34d399;animation:rot .8s linear infinite;margin:auto auto 12px}}
     @keyframes reveal{{to{{opacity:1;transform:none}}}}@keyframes rot{{to{{transform:rotate(360deg)}}}}@keyframes spin{{to{{transform:rotate(var(--rot))}}}}
+    @media(max-width:1250px){{.tvroot.compact .wheelWrap{{grid-template-columns:minmax(400px,520px) minmax(260px,1fr);gap:20px}}.tvroot.compact .wheelBox{{width:min(42vw,480px)}}}}
     @media(max-width:760px){{.tvroot{{padding:16px 12px;min-height:520px}}.top{{align-items:flex-start}}.live{{font-size:9px}}.wheelWrap{{grid-template-columns:1fr;gap:10px}}.result{{text-align:center}}.wheelBox{{width:min(78vw,400px)}}.drawGrid,.matchDrawGrid,.specialGrid,.grid{{grid-template-columns:1fr}}.stage{{min-height:400px}}}}
     </style>
     <script>
@@ -388,7 +392,7 @@ def render_synced_setup_tv(tid: str, api_url: str):
       poll();setInterval(poll,500);
     }})();
     </script>
-    """,height=680,scrolling=False)
+    """,height=iframe_height,scrolling=False)
 
 
 

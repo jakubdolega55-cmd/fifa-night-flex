@@ -868,7 +868,7 @@ def render_setup_tv_watch(tid:str):
             st.rerun()
     else:
         st.session_state.pop(exit_key,None)
-    render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL)
+    render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL,compact=True)
 
 
 def setup_tv_gate(t) -> bool:
@@ -3636,7 +3636,7 @@ def _render_tv_screen_content(tid:str,tv_mode:str):
         st.caption("TV samo się odświeża. Turniej odpala telefon ze sterowaniem — telewizor ma tylko wyglądać mądrze.")
         return
     if str(t.get("phase") or "") in SETUP_PHASES:
-        render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL)
+        render_synced_setup_tv(tid,MOBILE_API_PUBLIC_URL,compact=True)
         return
     if render_tv_special_event(tid,b):
         st.caption("📺 TV SYNC • losowanie uruchomione z telefonu")
@@ -3751,6 +3751,12 @@ def _render_tv_screen_content(tid:str,tv_mode:str):
     st.caption("📺 LIVE odświeża dane co 5 sekund. W trybie AUTO ekran sam przełącza widoki co około 30 sekund.")
 
 def render_viewer_live(t):
+    # During phone-controlled setup the laptop is a TV first, not a navigation page.
+    # Skip the large hero/nav chrome so the wheel is visible immediately on a laptop.
+    if str(t.get("phase") or "") in SETUP_PHASES:
+        st.markdown("<style>.block-container{padding-top:.25rem!important}</style>",unsafe_allow_html=True)
+        render_synced_setup_tv(t["id"],MOBILE_API_PUBLIC_URL,compact=True)
+        return
     title="1 vs 1" if t.get("format_key")=="duel1v1" else f"{t['player_count']} graczy"
     hero(f"{title} • {FORMAT_LABELS[t['format_key']]}")
     gala_visible=gala_nav_visible()
@@ -3816,6 +3822,16 @@ def render_live(t,public_test:bool=False):
     else:render_access_settings()
 
 
+@st.fragment(run_every="2s")
+def watch_current_tournament(expected_id:str=""):
+    """Reload a passive Streamlit viewer when the phone starts/resets another tournament."""
+    fresh=db.current_tournament()
+    current_id=str((fresh or {}).get("id") or "")
+    if current_id!=str(expected_id or ""):
+        st.session_state["viewer_view"]="📺 LIVE"
+        st.rerun()
+
+
 t=db.current_tournament()
 # From this version onward every 1 vs 1 is official. If an active duel was
 # created by an older hotfix as testowy, normalize only that current event.
@@ -3823,6 +3839,7 @@ if t and t.get("format_key")=="duel1v1" and int(t.get("is_test") or 0):
     db.set_test_mode(t["id"],False)
     t["is_test"]=0
 if not controller_access():
+    watch_current_tournament(str((t or {}).get("id") or ""))
     if not t:
         render_public_start()
     elif int(t.get("is_test") or 0):
