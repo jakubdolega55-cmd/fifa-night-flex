@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import sqlite3
 import uuid
 import unicodedata
@@ -5428,7 +5429,12 @@ class Database:
 
 
     def player_award_wins(self, player_id: str) -> list[dict]:
-        """Organizer-selected individual FIFA Night Awards belonging to one participant."""
+        """Organizer-selected individual Awards, deduplicated by Awards season.
+
+        Season 1 may have a copied legacy ``flex_award_selections_<year>`` key after
+        migration. Prefer the explicit ``season_N`` scope so player profiles do not
+        show the same Award twice.
+        """
         pid=str(player_id or "")
         if not pid:return []
         titles={
@@ -5443,19 +5449,30 @@ class Database:
         direct=set(titles)-{"player_scorers"}
         with self.connect() as conn:
             rows=self._fetchall(conn,"SELECT key,value FROM app_settings WHERE key LIKE ?",("flex_award_selections_%",))
-        out=[]
+        explicit_seasons=[]; legacy=[]
         for r in rows:
             key=str(r.get("key") or "")
-            try:year=int(key.rsplit("_",1)[1])
-            except Exception:continue
+            m=re.search(r"flex_award_selections_season_(\d+)$",key)
+            if m: explicit_seasons.append((int(m.group(1)),r))
+            else:
+                m=re.search(r"flex_award_selections_(\d{4})$",key)
+                if m: legacy.append((int(m.group(1)),r))
+        source=[]
+        source.extend((f"Sezon {no}",no,r) for no,r in explicit_seasons)
+        # Keep genuinely old calendar scopes only when no season-scoped data exists for
+        # the current system. This avoids the Season 1 migration duplicate.
+        if not explicit_seasons:
+            source.extend((str(year),year,r) for year,r in legacy)
+        out=[]
+        for period_label,order_no,r in source:
             try:data=json.loads(r.get("value") or "{}")
             except Exception:continue
             for cat,sel in (data or {}).items():
                 cat=str(cat);sel=sel or {};cid=str(sel.get("id") or "")
                 belongs=(cat in direct and cid==pid) or (cat=="player_scorers" and cid.split("|",1)[0]==pid)
                 if belongs:
-                    out.append({"year":year,"key":cat,"title":titles.get(cat,cat),"name":str(sel.get("name") or ""),"selected_at":sel.get("selected_at")})
-        out.sort(key=lambda x:(x["year"],x["title"]))
+                    out.append({"year":order_no,"season_no":order_no if period_label.startswith("Sezon ") else None,"period":period_label,"key":cat,"title":titles.get(cat,cat),"name":str(sel.get("name") or ""),"selected_at":sel.get("selected_at")})
+        out.sort(key=lambda x:(int(x.get("year") or 0),x["title"]))
         return out
 
     def player_trophy_case(self, player_id: str) -> dict:

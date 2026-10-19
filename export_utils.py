@@ -362,8 +362,12 @@ def generate_settlement_png(settlement: dict, event_labels: list[str] | None = N
     bio = BytesIO(); img.save(bio, "PNG", optimize=True); return bio.getvalue()
 
 
-def generate_awards_png(year: int, winners: list[dict] | dict) -> bytes:
-    """Final Awards card: category + selected winner only, without ranking reasons."""
+def generate_awards_png(year: int | str, winners: list[dict] | dict) -> bytes:
+    """Final Awards card: category + selected winner only, without ranking reasons.
+
+    ``year`` is kept as the argument name for backwards compatibility, but it may
+    now be a season label such as ``"Sezon 2"``.
+    """
     if isinstance(winners, dict):
         rows = [{"title": k, "name": (v or {}).get("name", "—")} for k, v in winners.items()]
     else:
@@ -371,7 +375,11 @@ def generate_awards_png(year: int, winners: list[dict] | dict) -> bytes:
     img = Image.new("RGB", (WIDTH, HEIGHT), BG); draw = ImageDraw.Draw(img)
     _rr(draw, (24, 24, 1056, 1056), fill="#0e1728", outline="#25334b", r=38)
     draw.text((66, 58), "FIFA NIGHT AWARDS", font=_font(55, True), fill=GOLD)
-    draw.text((70, 126), str(int(year)), font=_font(33, True), fill=TEXT)
+    try:
+        period_label = str(int(year))
+    except (TypeError, ValueError):
+        period_label = str(year or "—")
+    draw.text((70, 126), period_label, font=_font(33, True), fill=TEXT)
     if not rows:
         draw.text((70, 220), "Laureaci nie zostali jeszcze wybrani.", font=_font(29, True), fill=MUTED)
     else:
@@ -389,12 +397,20 @@ def generate_awards_png(year: int, winners: list[dict] | dict) -> bytes:
     bio = BytesIO(); img.save(bio, "PNG", optimize=True); return bio.getvalue()
 
 
-def generate_year_summary_png(year: int, overview: dict, highlights: list[dict] | None = None) -> bytes:
-    """Annual 'Rok w liczbach' share card."""
+def generate_year_summary_png(year: int | str, overview: dict, highlights: list[dict] | None = None) -> bytes:
+    """Share card for a calendar year (legacy) or an Awards season."""
     img = Image.new("RGB", (WIDTH, HEIGHT), BG); draw = ImageDraw.Draw(img)
     _rr(draw, (24, 24, 1056, 1056), fill="#0e1728", outline="#25334b", r=38)
-    draw.text((66, 58), f"FIFA NIGHT {int(year)}", font=_font(57, True), fill=TEXT)
-    draw.text((70, 130), "ROK W LICZBACH", font=_font(29, True), fill=CYAN)
+    try:
+        period_label = str(int(year))
+        headline = f"FIFA NIGHT {period_label}"
+        period_title = "ROK W LICZBACH"
+    except (TypeError, ValueError):
+        period_label = str(year or "—")
+        headline = f"FIFA NIGHT • {period_label.upper()}"
+        period_title = "SEZON W LICZBACH"
+    draw.text((66, 58), headline, font=_fit(draw, headline, 930, 57, 34, True), fill=TEXT)
+    draw.text((70, 130), period_title, font=_font(29, True), fill=CYAN)
 
     metrics = [
         ("TURNIEJE", overview.get("tournaments", 0)),

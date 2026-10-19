@@ -1919,6 +1919,84 @@ def get_player_profile(player_id: str) -> dict[str, Any]:
     return {"profile": profile, "achievement": achievement, "awards": awards, "trophy_case":trophy,"event_stats":event_stats}
 
 
+def _current_awards_year() -> int:
+    return datetime.now(timezone.utc).year
+
+
+def _season_payload_or_404(season_no: int) -> dict[str, Any]:
+    if int(season_no) < 1:
+        raise HTTPException(422, "Nieprawidłowy sezon.")
+    current=db.current_awards_season(); current_no=int(current.get("season_no") or 1)
+    if int(season_no)==current_no:
+        return db.annual_awards(_current_awards_year())
+    snap=db.awards_season_snapshot(int(season_no))
+    if not snap:
+        raise HTTPException(404, "Nie znaleziono sezonu Awards.")
+    return snap
+
+
+def _require_current_awards_season(season_no: int) -> dict[str, Any]:
+    current=db.current_awards_season(); current_no=int(current.get("season_no") or 1)
+    if int(season_no)!=current_no:
+        raise HTTPException(409, "Sterowanie Galą jest dostępne tylko dla bieżącego sezonu.")
+    return current
+
+
+@app.get("/api/v1/awards-seasons")
+def get_awards_seasons() -> dict[str, Any]:
+    current=db.current_awards_season()
+    history=list(db.awards_season_history() or [])
+    rows=[dict(x) for x in history if isinstance(x,dict)]
+    rows=[x for x in rows if int(x.get("season_no") or -1)!=int(current.get("season_no") or 1)]
+    rows.append(dict(current))
+    rows.sort(key=lambda x:int(x.get("season_no") or 0))
+    return {"current":current,"seasons":rows,"server_time":utc_now()}
+
+
+@app.get("/api/v1/awards-season/{season_no}")
+def get_awards_season(season_no: int) -> dict[str, Any]:
+    return _season_payload_or_404(int(season_no))
+
+
+@app.get("/api/v1/gala-season/{season_no}")
+def get_awards_gala_season(season_no: int) -> dict[str, Any]:
+    current=db.current_awards_season(); current_no=int(current.get("season_no") or 1)
+    if int(season_no)==current_no:
+        data=db.awards_gala_status(_current_awards_year())
+        return {**data,"season":current,"closed":False}
+    snap=_season_payload_or_404(int(season_no))
+    gala=dict(snap.get("gala") or {})
+    season=dict(snap.get("season") or {"season_no":int(season_no),"label":f"Sezon {int(season_no)}"})
+    return {**gala,"season":season,"closed":True,"available":False}
+
+
+@app.post("/api/v1/gala-season/{season_no}/start")
+def start_awards_gala_season(season_no: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization); season=_require_current_awards_season(int(season_no))
+    try:return {**db.start_awards_gala(_current_awards_year()),"season":season,"closed":False}
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
+@app.post("/api/v1/gala-season/{season_no}/next")
+def next_awards_gala_season(season_no: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization); season=_require_current_awards_season(int(season_no))
+    try:return {**db.advance_awards_gala(_current_awards_year()),"season":season,"closed":False}
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
+@app.post("/api/v1/gala-season/{season_no}/replay")
+def replay_awards_gala_season(season_no: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization); season=_require_current_awards_season(int(season_no))
+    try:return {**db.replay_awards_gala_category(_current_awards_year()),"season":season,"closed":False}
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
+
+
+@app.post("/api/v1/gala-season/{season_no}/reset")
+def reset_awards_gala_season(season_no: int, authorization: str | None = Header(default=None)) -> dict[str, Any]:
+    _require_controller_header(authorization); season=_require_current_awards_season(int(season_no))
+    return {**db.reset_awards_gala(_current_awards_year()),"season":season,"closed":False}
+
+
 @app.get("/api/v1/awards/{year}")
 def get_awards(year: int) -> dict[str, Any]:
     if year < 2020 or year > 2100: raise HTTPException(422, "Nieprawidłowy rok.")
@@ -2287,6 +2365,28 @@ def export_settlement_png(ids: str = Query(default="")) -> Response:
     for e in data.get("tournaments") or []:
         labels.append(f"{FORMAT_LABELS.get(str(e.get('format_key') or ''),str(e.get('format_key') or ''))} • {str(e.get('completed_at') or e.get('created_at') or '')[:10]}")
     return Response(content=generate_settlement_png(data,labels),media_type="image/png")
+
+
+@app.get("/api/v1/exports/season/{season_no}/summary.png")
+def export_season_png(season_no: int) -> Response:
+    data=_season_payload_or_404(int(season_no)); overview=data.get("overview") or {}; cats=data.get("categories") or []
+    highlights=[]
+    if overview.get("top_player"):highlights.append({"label":"Lider klasyfikacji Gracza Sezonu","value":overview.get("top_player")})
+    if overview.get("top_team"):highlights.append({"label":"Najwyżej sklasyfikowana drużyna","value":overview.get("top_team")})
+    match_cat=next((c for c in cats if c.get("key")=="match_year"),None)
+    if match_cat and match_cat.get("candidates"):highlights.append({"label":"Mecz Sezonu — lider na teraz","value":match_cat["candidates"][0].get("name")})
+    return Response(content=generate_year_summary_png(f"Sezon {int(season_no)}",overview,highlights),media_type="image/png")
+
+
+@app.get("/api/v1/exports/season/{season_no}/awards.png")
+def export_season_awards_png(season_no: int) -> Response:
+    data=_season_payload_or_404(int(season_no)); sels=data.get("selections") or {}; rows=[]
+    for cat in data.get("categories") or []:
+        sel=sels.get(cat.get("key")) or {}
+        if sel.get("name"):
+            title=str(cat.get("title") or "");title=title.split(" ",1)[1] if " " in title else title
+            rows.append({"title":title,"name":sel.get("name")})
+    return Response(content=generate_awards_png(f"Sezon {int(season_no)}",rows),media_type="image/png")
 
 
 @app.get("/api/v1/exports/year/{year}/summary.png")

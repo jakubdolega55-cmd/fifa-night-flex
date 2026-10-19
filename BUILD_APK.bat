@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0mobile"
-echo === FIFA NIGHT 1.1.3 / V14 APK BUILD ===
+echo === FIFA NIGHT 1.1.3 / V15 APK BUILD ===
 where npm >nul 2>nul || (echo ERROR: npm not found & pause & exit /b 1)
 where npx >nul 2>nul || (echo ERROR: npx not found & pause & exit /b 1)
 if not exist node_modules (

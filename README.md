@@ -81,7 +81,7 @@ Hiszpania i Brazylia mają obniżoną szansę trafienia dla zwycięzcy/finalisty
 ## Wersje
 
 - Mobile/PWA: `1.1.3`
-- Android versionCode: `8`
+- Android versionCode: `15`
 - API: `1.1.3`
 
 ## Testy backendu
