@@ -39,23 +39,23 @@ function CategoryCards({categories,award}:{categories:any[];award:boolean}){
   </Card>)}</View>;
 }
 
-function AwardsYear({year,mode}:{year:number;mode:'awards'|'classifications'}){
+function AwardsSeason({seasonNo,mode}:{seasonNo:number;mode:'awards'|'classifications'}){
   const [d,setD]=useState<any>(null),[err,setErr]=useState('');
-  useEffect(()=>{setD(null);setErr('');api.awards(year).then(setD).catch(x=>setErr(x.message))},[year]);
-  const png=async(which:'awards'|'year',action:'save'|'share')=>{try{await getPng(which==='awards'?`/api/v1/exports/year/${year}/awards.png`:`/api/v1/exports/year/${year}/summary.png`,which==='awards'?`fifa-night-awards-${year}.png`:`fifa-night-${year}-rok.png`,action)}catch(e:any){Alert.alert('Błąd',e.message)}};
+  useEffect(()=>{setD(null);setErr('');api.awardsSeason(seasonNo).then(setD).catch(x=>setErr(x.message))},[seasonNo]);
+  const png=async(which:'awards'|'season',action:'save'|'share')=>{try{await getPng(which==='awards'?`/api/v1/exports/season/${seasonNo}/awards.png`:`/api/v1/exports/season/${seasonNo}/summary.png`,which==='awards'?`fifa-night-awards-sezon-${seasonNo}.png`:`fifa-night-sezon-${seasonNo}.png`,action)}catch(e:any){Alert.alert('Błąd',e.message)}};
   const cats=(d?.categories||[]).filter((c:any)=>mode==='awards'?c.award!==false:c.award===false);
   return <View style={{gap:10}}>{err?<ErrorBox message={err}/>:null}{d?<>
-    {mode==='awards'?<Card style={s.hero}><Pill text={`AWARDS ${year}`} tone="amber"/><Text style={s.heroTitle}>🏅 Kandydaci LIVE — TOP 5</Text><Muted>TOP 5 układają wyniki. Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎</Muted></Card>:<Card style={s.classHero}><Pill text="KLASYFIKACJE" tone="purple"/><Text style={s.heroTitle}>Dodatkowe tabele sezonu</Text><Muted>Bez statuetek i bez napinki. Za to z samobójami, karnymi, Wild Cardami i innymi rzeczami, które liczby pamiętają aż za dobrze.</Muted></Card>}
+    {mode==='awards'?<Card style={s.hero}><Pill text={`AWARDS • SEZON ${seasonNo}`} tone="amber"/><Text style={s.heroTitle}>🏅 Kandydaci LIVE — TOP 5</Text><Muted>TOP 5 układają wyniki. Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎</Muted></Card>:<Card style={s.classHero}><Pill text="KLASYFIKACJE" tone="purple"/><Text style={s.heroTitle}>Dodatkowe tabele sezonu</Text><Muted>Bez statuetek i bez napinki. Za to z samobójami, karnymi, Wild Cardami i innymi rzeczami, które liczby pamiętają aż za dobrze.</Muted></Card>}
     <View style={s.metrics}><Metric value={d.overview?.tournaments??0} label="Turnieje"/><Metric value={d.overview?.matches??0} label="Mecze"/><Metric value={d.overview?.goals??0} label="Gole"/><Metric value={d.overview?.players??0} label="Gracze"/></View>
     <CategoryCards categories={cats} award={mode==='awards'}/>
-    {mode==='awards'?<Card><Text style={s.cardTitle}>🖼️ Grafiki roczne</Text><View style={s.rowWrap}><View style={s.half}><Btn title="💾 ZAPISZ ROK" tone="secondary" onPress={()=>png('year','save')}/></View><View style={s.half}><Btn title="📤 UDOSTĘPNIJ ROK" tone="secondary" onPress={()=>png('year','share')}/></View><View style={s.half}><Btn title="💾 ZAPISZ AWARDS" tone="secondary" onPress={()=>png('awards','save')}/></View><View style={s.half}><Btn title="📤 UDOSTĘPNIJ AWARDS" tone="secondary" onPress={()=>png('awards','share')}/></View></View><Muted>Grafika Awards pokaże laureatów wybranych przez organizatora w wersji webowej.</Muted></Card>:null}
+    {mode==='awards'?<Card><Text style={s.cardTitle}>🖼️ Grafiki sezonu</Text><View style={s.rowWrap}><View style={s.half}><Btn title="💾 ZAPISZ SEZON" tone="secondary" onPress={()=>png('season','save')}/></View><View style={s.half}><Btn title="📤 UDOSTĘPNIJ SEZON" tone="secondary" onPress={()=>png('season','share')}/></View><View style={s.half}><Btn title="💾 ZAPISZ AWARDS" tone="secondary" onPress={()=>png('awards','save')}/></View><View style={s.half}><Btn title="📤 UDOSTĘPNIJ AWARDS" tone="secondary" onPress={()=>png('awards','share')}/></View></View><Muted>Grafika Awards pokaże laureatów wybranych przez organizatora w wersji webowej.</Muted></Card>:null}
   </>:<Text style={s.reason}>Ładowanie…</Text>}</View>;
 }
 
-function GalaControl({year}:{year:number}){
+function GalaControl({seasonNo}:{seasonNo:number}){
   const [d,setD]=useState<any>(null),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
-  const load=async()=>{try{setErr('');setD(await api.gala(year))}catch(e:any){setErr(e?.message||String(e))}};
-  useEffect(()=>{setD(null);void load();const t=setInterval(()=>void load(),1000);return()=>clearInterval(t)},[year]);
+  const load=async()=>{try{setErr('');setD(await api.galaSeason(seasonNo))}catch(e:any){setErr(e?.message||String(e))}};
+  useEffect(()=>{setD(null);void load();const t=setInterval(()=>void load(),1000);return()=>clearInterval(t)},[seasonNo]);
   const act=async(fn:()=>Promise<any>)=>{if(busy)return;setBusy(true);try{setErr('');setD(await fn())}catch(e:any){setErr(e?.message||String(e))}finally{setBusy(false)}};
   const status=String(d?.status||'idle'),phase=String(d?.display_phase||status);
   const current=d?.current_category;
@@ -65,14 +65,14 @@ function GalaControl({year}:{year:number}){
   const canMain=status==='idle'||status==='finished'||status==='finale'||hold;
   const mainTitle=status==='idle'||status==='finished'?'▶ START GALI':status==='finale'?(d?.next_label||'ZAMKNIJ GALĘ'):hold?(d?.next_label||'NASTĘPNA KATEGORIA'):'PREZENTACJA W TOKU…';
   const phaseLabel=phase==='intro'?'Zapowiedź kategorii':phase==='nominees'?`Nominowani ${d?.nominees_revealed||0}/3`:phase==='suspense'?'Chwila napięcia…':phase==='winner_animation'?'Odsłaniamy laureata…':phase==='winner_hold'?'Laureat na ekranie TV':status==='finale'?'Finał gali':status==='finished'?'Gala zakończona':'Gala gotowa do startu';
-  const main=()=>status==='idle'||status==='finished'?act(()=>api.galaStart(year)):act(()=>api.galaNext(year));
+  const main=()=>status==='idle'||status==='finished'?act(()=>api.galaSeasonStart(seasonNo)):act(()=>api.galaSeasonNext(seasonNo));
   return <View style={{gap:10}}>{err?<ErrorBox message={err}/>:null}{!d?<Text style={s.reason}>Ładowanie sterowania gali…</Text>:<>
-    <Card style={s.galaHero}><View style={s.between}><Pill text={`GALA ${year}`} tone="amber"/><Pill text={d.test_mode?'TRYB TESTOWY':d.ready?'GOTOWA':'OCZEKUJE'} tone={d.test_mode?'purple':d.ready?'green':'muted'}/></View><Text style={s.heroTitle}>🎬 Pilot Gali Awards</Text><Muted>Telefon tylko uruchamia kolejną kategorię. Zapowiedź, TOP3, suspense i reveal lecą automatycznie na telewizorze.</Muted><Text style={s.reason}>{Number(d.selected_count||0)} / {Number(d.required_count||18)} laureatów wybranych{(d.unavailable||[]).length?` • ${(d.unavailable||[]).length} kategorii bez kandydatów`:''}</Text>{d.test_mode&&((d.missing_selection_details||[]).length||(d.unavailable||[]).length)?<Text style={s.galaTestNote}>Próba techniczna: brakujące wybory dostają zamrożonego lidera rankingu, a kategorie bez kandydatów są pomijane.</Text>:null}</Card>
+    <Card style={s.galaHero}><View style={s.between}><Pill text={`GALA • SEZON ${seasonNo}`} tone="amber"/><Pill text={d.test_mode?'TRYB TESTOWY':d.ready?'GOTOWA':'OCZEKUJE'} tone={d.test_mode?'purple':d.ready?'green':'muted'}/></View><Text style={s.heroTitle}>🎬 Pilot Gali Awards</Text><Muted>Telefon tylko uruchamia kolejną kategorię. Zapowiedź, TOP3, suspense i reveal lecą automatycznie na telewizorze.</Muted><Text style={s.reason}>{Number(d.selected_count||0)} / {Number(d.required_count||18)} laureatów wybranych{(d.unavailable||[]).length?` • ${(d.unavailable||[]).length} kategorii bez kandydatów`:''}</Text>{d.test_mode&&((d.missing_selection_details||[]).length||(d.unavailable||[]).length)?<Text style={s.galaTestNote}>Próba techniczna: brakujące wybory dostają zamrożonego lidera rankingu, a kategorie bez kandydatów są pomijane.</Text>:null}</Card>
     {status==='running'&&current?<Card><View style={s.between}><Pill text={`${idx+1} / ${total}`} tone="green"/><Text style={s.galaPhase}>{phaseLabel}</Text></View><Text style={s.galaCategory}>{current.title||current.key}</Text>{hold&&current.winner?<><Text style={s.galaWinnerLabel}>NA EKRANIE</Text><Text style={s.galaWinner}>{current.winner?.gala?.display_name||current.winner?.name||'—'}</Text></>:<Muted>{phase==='nominees'?`Pokazano ${d?.nominees_revealed||0} z 3 nominowanych.`:'Nie musisz nic klikać — czekamy na koniec cyklu.'}</Muted>}</Card>:null}
     {status==='finale'?<Card><Text style={s.galaCategory}>🏆 Wszystkie 18 kategorii pokazane</Text><Muted>Na telewizorze trwa ekran finałowy. Zamknij galę, kiedy będziecie gotowi.</Muted></Card>:null}
     {status==='finished'?<Card><Text style={s.galaCategory}>✅ Gala zakończona</Text><Muted>Możesz uruchomić ją od początku ponownie.</Muted></Card>:null}
     <Btn title={busy?'CHWILA…':mainTitle} disabled={busy||!canMain||!d.available} onPress={main}/>
-    {status==='running'&&hold?<View style={s.rowWrap}><View style={s.half}><Btn title="↻ POWTÓRZ KATEGORIĘ" tone="secondary" small onPress={()=>void act(()=>api.galaReplay(year))}/></View><View style={s.half}><Btn title="🧹 RESET" tone="danger" small onPress={()=>Alert.alert('Reset gali','Wrócić do stanu przed startem gali?',[{text:'Anuluj',style:'cancel'},{text:'Resetuj',style:'destructive',onPress:()=>void act(()=>api.galaReset(year))}])}/></View></View>:null}
+    {status==='running'&&hold?<View style={s.rowWrap}><View style={s.half}><Btn title="↻ POWTÓRZ KATEGORIĘ" tone="secondary" small onPress={()=>void act(()=>api.galaSeasonReplay(seasonNo))}/></View><View style={s.half}><Btn title="🧹 RESET" tone="danger" small onPress={()=>Alert.alert('Reset gali','Wrócić do stanu przed startem gali?',[{text:'Anuluj',style:'cancel'},{text:'Resetuj',style:'destructive',onPress:()=>void act(()=>api.galaSeasonReset(seasonNo))}])}/></View></View>:null}
     {!d.available?<Card><Muted>Gala jest zablokowana do czasu wybrania laureatów wszystkich wymaganych kategorii.</Muted></Card>:null}
   </>}</View>;
 }
@@ -90,14 +90,19 @@ function Milestones(){
 }
 
 export default function AwardsScreen({controller=false}:{controller?:boolean}){
-  const [mode,setMode]=useState<Mode>('awards');const [year,setYear]=useState(new Date().getFullYear());
+  const [mode,setMode]=useState<Mode>('awards');
+  const [seasonNo,setSeasonNo]=useState<number|null>(null),[currentSeasonNo,setCurrentSeasonNo]=useState(1),[seasonErr,setSeasonErr]=useState('');
   const [galaVisible,setGalaVisible]=useState(false);
-  useEffect(()=>{let alive=true;if(!controller){setGalaVisible(false);return()=>{alive=false}};api.gala(year).then(x=>{if(alive)setGalaVisible(!!x.available)}).catch(()=>{if(alive)setGalaVisible(false)});return()=>{alive=false}},[controller,year]);
+  useEffect(()=>{let alive=true;api.awardsSeasons().then(x=>{if(!alive)return;const n=Number(x?.current?.season_no||1);setCurrentSeasonNo(n);setSeasonNo(v=>v??n)}).catch((e:any)=>{if(alive)setSeasonErr(e?.message||String(e))});return()=>{alive=false}},[]);
+  useEffect(()=>{let alive=true;if(!controller||seasonNo==null||seasonNo!==currentSeasonNo){setGalaVisible(false);return()=>{alive=false}};api.galaSeason(seasonNo).then(x=>{if(alive)setGalaVisible(!!x.available)}).catch(()=>{if(alive)setGalaVisible(false)});return()=>{alive=false}},[controller,seasonNo,currentSeasonNo]);
   useEffect(()=>{if(mode==='gala'&&!galaVisible)setMode('awards')},[galaVisible,mode]);
+  const prev=()=>setSeasonNo(n=>Math.max(1,(n??currentSeasonNo)-1));
+  const next=()=>setSeasonNo(n=>Math.min(currentSeasonNo,(n??currentSeasonNo)+1));
   return <ScrollView contentContainerStyle={s.pad}>
-    <View style={s.between}><Text style={s.pageTitle}>Awards</Text><View style={{flexDirection:'row',gap:5}}><Pressable style={s.yearBtn} onPress={()=>setYear(y=>y-1)}><Text style={s.yearText}>−</Text></Pressable><Text style={s.year}>{year}</Text><Pressable style={s.yearBtn} onPress={()=>setYear(y=>y+1)}><Text style={s.yearText}>+</Text></Pressable></View></View>
+    <View style={s.between}><Text style={s.pageTitle}>Awards</Text>{seasonNo!=null?<View style={{flexDirection:'row',gap:5}}><Pressable style={[s.yearBtn,seasonNo<=1?{opacity:.35}:null]} disabled={seasonNo<=1} onPress={prev}><Text style={s.yearText}>−</Text></Pressable><Text style={s.year}>Sezon {seasonNo}</Text><Pressable style={[s.yearBtn,seasonNo>=currentSeasonNo?{opacity:.35}:null]} disabled={seasonNo>=currentSeasonNo} onPress={next}><Text style={s.yearText}>+</Text></Pressable></View>:null}</View>
+    {seasonErr?<ErrorBox message={seasonErr}/>:null}
     <HScroll><Chip label="🏆 AWARDS" active={mode==='awards'} onPress={()=>setMode('awards')}/><Chip label="🎯 KLASYFIKACJE" active={mode==='classifications'} onPress={()=>setMode('classifications')}/><Chip label="🏛️ KAMIENIE MILOWE" active={mode==='milestones'} onPress={()=>setMode('milestones')}/>{controller&&galaVisible?<Chip label="🎬 GALA" active={mode==='gala'} onPress={()=>setMode('gala')}/>:null}</HScroll>
-    {mode==='gala'?<GalaControl year={year}/>:mode==='milestones'?<Milestones/>:<AwardsYear year={year} mode={mode}/>} 
+    {mode==='milestones'?<Milestones/>:seasonNo==null?<Text style={s.reason}>Ładowanie sezonu…</Text>:mode==='gala'?<GalaControl seasonNo={seasonNo}/>:<AwardsSeason seasonNo={seasonNo} mode={mode}/>}
   </ScrollView>;
 }
 
