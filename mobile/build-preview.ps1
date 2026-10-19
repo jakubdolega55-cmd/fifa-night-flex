@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "FIFA Night Mobile 1.1.3 / V14 - APK checks"
+Write-Host "FIFA Night Mobile 1.1.3 / V15 - APK checks"
 Write-Host "1/5 npm install"
 npm.cmd install
 

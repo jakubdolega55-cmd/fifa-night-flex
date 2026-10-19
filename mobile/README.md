@@ -1,4 +1,4 @@
-# FIFA Night Mobile 1.1.3 / V14
+# FIFA Night Mobile 1.1.3 / V15
 
 Aplikacja Android/PWA (React Native + Expo) sterująca tym samym FIFA Night, którego wersja web/TV działa w Streamlit.
 
@@ -10,7 +10,7 @@ Architektura: `APK/PWA -> FastAPI/Render -> Neon <- Streamlit/TV`. APK nie zawie
 - Android package: `pl.fifanight.flex`
 - EAS projectId: `cbb45c49-4757-4587-8a05-e4814cb5f60a`
 - Mobile version: `1.1.3`
-- Android versionCode: `14`
+- Android versionCode: `15`
 
 Nie zmieniaj package ID ani istniejącego keystore, jeśli APK ma aktualizować wcześniej zainstalowaną aplikację.
 
@@ -67,7 +67,7 @@ npm.cmd run build:web
 1. Lokalne herby muszą być obecne w `mobile/assets/teams/clubs/` przed buildem.
 2. `npm run check` musi zakończyć się bez błędów.
 3. `expo-doctor` nie może zgłaszać problemów blokujących build.
-4. EAS build `preview` ma wygenerować APK dla `pl.fifanight.flex` z `versionCode 14`.
+4. EAS build `preview` ma wygenerować APK dla `pl.fifanight.flex` z `versionCode 15`.
 5. Po instalacji sprawdź połączenie z API, losowanie, ekran meczu, NEXT/terminarz oraz widoczność herbów/flag.
 
 Pakiet regresyjny backend/logika znajduje się w `../tests/mobile_api_smoke.py`.
