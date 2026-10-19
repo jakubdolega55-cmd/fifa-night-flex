@@ -23,7 +23,16 @@
           "microphonePermission": false
         }
       ],
-      "expo-media-library"
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "FIFA Night potrzebuje dostępu do zdjęć, aby zapisywać grafiki podsumowań.",
+          "savePhotosPermission": "FIFA Night zapisuje wygenerowane grafiki podsumowań w galerii.",
+          "granularPermissions": [
+            "photo"
+          ]
+        }
+      ]
     ],
     "extra": {
       "eas": {
