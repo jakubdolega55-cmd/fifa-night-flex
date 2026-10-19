@@ -1,7 +1,7 @@
 import {Alert} from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import * as MediaLibrary from 'expo-media-library';
+import {Asset, requestPermissionsAsync} from 'expo-media-library';
 import {API_URL,authHeaders} from './api';
 
 export async function getPng(path:string,filename:string,mode:'share'|'save'){
@@ -17,9 +17,9 @@ export async function getPng(path:string,filename:string,mode:'share'|'save'){
     if(!ok)throw new Error('Udostępnianie nie jest dostępne na tym urządzeniu.');
     await Sharing.shareAsync(result.uri,{mimeType:'image/png',dialogTitle:'FIFA Night'});
   }else{
-    const perm=await MediaLibrary.requestPermissionsAsync(true);
+    const perm=await requestPermissionsAsync(true,['photo']);
     if(!perm.granted)throw new Error('Brak zgody na zapis do galerii.');
-    await MediaLibrary.saveToLibraryAsync(result.uri);
+    await Asset.create(result.uri);
     Alert.alert('Zapisano','Grafika FIFA Night została zapisana w galerii.');
   }
   return result.uri;
