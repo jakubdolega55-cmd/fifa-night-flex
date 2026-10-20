@@ -19,12 +19,12 @@ const AWARD_QUIPS:Record<string,string>={
   spectacle:'Spokojne 1:0? Nie tutaj.',
   finance:'Excel też potrafi boleć.',
   match_year:'Ten mecz jeszcze długo będzie wracał przy stole.',
-  minimalist:'Po co strzelać pięć, skoro jeden wystarczy?',
-  unlucky:'Prawie się nie liczy. Niestety.',
-  simulator:'Kontakt był. Oczywiście że był.',
-  penaldo:'Wapno znalezione, reszta to formalność.',
-  own_goals:'Czasem trzeba pomóc przeciwnikowi.',
-  penalty_misses:'Presja? Jaka presja?',
+  nerve_king:'U niego spokojnie jest dopiero po ostatnim gwizdku.',
+  clinical:'Jedna sytuacja czasem wystarcza bardziej niż pięć.',
+  wasteful:'xG było. Goli już trochę mniej.',
+  possession_king:'Piłka lubi być przy jego nodze.',
+  dominator:'Wynik wynikiem, ale przebieg meczu też ma pamięć.',
+  match_thief:'Statystyki mówią jedno. Tablica wyników drugie.',
 };
 
 function CategoryCards({categories,award}:{categories:any[];award:boolean}){
