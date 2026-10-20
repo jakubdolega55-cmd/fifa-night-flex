@@ -386,8 +386,9 @@ EA FC icon rules confirmed for FIFA Night from real EA FC event screens:
 - Never classify the goal/net-with-X symbol as injury just because the X resembles a medical cross. Injury requires a distinctly MEDICAL pictogram (bandage/plaster, ambulance/medical symbol), not a goal/net/ball-style circle.
 - RED football/ball-style icon = own_goal. It is NOT a missed penalty.
 - yellow rectangular card = yellow_card
-- IMPORTANT FC27 second-yellow layout: when the SAME footballer appears twice in one match with two separate yellow-card rows (for example 30' and 39'), extract BOTH rows as yellow_card. EA FC may not show a separate red-card icon for the resulting dismissal; do not invent a red_card row. FIFA Night's backend derives the second-yellow dismissal from the two yellow events.
-- red rectangular card = red_card
+- DIRECT RED CARD: a visibly RED rectangular card icon is ALWAYS red_card. Do not downgrade it to yellow_card because the player had an earlier yellow, because the red is small/dark, or because OCR is uncertain about the surrounding text. Color + rectangular card shape are the decisive evidence.
+- IMPORTANT FC27 second-yellow layout: when the SAME footballer appears twice in one match with two separate YELLOW-card rows (for example 30' and 39'), extract BOTH rows as yellow_card. That is FIFA Night's second_yellow_red case and the backend derives the dismissal from those two yellows. Do NOT convert the second yellow into red_card unless a genuinely RED rectangular card icon is separately visible.
+- red rectangular card = red_card (direct dismissal when it is its own visible red-card row)
 - player names with green up / red down arrows = substitution, NOT a goal
 - for substitution events, set player = the footballer COMING ON (green/up arrow) and related_player = the footballer GOING OFF (red/down arrow). side = that team's visible side; credited_side = unknown. Never swap these roles.
 - injury/medical event = injury. FIFA Night treats all injury severities identically. EA FC may show more than one injury symbol, including a bandage/plaster-style medical icon with a plus/cross or an ambulance/medical icon with a plus/cross. If either medical injury icon is visibly present, classify it as injury. If the symbol is ambiguous, use unknown rather than guessing.
@@ -639,6 +640,7 @@ If a team mapping is genuinely unclear, return "unknown" and lower mapping_confi
 PENALTY SHOOT-OUT:
 If a post-match shoot-out result is explicitly visible, return only the final shoot-out tally in shootout_left/shootout_right.
 Do NOT add individual shoot-out kicks to events or goals.
+CRITICAL EXAMPLE: if the on-pitch match finished 3:3 and the shoot-out finished 7:6, return score_left/score_right = 3/3 and shootout_left/shootout_right = 7/6 (mapped to the visual sides). Never turn that into a normal score such as 10:9 and never count the 13 successful shoot-out kicks as match goals.
 
 IMPORTANT REAL FC27 SHOOT-OUT LAYOUT:
 EA FC 27 can show penalty-shoot-out attempts inside the Events list as MANY rows all marked 120'.
@@ -664,16 +666,40 @@ def _participant_by_slot(context: dict[str, Any], slot: str) -> dict[str, Any] |
     return next((p for p in (context.get("participants") or []) if p.get("slot") == slot), None)
 
 
+def _resolution_requires_manual_review(event: dict[str, Any]) -> bool:
+    """True when AI supplied a goal scorer that the assigned team's roster cannot safely resolve.
+
+    A manually changed name is accepted, and an unresolved-but-correct name may be explicitly
+    confirmed by the user because local scorer lists can legitimately lag behind EA squads.
+    """
+    resolution=event.get("footballer_resolution") if isinstance(event.get("footballer_resolution"),dict) else {}
+    status=str(resolution.get("status") or "")
+    if status not in {"ambiguous","unresolved"}:
+        return False
+    raw=str(resolution.get("raw") or "").strip()
+    current=str(event.get("footballer_name") or "").strip()
+    if not raw or db._norm_scorer_name(raw)!=db._norm_scorer_name(current):
+        return False
+    return not (status=="unresolved" and bool(event.get("footballer_confirmed")))
+
+
 def _resolve_scan_footballer_names(result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    """Resolve abbreviated EA names locally without guessing ambiguous cases."""
+    """Resolve abbreviated EA names against the roster of the already mapped FIFA Night team.
+
+    R24 intentionally works on ``fifa_night.events`` after left/right -> HOME/AWAY mapping.
+    The older path inspected the raw visual events, which do not contain actor_team_name and
+    therefore could not actually validate a scorer against the assigned club roster.
+    """
     version=normalize_game_version(context.get("game_version"))
-    for event in result.get("events") or []:
+    mapped=((result.get("fifa_night") or {}).get("events") or [])
+    for event in mapped:
         if not isinstance(event,dict):continue
         team=str(event.get("actor_team_name") or event.get("credited_team_name") or "").strip()
         raw=str(event.get("footballer_name") or "").strip()
         if raw and team:
             resolution=db.resolve_footballer_name(version,team,raw)
             event["footballer_resolution"]=resolution
+            event["footballer_confirmed"]=False
             if resolution.get("status") in {"remembered","exact","auto"}:
                 event["footballer_name"]=resolution.get("name") or raw
         related_raw=str(event.get("related_footballer_name") or "").strip()
@@ -682,6 +708,16 @@ def _resolve_scan_footballer_names(result: dict[str, Any], context: dict[str, An
             event["related_footballer_resolution"]=related
             if related.get("status") in {"remembered","exact","auto"}:
                 event["related_footballer_name"]=related.get("name") or related_raw
+
+    fn=result.get("fifa_night") if isinstance(result.get("fifa_night"),dict) else {}
+    validation=fn.get("goal_validation") if isinstance(fn.get("goal_validation"),dict) else {}
+    review=[e for e in mapped if str(e.get("event_type") or "") in {"normal_goal","penalty_goal"} and _resolution_requires_manual_review(e)]
+    validation["unresolved_goal_scorers"]=len(review)
+    if review:
+        validation["complete"]=False
+        validation["status"]="needs_review"
+    fn["goal_validation"]=validation
+    result["fifa_night"]=fn
     return result
 
 
@@ -816,6 +852,24 @@ def _opposite_side(side: str) -> str:
 def _normalize_and_validate_event_scan_result(result: dict[str, Any]) -> dict[str, Any]:
     """Normalize goal semantics and derive hard goal-vs-score validation on the server."""
     events = [event for event in (result.get("events") or []) if isinstance(event, dict)]
+
+    # FC27 may list a whole post-match shoot-out as many 120' penalty rows. If the
+    # model also returned an explicit non-drawn shoot-out tally, a multi-row 120'
+    # penalty sequence is shoot-out metadata, not normal/extra-time match events.
+    # Strip that sequence before goal validation so a 3:3 + 7:6 match can never
+    # become an artificial 10:9. A single isolated 120' penalty is deliberately
+    # kept because it can be a genuine extra-time penalty.
+    sl,sr=result.get("shootout_left"),result.get("shootout_right")
+    shootout_explicit=isinstance(sl,int) and isinstance(sr,int) and sl!=sr
+    penalty_120=[e for e in events if str(e.get("event_type") or "") in {"penalty_goal","penalty_miss"} and int(e.get("minute") or -1)==120]
+    sides={str(e.get("side") or "unknown") for e in penalty_120}
+    if shootout_explicit and len(penalty_120)>=4 and {"left","right"}.issubset(sides):
+        shoot_ids={id(e) for e in penalty_120}
+        events=[e for e in events if id(e) not in shoot_ids]
+        notes=list(result.get("notes") or [])
+        notes.append(f"R24: pominięto {len(penalty_120)} wierszy 120' należących do serii karnych; zapisano osobny wynik shoot-out {sl}:{sr}.")
+        result["notes"]=notes
+
     for event in events:
         event_type = str(event.get("event_type") or "unknown")
         side = str(event.get("side") or "unknown")
@@ -2121,6 +2175,13 @@ def _normalize_events_for_save(match: dict[str, Any], fmt: str, hs: int, ass: in
             credited_pid=away_pid if actor_pid==home_pid else home_pid
         footballer=" ".join(str(raw.get("footballer_name") or "").strip().split())
         related=" ".join(str(raw.get("related_footballer_name") or "").strip().split())
+        if typ in {"normal_goal","penalty_goal"} and _resolution_requires_manual_review({**raw,"footballer_name":footballer}):
+            resolution=raw.get("footballer_resolution") if isinstance(raw.get("footballer_resolution"),dict) else {}
+            raw_name=str(resolution.get("raw") or footballer or "?")
+            status=str(resolution.get("status") or "unresolved")
+            if status=="ambiguous":
+                raise ValueError(f"Wydarzenie {original_order}: strzelec „{raw_name}” jest niejednoznaczny dla tej drużyny — wybierz właściwego piłkarza.")
+            raise ValueError(f"Wydarzenie {original_order}: strzelec „{raw_name}” nie został potwierdzony w składzie tej drużyny — popraw nazwisko albo potwierdź je ręcznie.")
         minute=raw.get("minute");stoppage=raw.get("stoppage")
         try:minute=int(minute) if minute is not None and str(minute)!="" else None
         except Exception:minute=None

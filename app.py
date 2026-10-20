@@ -1548,6 +1548,8 @@ def _prepare_scan_events_for_save(data:dict, edited_rows:list[dict]) -> list[dic
             "synthetic_de":False,
             "confidence":row.get("confidence") or "manual",
             "source_images":list(row.get("source_images") or []),
+            "footballer_resolution":row.get("footballer_resolution") if isinstance(row.get("footballer_resolution"),dict) else None,
+            "footballer_confirmed":bool(row.get("footballer_confirmed")),
         })
     out.sort(key=_scan_event_sort_key)
     for idx,e in enumerate(out,1):e["event_order"]=idx
@@ -1570,12 +1572,22 @@ def _scan_goal_validation_for_save(data:dict, hs:int, ass:int, events:list[dict]
     ag=sum(1 for e in events if e.get("event_type") in goal_types and str(e.get("credited_player_id") or "")==away_pid)
     missing_names=[e for e in events if e.get("event_type") in {"normal_goal","penalty_goal"} and not str(e.get("footballer_name") or "").strip()]
     unknown_credit=[e for e in events if e.get("event_type") in goal_types and not e.get("credited_player_id")]
+    unresolved=[]
+    for e in events:
+        if e.get("event_type") not in {"normal_goal","penalty_goal"}:continue
+        res=e.get("footballer_resolution") if isinstance(e.get("footballer_resolution"),dict) else {}
+        status=str(res.get("status") or "")
+        raw=str(res.get("raw") or "").strip();current=str(e.get("footballer_name") or "").strip()
+        same=bool(raw and db._norm_scorer_name(raw)==db._norm_scorer_name(current))
+        if status in {"ambiguous","unresolved"} and same and not (status=="unresolved" and bool(e.get("footballer_confirmed"))):
+            unresolved.append(e)
     return {
         "home_goals":hg,"away_goals":ag,
-        "complete":hg==int(hs) and ag==int(ass) and not unknown_credit and not missing_names,
+        "complete":hg==int(hs) and ag==int(ass) and not unknown_credit and not missing_names and not unresolved,
         "missing_home":max(int(hs)-hg,0),"missing_away":max(int(ass)-ag,0),
         "over":hg>int(hs) or ag>int(ass),
         "unknown_credit":len(unknown_credit),"missing_goal_names":len(missing_names),
+        "unresolved_goal_scorers":len(unresolved),
         "context":context,"participants":participants,
     }
 
@@ -1647,6 +1659,10 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
                     f"Rozpoznano skrót „{resolution.get('raw') or footballer}” — wybierz zawodnika",candidates,
                     index=0,key=f"scan_resolve_{tid}_{no}_{scan_id}_{uid}"
                 )
+            footballer_confirmed=bool(row.get("footballer_confirmed"))
+            if resolution.get("status")=="unresolved" and db._norm_scorer_name(str(resolution.get("raw") or ""))==db._norm_scorer_name(str(footballer or "")):
+                st.warning(f"AI odczytało „{resolution.get('raw') or footballer}”, ale nazwiska nie ma na liście tej drużyny. Popraw je albo potwierdź ręcznie.")
+                footballer_confirmed=st.checkbox("Potwierdzam, że to właściwy piłkarz",value=footballer_confirmed,key=f"scan_confirm_footballer_{tid}_{no}_{scan_id}_{uid}")
             related=str(row.get("related_footballer_name") or "")
             if event_type=="substitution":
                 related=st.text_input("Schodzi z boiska",value=related,key=f"scan_related_{tid}_{no}_{scan_id}_{uid}",placeholder="Piłkarz schodzący")
@@ -1655,7 +1671,7 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
                     related_candidates=list(dict.fromkeys([str(related)]+[str(x) for x in related_resolution.get("candidates") or [] if str(x)]))
                     related=st.selectbox(f"Skrót „{related_resolution.get('raw') or related}” — kto schodzi?",related_candidates,index=0,key=f"scan_related_resolve_{tid}_{no}_{scan_id}_{uid}")
                 st.caption("🔁 Dla zmiany: pole „Wchodzi” = zmiennik, a „Schodzi z boiska” = zawodnik zastępowany. Ta informacja służy m.in. do odznaki Joker.")
-            rendered.append({**row,"include":include,"minute_label":minute_label,"event_type":event_type,"footballer_name":footballer,"related_footballer_name":related,"actor_player_id":actor_sel})
+            rendered.append({**row,"include":include,"minute_label":minute_label,"event_type":event_type,"footballer_name":footballer,"related_footballer_name":related,"actor_player_id":actor_sel,"footballer_confirmed":footballer_confirmed})
             st.divider()
         edit["events"]=rendered
         if st.button("➕ Dodaj wydarzenie ręcznie",use_container_width=True,key=f"scan_add_event_{tid}_{no}_{scan_id}"):
@@ -1677,6 +1693,7 @@ def _render_match_scan_editor(data:dict, tid:str, m:dict):
         if check["missing_away"]:extra.append(f"{away_name}: brakuje {check['missing_away']}")
         if check["unknown_credit"]:extra.append("są gole bez przypisanego gracza")
         if check["missing_goal_names"]:extra.append("są gole bez nazwiska strzelca")
+        if check.get("unresolved_goal_scorers"):extra.append(f"{check['unresolved_goal_scorers']} strzelec/strzelcy wymagają wyboru lub potwierdzenia")
         st.warning("⚠️ Odczyt wymaga korekty: "+("; ".join(extra) or "sprawdź wydarzenia"))
 
     save_col,discard_col=st.columns([3,1])
