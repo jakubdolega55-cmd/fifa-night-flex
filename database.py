@@ -75,8 +75,8 @@ AWARD_PRIORITY_GROUPS = [
 ]
 AWARD_DISPLAY_ORDER = [key for _, _, keys in AWARD_PRIORITY_GROUPS for key in keys]
 CLASSIFICATION_DISPLAY_ORDER = [
-    "sharpest", "simulator", "penaldo", "first_goals", "own_goals", "penalty_misses",
-    "duel", "wildcards", "regular", "minimalist", "unlucky",
+    "duel", "wildcards", "regular", "sharpest", "first_goals", "nerve_king",
+    "clinical", "wasteful", "possession_king", "dominator", "match_thief",
 ]
 DIRECT_PLAYER_AWARD_KEYS = {
     "player_year", "offensive", "defense", "clutch", "comeback_king", "late_king",
@@ -5396,6 +5396,16 @@ class Database:
         if not base:return None
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
+            summary_rows=self._fetchall(conn,"""
+                SELECT ms.stats_json,m.home_player_id,m.away_player_id
+                FROM match_summary_stats ms
+                JOIN matches m ON m.tournament_id=ms.tournament_id AND m.match_no=ms.match_no
+                JOIN tournaments t ON t.id=m.tournament_id
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0
+                  AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'
+                  AND (m.home_player_id=? OR m.away_player_id=?)
+                ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no
+            """,(pid,pid))
         own=[m for m in matches if pid in (m.get("home_player_id"),m.get("away_player_id"))]
         teams=defaultdict(lambda:{"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"display":None})
         opponents=defaultdict(lambda:{"name":None,"meetings":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
@@ -5426,7 +5436,57 @@ class Database:
         nemesis=max((x for x in opp_rows if x["l"]>0),key=lambda x:(x["l"]-x["w"],x["l"],x["meetings"]),default=None)
         favorite=max((x for x in opp_rows if x["w"]>0),key=lambda x:(x["w"]-x["l"],x["w"],x["meetings"]),default=None)
         last_results=[self._result_for_player(m,pid) for m in own[-5:]]
-        return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1]}
+
+        # Advanced Stats use only trusted HOME/AWAY-mapped Summary values. Missing
+        # historical Summary is ignored rather than treated as zero. The profile
+        # intentionally exposes the averages only, not a visible Summary-match count.
+        adv={
+            "xg_for":0.0,"xg_against":0.0,"xg_n":0,
+            "shots_for":0.0,"shots_against":0.0,"shots_n":0,
+            "possession":0.0,"possession_n":0,
+            "fouls":0.0,"fouls_n":0,
+        }
+        def _num(v):
+            try:
+                if v is None or isinstance(v,bool):return None
+                return float(v)
+            except Exception:return None
+        for row in summary_rows:
+            try:stats=json.loads(row.get("stats_json") or "{}")
+            except Exception:stats={}
+            if not isinstance(stats,dict) or not bool(stats.get("usable_for_awards")):
+                continue
+            home=stats.get("home") or {};away=stats.get("away") or {}
+            mine,opp=(home,away) if str(row.get("home_player_id") or "")==str(pid) else (away,home)
+            xgf=_num(mine.get("expected_goals"));xga=_num(opp.get("expected_goals"))
+            if xgf is not None and xga is not None:
+                adv["xg_for"]+=xgf;adv["xg_against"]+=xga;adv["xg_n"]+=1
+            shf=_num(mine.get("shots"));sha=_num(opp.get("shots"))
+            if shf is not None and sha is not None:
+                adv["shots_for"]+=shf;adv["shots_against"]+=sha;adv["shots_n"]+=1
+            pos=_num(mine.get("possession"))
+            if pos is not None:
+                adv["possession"]+=pos;adv["possession_n"]+=1
+            fouls=_num(mine.get("fouls"))
+            if fouls is not None:
+                adv["fouls"]+=fouls;adv["fouls_n"]+=1
+        advanced_stats={}
+        if adv["xg_n"]:
+            advanced_stats.update({
+                "xg_per_match":round(adv["xg_for"]/adv["xg_n"],2),
+                "xga_per_match":round(adv["xg_against"]/adv["xg_n"],2),
+                "xgd_per_match":round((adv["xg_for"]-adv["xg_against"])/adv["xg_n"],2),
+            })
+        if adv["shots_n"]:
+            advanced_stats.update({
+                "shots_per_match":round(adv["shots_for"]/adv["shots_n"],1),
+                "shots_against_per_match":round(adv["shots_against"]/adv["shots_n"],1),
+            })
+        if adv["possession_n"]:
+            advanced_stats["possession_pct"]=round(adv["possession"]/adv["possession_n"],1)
+        if adv["fouls_n"]:
+            advanced_stats["fouls_per_match"]=round(adv["fouls"]/adv["fouls_n"],1)
+        return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1],"advanced_stats":advanced_stats}
 
 
     def player_award_wins(self, player_id: str) -> list[dict]:
@@ -6894,7 +6954,7 @@ class Database:
         for r in tps:
             if str(r["tournament_id"]) in tournament_ids: participant_tournaments[str(r["player_id"])].add(str(r["tournament_id"]))
         ps=defaultdict(lambda:{"m":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"clean_sheets":0,"titles":0,"finals":0,"clutch_m":0,"clutch_w":0,
-                               "pen":0,"pen_w":0,"big_wins":0,"max_margin":0,"one_goal_wins":0,"narrow_losses":0,
+                               "pen":0,"pen_w":0,"big_wins":0,"max_margin":0,"one_goal_wins":0,"narrow_losses":0,"nerve_matches":0,
                                "teams":defaultdict(lambda:{"m":0,"w":0,"gf":0,"ga":0}),"wc_m":0,"wc_w":0,"wc_gf":0,"wc_ga":0,
                                "wc_titles":0,"wc_finals":0,"spectacle_scores":[],"spectacle_goals":0,"spectacle_pens":0,
                                "clutch_by_stage":defaultdict(lambda:{"m":0,"w":0}),
@@ -6925,10 +6985,12 @@ class Database:
             summary_by_match[(str(_sr.get("tournament_id") or ""),int(_sr.get("match_no") or 0))]={"stats":_stats,"confidence":_conf}
         summary_ps=defaultdict(lambda:{
             "summary_matches":0,
-            "xg_for":0.0,"xg_against":0.0,"xg_n":0,
+            "xg_for":0.0,"xg_against":0.0,"goals_for_xg":0.0,"xg_n":0,
             "shots_for":0.0,"shots_against":0.0,"shots_n":0,
             "sot_for":0.0,"sot_against":0.0,"sot_n":0,
+            "possession":0.0,"possession_n":0,
             "fouls":0.0,"fouls_n":0,
+            "steal_points":0.0,"steal_wins":0,
             "spectacle_bonus_sum":0.0,"spectacle_n":0,
         })
         summary_match_features={}
@@ -7025,17 +7087,28 @@ class Database:
                         return float(_v)
                     except Exception:return None
                 _feature={};_any=False
-                for _pid,_mine,_opp in ((h,_home,_away),(a,_away,_home)):
+                for _pid,_mine,_opp,_gf,_result in ((h,_home,_away,hs,rh),(a,_away,_home,ass,ra)):
                     _sp=summary_ps[_pid]
                     _xgf=_num(_mine.get("expected_goals"));_xga=_num(_opp.get("expected_goals"))
                     if _xgf is not None and _xga is not None:
-                        _sp["xg_for"]+=_xgf;_sp["xg_against"]+=_xga;_sp["xg_n"]+=1;_any=True
+                        _sp["xg_for"]+=_xgf;_sp["xg_against"]+=_xga;_sp["goals_for_xg"]+=float(_gf);_sp["xg_n"]+=1;_any=True
+                        # Złodziej Meczów: wygrana mimo niższego xG. Małe różnice
+                        # <0.25 traktujemy jako statystyczny szum, większe kradzieże
+                        # dostają 1/2/3 pkt zgodnie z ustalonym progiem.
+                        if _result=="W":
+                            _deficit=float(_xga)-float(_xgf)
+                            _steal=3 if _deficit>=1.0 else (2 if _deficit>=.50 else (1 if _deficit>=.25 else 0))
+                            if _steal:
+                                _sp["steal_points"]+=_steal;_sp["steal_wins"]+=1
                     _shf=_num(_mine.get("shots"));_sha=_num(_opp.get("shots"))
                     if _shf is not None and _sha is not None:
                         _sp["shots_for"]+=_shf;_sp["shots_against"]+=_sha;_sp["shots_n"]+=1;_any=True
                     _sof=_num(_mine.get("shots_on_target"));_soa=_num(_opp.get("shots_on_target"))
                     if _sof is not None and _soa is not None:
                         _sp["sot_for"]+=_sof;_sp["sot_against"]+=_soa;_sp["sot_n"]+=1;_any=True
+                    _pos=_num(_mine.get("possession"))
+                    if _pos is not None:
+                        _sp["possession"]+=_pos;_sp["possession_n"]+=1;_any=True
                     _fouls=_num(_mine.get("fouls"))
                     if _fouls is not None:
                         _sp["fouls"]+=_fouls;_sp["fouls_n"]+=1;_any=True
@@ -7051,8 +7124,7 @@ class Database:
                     summary_match_features[(tid,int(m.get("match_no") or 0))]=_feature
                     _xgv=min(max(float(_feature.get("total_xg") or 0.0),0.0)/6.0,1.0) if "total_xg" in _feature else 0.0
                     _shv=min(max(float(_feature.get("total_shots") or 0.0),0.0)/30.0,1.0) if "total_shots" in _feature else 0.0
-                    _sov=min(max(float(_feature.get("total_sot") or 0.0),0.0)/14.0,1.0) if "total_sot" in _feature else 0.0
-                    _sbonus=_xgv*.04+_shv*.025+_sov*.015
+                    _sbonus=_xgv*.05+_shv*.03
                     for _pid in (h,a):
                         summary_ps[_pid]["spectacle_bonus_sum"]+=_sbonus
                         summary_ps[_pid]["spectacle_n"]+=1
@@ -7076,7 +7148,9 @@ class Database:
                 if r=="W":
                     margin=gf-ga;v["max_margin"]=max(v["max_margin"],margin);v["big_wins"]+=int(margin>=3);v["one_goal_wins"]+=int(margin==1)
                 if r=="L":v["narrow_losses"]+=int((ga-gf)==1 or m.get("home_penalties") is not None)
-                if m.get("home_penalties") is not None and m.get("away_penalties") is not None:v["pen"]+=1;v["pen_w"]+=int(m.get("winner_player_id")==pid)
+                _has_pens=m.get("home_penalties") is not None and m.get("away_penalties") is not None
+                if abs(gf-ga)==1 or _has_pens:v["nerve_matches"]+=1
+                if _has_pens:v["pen"]+=1;v["pen_w"]+=int(m.get("winner_player_id")==pid)
             # Mecz Sezonu: wynik końcowy jest ważniejszy niż sama etykieta fazy.
             # W rankingu dominują (1) bliskość meczu i (2) realna stawka / ryzyko odpadnięcia.
             # Ranga fazy i liczba goli są tylko czynnikami pomocniczymi. Wartość score jest
@@ -7188,8 +7262,7 @@ class Database:
             _sf=summary_match_features.get(_mk) or {}
             _sxg=min(max(float(_sf.get("total_xg") or 0.0),0.0)/6.0,1.0) if "total_xg" in _sf else 0.0
             _ssh=min(max(float(_sf.get("total_shots") or 0.0),0.0)/30.0,1.0) if "total_shots" in _sf else 0.0
-            _sso=min(max(float(_sf.get("total_sot") or 0.0),0.0)/14.0,1.0) if "total_sot" in _sf else 0.0
-            summary_bonus=min(.04,_sxg*.020+_ssh*.012+_sso*.008)
+            summary_bonus=min(.04,_sxg*.024+_ssh*.016)
             match_score=(
                 closeness*.35
                 + goals_value*.22
@@ -7687,32 +7760,81 @@ class Database:
             })
         add("fair_play","😇 Fair Play","Kartki są najważniejsze; Summary dodaje mały komponent fauli, jeśli jest dostępny. Minimum 5 meczów ze szczegółowym przebiegiem.",items)
 
-        # Additional live rankings based on detailed EA FC event timelines.
-        # They are informational and do not create an official Award winner.
-        items=[cand(pid,v["penalties_awarded"],f"{v['penalties_awarded']} przyznanych karnych (trafione + niewykorzystane)")
-               for pid,v in event_rank.items() if v["penalties_awarded"]>0]
-        add("simulator","🎭 Największy symulant","Kto najczęściej słyszy gwizdek i od razu wskazanie na wapno? Liczymy karne w trakcie meczu.",items,award=False)
-        items=[]
-        for pid,v in event_rank.items():
-            penalty_goals=int(v["penalty_goals"] or 0)
-            shootouts=int(v["shootouts"] or 0)
-            points=penalty_goals+shootouts
-            if points<=0:
-                continue
-            items.append(cand(
-                pid,points,
-                f"{penalty_goals} goli z karnych w meczu • {shootouts} serii karnych po dogrywce • {points} pkt (gol = 1, seria = 1)"
-            ))
-        add("penaldo","🐐 Penaldo","Karne w meczu dalej robią robotę: każdy gol z wapna = 1 pkt. Do tego każdy udział w serii rzutów karnych po dogrywce = +1 pkt.",items,award=False)
+        # Additional informational classifications. First-goal data comes from
+        # detailed Events; Summary-based rankings use only trusted mapped snapshots
+        # and require at least five relevant observations. Missing old Summary data is
+        # neutral and never treated as zero.
         items=[cand(pid,v["first_goals"],f"{v['first_goals']} razy strzelił pierwszy gol meczu")
                for pid,v in event_rank.items() if v["first_goals"]>0]
         add("first_goals","🥇 Najwięcej pierwszych goli","Kto najczęściej otwiera wynik. Techniczne 1:0 w finale DE oczywiście się nie wciska do statystyk.",items,award=False)
-        items=[cand(pid,v["own_goals"],f"{v['own_goals']} samobój(e) jego drużyny")
-               for pid,v in event_rank.items() if v["own_goals"]>0]
-        add("own_goals","↩️ Samobóje","Czasem przeciwnik nawet nie musi strzelać. Techniczne 1:0 w finale DE się nie liczy.",items,award=False)
-        items=[cand(pid,v["penalty_misses"],f"{v['penalty_misses']} niewykorzystany(e) karny(e)")
-               for pid,v in event_rank.items() if v["penalty_misses"]>0]
-        add("penalty_misses","❌🎯 Niewykorzystane karne","Wapno było. Gol już niekoniecznie. Serie po meczu zostają poza tą klasyfikacją.",items,award=False)
+
+        items=[]
+        for pid,sp in summary_ps.items():
+            n=int(sp.get("xg_n") or 0)
+            if n<5:continue
+            delta=(float(sp.get("goals_for_xg") or 0.0)-float(sp.get("xg_for") or 0.0))/n
+            if delta<=0:continue
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(delta,4),
+                "_sort":(round(delta,6),n),
+                "reason":f"{delta:+.2f} gola ponad xG / mecz",
+                "goals_minus_xg_per_match":round(delta,2),
+            })
+        add("clinical","🎯 Kliniczny","Kto najczęściej zamienia sytuacje na więcej goli, niż wynika z xG. Liczymy gole − xG na mecz z wiarygodnym Summary; minimum 5 takich spotkań.",items,award=False)
+
+        items=[]
+        for pid,sp in summary_ps.items():
+            n=int(sp.get("xg_n") or 0)
+            if n<5:continue
+            waste=(float(sp.get("xg_for") or 0.0)-float(sp.get("goals_for_xg") or 0.0))/n
+            if waste<=0:continue
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(waste,4),
+                "_sort":(round(waste,6),n),
+                "reason":f"{waste:.2f} niewykorzystanego xG / mecz",
+                "xg_wasted_per_match":round(waste,2),
+            })
+        add("wasteful","🗑️ Marnotrawca","Kto regularnie tworzy więcej, niż kończy golem. Liczymy xG − gole na mecz z wiarygodnym Summary; minimum 5 takich spotkań.",items,award=False)
+
+        items=[]
+        for pid,sp in summary_ps.items():
+            n=int(sp.get("possession_n") or 0)
+            if n<5:continue
+            avg=float(sp.get("possession") or 0.0)/n
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(avg,4),
+                "_sort":(round(avg,6),n),
+                "reason":f"{avg:.1f}% średniego posiadania",
+                "possession_pct":round(avg,1),
+            })
+        add("possession_king","👑 Król Posiadania","Kto najczęściej ma piłkę pod kontrolą. Ranking po średnim posiadaniu; minimum 5 spotkań z wiarygodnym Summary.",items,award=False)
+
+        items=[]
+        for pid,sp in summary_ps.items():
+            n=int(sp.get("xg_n") or 0)
+            if n<5:continue
+            xgd=(float(sp.get("xg_for") or 0.0)-float(sp.get("xg_against") or 0.0))/n
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(xgd,4),
+                "_sort":(round(xgd,6),n),
+                "reason":f"{xgd:+.2f} xGD / mecz",
+                "xgd_per_match":round(xgd,2),
+            })
+        add("dominator","📈 Dominator","Kto przeciętnie najbardziej przeważa jakością sytuacji. xGD = własne xG − xG rywala na mecz; minimum 5 spotkań z wiarygodnym Summary.",items,award=False)
+
+        items=[]
+        for pid,sp in summary_ps.items():
+            n=int(sp.get("xg_n") or 0);points=float(sp.get("steal_points") or 0.0);wins=int(sp.get("steal_wins") or 0)
+            if n<5 or points<=0:continue
+            ppm=points/n
+            points_txt=str(int(points)) if points.is_integer() else f"{points:.1f}"
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(ppm,4),
+                "_sort":(round(ppm,6),points,wins),
+                "reason":f"{ppm:.2f} pkt kradzieży / mecz • {points_txt} pkt • {wins} kradzież(e)",
+                "steal_points_per_match":round(ppm,2),"steal_points":points,"stolen_wins":wins,
+            })
+        add("match_thief","🦹 Złodziej Meczów","Wygrane mimo niższego xG: strata 0,25–0,49 = 1 pkt, 0,50–0,99 = 2 pkt, a co najmniej 1,00 xG = 3 pkt. Ranking po punktach kradzieży na mecz; minimum 5 spotkań z wiarygodnym Summary.",items,award=False)
 
         first_by={str(x["player_id"]):str(x.get("first_date") or "") for x in first_dates}
         # Debiut Sezonu ma własną tożsamość: oceniamy wyłącznie początek kariery FIFA Night,
@@ -7928,10 +8050,18 @@ class Database:
             })
         add("superscorer","⚡ Supersnajper Sezonu","Jedno nazwisko, mnóstwo bramek. Liczymy wszystkie wpisane gole piłkarza w oficjalnych meczach.",scorer_items)
         add("match_year","🎬 Mecz Sezonu","Taki mecz, o którym jeszcze długo ktoś będzie mówił: „pamiętasz to…?”.",match_candidates)
-        items=[cand(pid,v["one_goal_wins"],f"{v['one_goal_wins']} zwycięstw dokładnie jedną bramką") for pid,v in ps.items() if v["one_goal_wins"]>0]
-        add("minimalist","📐 Król Minimalistów","Po co strzelać pięć, skoro jedna bramka przewagi też daje zwycięstwo?",items,award=False)
-        items=[cand(pid,v["narrow_losses"],f"{v['narrow_losses']} minimalnych porażek / porażek po karnych") for pid,v in ps.items() if v["narrow_losses"]>0]
-        add("unlucky","🤕 Pechowiec Sezonu","Prawie się nie liczy. Statystyki i tak pamiętają każdą porażkę o włos.",items,award=False)
+        items=[]
+        for pid,v in ps.items():
+            matches_n=int(v.get("m") or 0);close_n=int(v.get("nerve_matches") or 0)
+            if matches_n<5 or close_n<=0:continue
+            pct=close_n/matches_n*100
+            items.append({
+                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(pct,4),
+                "_sort":(round(pct,6),close_n),
+                "reason":f"{pct:.1f}% meczów na styku • {close_n}/{matches_n}",
+                "close_matches":close_n,"matches":matches_n,"close_match_pct":round(pct,1),
+            })
+        add("nerve_king","🎢 Król Nerwówek","Mecze rozstrzygnięte jedną bramką albo dopiero w serii karnych. Ranking po odsetku takich spotkań; przy remisie decyduje ich liczba. Minimum 5 oficjalnych meczów turniejowych.",items,award=False)
 
         # Summary of nominations for every Award that nominates a FIFA Night
         # participant, regardless of whether a physical statuette exists. Each

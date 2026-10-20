@@ -2713,6 +2713,20 @@ def render_stats(t=None,readonly:bool=False):
             c4.metric("⚽ Bramki",profile["gf"],f"{profile['gd']:+d} bilans")
             st.caption("Forma — ostatnie 5: **"+" ".join(profile.get("form") or [])+"**" if profile.get("form") else "Brak ostatnich meczów")
 
+            advanced=profile.get("advanced_stats") or {}
+            if advanced:
+                st.markdown("#### 📊 Advanced Stats")
+                a1,a2,a3,a4=st.columns(4)
+                a1.metric("xG / mecz",f"{advanced['xg_per_match']:.2f}" if advanced.get("xg_per_match") is not None else "—")
+                a2.metric("xGA / mecz",f"{advanced['xga_per_match']:.2f}" if advanced.get("xga_per_match") is not None else "—")
+                xgd=advanced.get("xgd_per_match")
+                a3.metric("xGD / mecz",f"{xgd:+.2f}" if xgd is not None else "—")
+                a4.metric("Posiadanie",f"{advanced['possession_pct']:.1f}%" if advanced.get("possession_pct") is not None else "—")
+                a5,a6,a7=st.columns(3)
+                a5.metric("Strzały / mecz",f"{advanced['shots_per_match']:.1f}" if advanced.get("shots_per_match") is not None else "—")
+                a6.metric("Strzały rywala / mecz",f"{advanced['shots_against_per_match']:.1f}" if advanced.get("shots_against_per_match") is not None else "—")
+                a7.metric("Faule / mecz",f"{advanced['fouls_per_match']:.1f}" if advanced.get("fouls_per_match") is not None else "—")
+
             event_stats=db.player_detailed_event_stats(opts[selected])
             st.markdown("#### 🧾 Dyscyplina, karne i minuty")
             if int(event_stats.get("coverage_matches") or 0)>0:
@@ -3066,12 +3080,12 @@ AWARD_QUIPS={
     "spectacle":"Spokojne 1:0? Nie tutaj.",
     "finance":"Excel też potrafi boleć.",
     "match_year":"Ten mecz jeszcze długo będzie wracał przy stole.",
-    "minimalist":"Po co strzelać pięć, skoro jeden wystarczy?",
-    "unlucky":"Prawie się nie liczy. Niestety.",
-    "simulator":"Kontakt był. Oczywiście że był.",
-    "penaldo":"Wapno znalezione, reszta to formalność.",
-    "own_goals":"Czasem trzeba pomóc przeciwnikowi.",
-    "penalty_misses":"Presja? Jaka presja?",
+    "nerve_king":"U niego spokojnie jest dopiero po ostatnim gwizdku.",
+    "clinical":"Jedna sytuacja czasem wystarcza bardziej niż pięć.",
+    "wasteful":"xG było. Goli już trochę mniej.",
+    "possession_king":"Piłka lubi być przy jego nodze.",
+    "dominator":"Wynik wynikiem, ale przebieg meczu też ma pamięć.",
+    "match_thief":"Statystyki mówią jedno. Tablica wyników drugie.",
 }
 
 def render_awards(readonly:bool=False):
