@@ -21,7 +21,6 @@ const AWARD_QUIPS:Record<string,string>={
   match_year:'Ten mecz jeszcze długo będzie wracał przy stole.',
   nerve_king:'U niego spokojnie jest dopiero po ostatnim gwizdku.',
   clinical:'Jedna sytuacja czasem wystarcza bardziej niż pięć.',
-  wasteful:'xG było. Goli już trochę mniej.',
   possession_king:'Piłka lubi być przy jego nodze.',
   dominator:'Wynik wynikiem, ale przebieg meczu też ma pamięć.',
   match_thief:'Statystyki mówią jedno. Tablica wyników drugie.',
@@ -45,7 +44,7 @@ function AwardsSeason({seasonNo,mode}:{seasonNo:number;mode:'awards'|'classifica
   const png=async(which:'awards'|'season',action:'save'|'share')=>{try{await getPng(which==='awards'?`/api/v1/exports/season/${seasonNo}/awards.png`:`/api/v1/exports/season/${seasonNo}/summary.png`,which==='awards'?`fifa-night-awards-sezon-${seasonNo}.png`:`fifa-night-sezon-${seasonNo}.png`,action)}catch(e:any){Alert.alert('Błąd',e.message)}};
   const cats=(d?.categories||[]).filter((c:any)=>mode==='awards'?c.award!==false:c.award===false);
   return <View style={{gap:10}}>{err?<ErrorBox message={err}/>:null}{d?<>
-    {mode==='awards'?<Card style={s.hero}><Pill text={`AWARDS • SEZON ${seasonNo}`} tone="amber"/><Text style={s.heroTitle}>🏅 Kandydaci LIVE — TOP 5</Text><Muted>TOP 5 układają wyniki. Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎</Muted></Card>:<Card style={s.classHero}><Pill text="KLASYFIKACJE" tone="purple"/><Text style={s.heroTitle}>Dodatkowe tabele sezonu</Text><Muted>Bez statuetek i bez napinki. Za to z samobójami, karnymi, Wild Cardami i innymi rzeczami, które liczby pamiętają aż za dobrze.</Muted></Card>}
+    {mode==='awards'?<Card style={s.hero}><Pill text={`AWARDS • SEZON ${seasonNo}`} tone="amber"/><Text style={s.heroTitle}>🏅 Kandydaci LIVE — TOP 5</Text><Muted>TOP 5 układają wyniki. Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎</Muted></Card>:<Card style={s.classHero}><Pill text="KLASYFIKACJE" tone="purple"/><Text style={s.heroTitle}>Dodatkowe tabele sezonu</Text><Muted>Bez statuetek i bez napinki. Dodatkowe rankingi pokazują różne style gry, specjalności i rzeczy, które liczby pamiętają aż za dobrze.</Muted></Card>}
     <View style={s.metrics}><Metric value={d.overview?.tournaments??0} label="Turnieje"/><Metric value={d.overview?.matches??0} label="Mecze"/><Metric value={d.overview?.goals??0} label="Gole"/><Metric value={d.overview?.players??0} label="Gracze"/></View>
     <CategoryCards categories={cats} award={mode==='awards'}/>
     {mode==='awards'?<Card><Text style={s.cardTitle}>🖼️ Grafiki sezonu</Text><View style={s.rowWrap}><View style={s.half}><Btn title="💾 ZAPISZ SEZON" tone="secondary" onPress={()=>png('season','save')}/></View><View style={s.half}><Btn title="📤 UDOSTĘPNIJ SEZON" tone="secondary" onPress={()=>png('season','share')}/></View><View style={s.half}><Btn title="💾 ZAPISZ AWARDS" tone="secondary" onPress={()=>png('awards','save')}/></View><View style={s.half}><Btn title="📤 UDOSTĘPNIJ AWARDS" tone="secondary" onPress={()=>png('awards','share')}/></View></View><Muted>Grafika Awards pokaże laureatów wybranych przez organizatora w wersji webowej.</Muted></Card>:null}
