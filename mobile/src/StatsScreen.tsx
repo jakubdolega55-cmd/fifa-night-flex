@@ -41,8 +41,9 @@ function Records(){
   {z.fastest_goal?<Rec icon="⚡" title="Najszybszy gol" value={`${z.fastest_goal.footballer} — ${z.fastest_goal.minute_label}'`} sub={`${z.fastest_goal.player_name} • ${z.fastest_goal.match}`}/>:null}
   {z.latest_goal?<Rec icon="⏰" title="Najpóźniejszy gol" value={`${z.latest_goal.footballer} — ${z.latest_goal.minute_label}'`} sub={`${z.latest_goal.player_name} • ${z.latest_goal.match}`}/>:null}
   {z.fastest_hat_trick?<Rec icon="🎩" title="Najszybszy hat-trick" value={`${z.fastest_hat_trick.footballer} — ${z.fastest_hat_trick.duration} min`} sub={`${z.fastest_hat_trick.from_label}' → ${z.fastest_hat_trick.to_label}' • ${z.fastest_hat_trick.match}`}/>:null}
-  {z.biggest_comeback?<Rec icon="🔄" title="Największy comeback" value={`${z.biggest_comeback.player_name} • z -${z.biggest_comeback.deficit}`} sub={z.biggest_comeback.match}/>:null}
-  {z.biggest_blown_lead?<Rec icon="🫠" title="Największy wypuszczony wynik" value={`${z.biggest_blown_lead.player_name} • prowadził +${z.biggest_blown_lead.lead}`} sub={z.biggest_blown_lead.match}/>:null}
+  {z.max_possession?<Rec icon="🧲" title="Najwyższe posiadanie w meczu" value={`${z.max_possession.player_name} — ${Number(z.max_possession.value).toFixed(1)}%`} sub={z.max_possession.match}/>:null}
+  {z.max_xg?<Rec icon="📊" title="Najwyższe xG w meczu" value={`${z.max_xg.player_name} — ${Number(z.max_xg.value).toFixed(2)} xG`} sub={z.max_xg.match}/>:null}
+  {z.biggest_turnaround?<Rec icon="🔄" title="Największy zwrot akcji" value={`${z.biggest_turnaround.winner_name} odrobił -${z.biggest_turnaround.deficit}`} sub={`${z.biggest_turnaround.loser_name} wypuścił +${z.biggest_turnaround.deficit} • ${z.biggest_turnaround.match}`}/>:null}
  </>:null}</View>;
 }
 
