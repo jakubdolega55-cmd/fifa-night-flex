@@ -91,13 +91,12 @@ assert ice['event_context']=='FIFA Night #4' and ice['match_context']=='vs Barte
 assert ice['team_context']=='Real Madrid' and ice['detail']=='',ice
 
 mobile=(ROOT/'mobile'/'src'/'StatsScreen.tsx').read_text(encoding='utf-8')
-assert 'Wybierz kategorię' in mobile
 assert 'badgeCategoryTile' in mobile and 'badgeCategoryTileActive' in mobile
-assert 'const items=group?catalog.filter' in mobile
+assert "const items=mode==='mine'?allItems.filter" in mobile
 assert 'Mecz: {got.match_context}' in mobile
-assert 'Mecz: ${x.match_context}' in mobile
-assert 'got.event_context' in mobile and 'x.event_context' in mobile
-assert 'Drużyna: {got.team_context}' in mobile and 'Drużyna: ${x.team_context}' in mobile
+assert 'got.event_context' in mobile
+assert 'Drużyna: {got.team_context}' in mobile
 app=(ROOT/'app.py').read_text(encoding='utf-8')
 assert 'event_context' in app and 'team_context' in app
+assert '🎖️ ZOBACZ MOJE' in mobile and '🏅 ZOBACZ WSZYSTKIE' in mobile
 print('achievement_badge_context_r30_smoke PASS')

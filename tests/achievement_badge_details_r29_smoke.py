@@ -74,9 +74,8 @@ for team in ('Arsenal','Bayern','Juventus'):
     assert team in colors['detail'],colors
 
 mobile=(ROOT/'mobile'/'src'/'StatsScreen.tsx').read_text(encoding='utf-8')
-assert 'Wybierz kategorię' in mobile
 assert 'badgeCategoryTile' in mobile and 'badgeCategoryTileActive' in mobile
-assert 'const items=group?catalog.filter' in mobile
+assert "const items=mode==='mine'?allItems.filter" in mobile
 assert 'Mecz: {got.match_context}' in mobile
-assert 'Mecz: ${x.match_context}' in mobile
+assert '🎖️ ZOBACZ MOJE' in mobile and '🏅 ZOBACZ WSZYSTKIE' in mobile
 print('achievement_badge_details_r29_smoke PASS')

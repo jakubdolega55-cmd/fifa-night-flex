@@ -138,14 +138,14 @@ new_keys={
 }
 assert new_keys<=keys,new_keys-keys
 assert len(catalog)==53,len(catalog)
-allowed={'progress','match','events','summary','h2h','tournament','teams','finance'}
+allowed={'career','rivalry','match','hero','tournament','teams','finance'}
 assert all(x.get('category') in allowed for x in catalog),[(x['key'],x.get('category')) for x in catalog if x.get('category') not in allowed]
 
 # UI grouping + final Wielki skok threshold stay aligned with the approved R27 design.
 mobile_stats=(ROOT/'mobile'/'src'/'StatsScreen.tsx').read_text(encoding='utf-8')
 streamlit_app=(ROOT/'app.py').read_text(encoding='utf-8')
 database_src=(ROOT/'database.py').read_text(encoding='utf-8')
-for label in ('📈 Progres i serie','🎮 Mecz','🧩 Events','📊 Summary','⚔️ H2H','🏆 Turnieje i kariera','👕 Drużyny','💰 Finanse'):
+for label in ('🏅 Kariera','🔥 Forma i rywalizacja','🎮 Mecze','🎯 Bohaterowie i wydarzenia','🏆 Turnieje','👕 Drużyny','💰 Finanse'):
     assert label in mobile_stats,label
     assert label in streamlit_app,label
 assert 'co najmniej +200 zł netto' in database_src
