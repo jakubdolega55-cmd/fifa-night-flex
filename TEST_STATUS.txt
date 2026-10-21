@@ -1,67 +1,30 @@
-FIFA NIGHT 1.1.3 TEST CANDIDATE — 2026-09-23
+FIFA NIGHT FLEX — TEST STATUS — R31 — 2026-10-21
 
 PASS:
-- Python core compile
-- Gala backend / flow / closeout
-- Gala TV payload + FX source
-- Gala mobile controller source smoke
-- Mobile API 51/51
-- Audit regression
-- Big patch formats
-- FC27 club pool + Real unbanned
-- FC27 national mode + France ban
-- FC26 version continuity / Real helper
-- Group tiebreak
-- Swiss8/10
-- Smart scheduler
-- Visible draw policy
-- Forfeit
-- DE smoke
-- Wheel shrink 10 -> 0
+- Python compile: database.py, app.py
+- achievement_categories_profile_r31_smoke.py
+- achievement_badges_r27_smoke.py
+- records_summary_turnaround_r28_smoke.py
+- achievement_badge_details_r29_smoke.py
+- achievement_badge_context_r30_smoke.py
+- summary_classifications_r26_smoke.py
+- mobile_api_smoke.py: 52/52
+- StatsScreen.tsx TypeScript transpile/syntax parse: 0 syntax errors
 
-NOT PHYSICALLY TESTED HERE:
-- Render deployment
-- PWA npm build
-- Streamlit TV in browser
-- phone-to-TV network sync
-- EAS APK build/install
-- real Summary screenshots
+R31 targeted coverage:
+- compact player-profile badge card, no inline badge wall
+- visible player total X/53
+- separate ZOBACZ MOJE and ZOBACZ WSZYSTKIE flows
+- mine flow filters to unlocked badges
+- 7 semantic categories with exact counts: 10 / 9 / 10 / 8 / 8 / 5 / 3
+- per-category unlocked/total counter
+- Streamlit profile uses the same semantic grouping and two badge entry points
+- R27 unlock rules, R28 records, R29 details and R30 historical context remain unchanged
 
-2026-10-01 FC27 draw-weight tuning:
-- WC 1st/2nd/3rd = 1.70 / 1.45 / 1.15
-- FC27 clubs PSG/Real 1st/2nd = 0.40 / 0.60
-- City neutral when Real ban active
-- mobile_api 51/51 PASS + draw/scheduler regressions PASS
+NOT CLAIMED PASS:
+- full npm run check / Expo Doctor (working package has no node_modules; final one-click build must install dependencies and run both)
+- physical device/browser review of the R31 category tiles and two-button profile layout
+- physical APK PNG retest from R23
+- physical real-screenshot retest from R24
 
-2026-10-12 FC27 Real handicap R11:
-- Real previous champion multiplier x0.25; previous finalist x0.45.
-- PSG remains x0.40 / x0.60.
-- Streamlit-only password-protected admin panel: up to 3 historical tournament players, extra Real reduction 0-90%.
-- Manual reduction stacks multiplicatively with placement, live rating and previous-team repeat modifiers.
-- FC27 Real player handicap smoke PASS.
-- FC27 3/4/5 small wheel smoke PASS.
-- FC27 Real ban smoke PASS.
-- FC27 national mode smoke PASS.
-- mobile_api_smoke.py 52/52 PASS.
-- Python compile PASS (existing ui.py invalid-escape SyntaxWarning unchanged).
-
-
-2026-10-20 R24 AI Events / scorer / shoot-out:
-- Python compile PASS.
-- event_parser_r24_smoke PASS.
-- penalty_miss_icon_prompt_smoke PASS.
-- second_yellow_red_counters_smoke PASS.
-- manual_event_scorer_draw_smoke PASS.
-- mobile_api_smoke 52/52 PASS.
-- changed FifaScreen.tsx parser check: no TypeScript syntax errors.
-- full npm run check NOT marked PASS: npm install timed out and node_modules are not bundled.
-
-2026-10-21 R26 classification cleanup:
-- Marnotrawca removed from main classifications.
-- Advanced Stats unchanged after physical UI review.
-- Public classification descriptions simplified; formulas/thresholds hidden from descriptions.
-- summary_classifications_r26_smoke PASS.
-- Awards/Gala regression smokes PASS.
-- mobile_api_smoke.py 52/52 PASS.
-- Python compile PASS.
-- full npm run check remains for final build.
+Android versionCode remains 15.

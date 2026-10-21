@@ -2764,8 +2764,8 @@ def render_stats(t=None,readonly:bool=False):
                 st.markdown("**FIFA Night Awards:** " + " • ".join(f"{x['title']} {x['year']}" for x in awards_won))
             badges=pa_profile.get("unlocked") or []
             badge_group_order=[
-                ("progress","📈 Progres i serie"),("match","🎮 Mecz"),("events","🧩 Events"),("summary","📊 Summary"),
-                ("h2h","⚔️ H2H"),("tournament","🏆 Turnieje i kariera"),("teams","👕 Drużyny"),("finance","💰 Finanse"),
+                ("career","🏅 Kariera"),("rivalry","🔥 Forma i rywalizacja"),("match","🎮 Mecze"),
+                ("hero","🎯 Bohaterowie i wydarzenia"),("tournament","🏆 Turnieje"),("teams","👕 Drużyny"),("finance","💰 Finanse"),
             ]
             def _render_badge_catalog(catalog,unlocked_keys,locked_by):
                 known={key for key,_ in badge_group_order}
@@ -2783,42 +2783,48 @@ def render_stats(t=None,readonly:bool=False):
                             status="🔒 Do zdobycia";progress_value=(locked_by.get(key) or {}).get("progress") or "—"
                         rows.append({"Odznaka":f"{c.get('icon','🏅')} {c.get('name','')}","Jak zdobyć":c.get("desc") or "—","Status":status,"Postęp":progress_value})
                     if rows:
-                        st.markdown(f"**{label}**")
+                        won=sum(1 for row in rows if row["Status"]=="✅ Zdobyta")
+                        st.markdown(f"**{label} · {won}/{len(rows)} zdobytych**")
                         st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
-            if badges:
-                bh1,bh2=st.columns([8,2])
-                with bh1: st.markdown("#### 🏅 Odznaki")
-                with bh2:
-                    with st.popover("❔ Jak zdobywać",use_container_width=True):
-                        st.markdown("**Wszystkie odznaki i warunki zdobycia**")
-                        unlocked_keys={str(x.get("key")) for x in badges}
-                        locked_by={str(x.get("key")):x for x in (pa_profile.get("locked") or [])}
-                        _render_badge_catalog(ach.get("catalog") or [],unlocked_keys,locked_by)
-                bcols=st.columns(2)
-                for i,a in enumerate(badges):
-                    with bcols[i%2]:
-                        with st.expander(f"{a.get('icon','🏅')} {a.get('name','Odznaka')}",expanded=False):
-                            st.write(a.get("desc") or "—")
-                            date=str(a.get("earned_at") or "")[:10] or "—"
-                            where=str(a.get("event_context") or "").strip()
-                            st.caption(f"Zdobyta: {date}"+(f" • {where}" if where else ""))
-                            if a.get("match_context"):st.caption(f"Mecz: {a.get('match_context')}")
-                            if a.get("team_context"):st.caption(f"Drużyna: {a.get('team_context')}")
-                            if a.get("detail"):st.caption(str(a.get("detail")))
-            else:
-                bh1,bh2=st.columns([8,2])
-                with bh1:
-                    st.markdown("#### 🏅 Odznaki")
-                    st.caption("Brak odblokowanych odznak.")
-                with bh2:
-                    with st.popover("❔ Jak zdobywać",use_container_width=True):
-                        st.markdown("**Wszystkie odznaki i warunki zdobycia**")
-                        locked_by={str(x.get("key")):x for x in (pa_profile.get("locked") or [])}
-                        _render_badge_catalog(ach.get("catalog") or [],set(),locked_by)
-            locked_badges=pa_profile.get("locked") or []
-            if locked_badges:
-                with st.expander("🔒 Odznaki do zdobycia",expanded=False):
-                    st.dataframe(pd.DataFrame([{"Odznaka":f"{a.get('icon','🏅')} {a.get('name','')}","Za co":a.get("desc") or "—","Postęp":a.get("progress","—")} for a in locked_badges]),hide_index=True,use_container_width=True)
+            unlocked_keys={str(x.get("key")) for x in badges}
+            locked_by={str(x.get("key")):x for x in (pa_profile.get("locked") or [])}
+            st.markdown("#### 🏅 Odznaki")
+            st.caption(f"{pa_profile.get('count',len(badges))}/{pa_profile.get('total',len(ach.get('catalog') or []))} zdobytych")
+            bh1,bh2=st.columns(2)
+            with bh1:
+                with st.popover("🎖️ Zobacz moje",use_container_width=True):
+                    if not badges:
+                        st.caption("Ten gracz nie ma jeszcze zdobytych odznak.")
+                    else:
+                        catalog_by_key={str(c.get("key")):c for c in (ach.get("catalog") or [])}
+                        known={key for key,_ in badge_group_order}
+                        for group_key,label in badge_group_order+[("other","🏅 Pozostałe")]:
+                            group_badges=[]
+                            group_total=0
+                            for c in (ach.get("catalog") or []):
+                                cgroup=str(c.get("category") or "other")
+                                if cgroup not in known:cgroup="other"
+                                if cgroup==group_key:group_total+=1
+                            for a in badges:
+                                c=catalog_by_key.get(str(a.get("key"))) or a
+                                cgroup=str(c.get("category") or "other")
+                                if cgroup not in known:cgroup="other"
+                                if cgroup==group_key:group_badges.append(a)
+                            if not group_badges:continue
+                            st.markdown(f"**{label} · {len(group_badges)}/{group_total}**")
+                            for a in group_badges:
+                                with st.expander(f"{a.get('icon','🏅')} {a.get('name','Odznaka')}",expanded=False):
+                                    st.write(a.get("desc") or "—")
+                                    date=str(a.get("earned_at") or "")[:10] or "—"
+                                    where=str(a.get("event_context") or "").strip()
+                                    st.caption(f"Zdobyta: {date}"+(f" • {where}" if where else ""))
+                                    if a.get("match_context"):st.caption(f"Mecz: {a.get('match_context')}")
+                                    if a.get("team_context"):st.caption(f"Drużyna: {a.get('team_context')}")
+                                    if a.get("detail"):st.caption(str(a.get("detail")))
+            with bh2:
+                with st.popover("🏅 Zobacz wszystkie",use_container_width=True):
+                    st.markdown("**Wszystkie odznaki i warunki zdobycia**")
+                    _render_badge_catalog(ach.get("catalog") or [],unlocked_keys,locked_by)
             moments=[x for x in timeline if selected.casefold() in str(x.get("detail") or "").casefold()]
             if moments:
                 with st.expander("💎 Ważne momenty w historii FIFA Night",expanded=False):
