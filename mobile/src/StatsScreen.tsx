@@ -46,11 +46,17 @@ function Records(){
  </>:null}</View>;
 }
 
+const badgeGroupOrder:{key:string;label:string}[]=[
+ {key:'progress',label:'📈 Progres i serie'},{key:'match',label:'🎮 Mecz'},{key:'events',label:'🧩 Events'},
+ {key:'summary',label:'📊 Summary'},{key:'h2h',label:'⚔️ H2H'},{key:'tournament',label:'🏆 Turnieje i kariera'},
+ {key:'teams',label:'👕 Drużyny'},{key:'finance',label:'💰 Finanse'},{key:'other',label:'🏅 Pozostałe'}
+];
 function BadgeGuideModal({visible,onClose,achievement}:{visible:boolean;onClose:()=>void;achievement:any}){
  const unlocked=new Map((achievement?.unlocked||achievement?.achievements||[]).map((x:any)=>[String(x.key),x]));
  const locked=new Map((achievement?.locked||[]).map((x:any)=>[String(x.key),x]));
  const catalog=(achievement?.catalog||[]).length?achievement.catalog:[...(achievement?.unlocked||[]),...(achievement?.locked||[])];
- return <Modal visible={visible} animationType="slide" onRequestClose={onClose}><View style={s.modal}><View style={s.head}><View><Text style={s.pageTitle}>🏅 Jak zdobywać odznaki?</Text><Text style={s.sub}>Pełny katalog FIFA Night</Text></View><Pressable onPress={onClose}><Text style={s.close}>×</Text></Pressable></View><ScrollView contentContainerStyle={s.pad}>{catalog.map((c:any,i:number)=>{const got=unlocked.get(String(c.key)) as any;const todo=locked.get(String(c.key)) as any;return <Card key={String(c.key||i)} style={got?s.badgeWon:undefined}><View style={s.badgeGuideHead}><Text style={s.badgeGuideIcon}>{c.icon||'🏅'}</Text><View style={{flex:1}}><Text style={s.name}>{c.name||c.title}</Text><Text style={[s.sub,got&&{color:colors.green}]}>{got?'✅ ZDOBYTA':'🔒 DO ZDOBYCIA'}</Text></View></View><Text style={s.line}>{c.desc||c.description||'—'}</Text>{got?<Muted>Zdobyta: {fmtDate(got.earned_at)}{got.detail?` • ${got.detail}`:''}</Muted>:todo?.progress?<Muted>Postęp: {todo.progress}</Muted>:null}</Card>})}</ScrollView></View></Modal>;
+ const known=new Set(badgeGroupOrder.map(x=>x.key));
+ return <Modal visible={visible} animationType="slide" onRequestClose={onClose}><View style={s.modal}><View style={s.head}><View><Text style={s.pageTitle}>🏅 Jak zdobywać odznaki?</Text><Text style={s.sub}>Pełny katalog FIFA Night</Text></View><Pressable onPress={onClose}><Text style={s.close}>×</Text></Pressable></View><ScrollView contentContainerStyle={s.pad}>{badgeGroupOrder.map(group=>{const items=catalog.filter((c:any)=>{const raw=String(c?.category||'other');return (known.has(raw)?raw:'other')===group.key});if(!items.length)return null;return <View key={group.key} style={{gap:8}}><Text style={s.cardTitle}>{group.label}</Text>{items.map((c:any,i:number)=>{const got=unlocked.get(String(c.key)) as any;const todo=locked.get(String(c.key)) as any;return <Card key={String(c.key||i)} style={got?s.badgeWon:undefined}><View style={s.badgeGuideHead}><Text style={s.badgeGuideIcon}>{c.icon||'🏅'}</Text><View style={{flex:1}}><Text style={s.name}>{c.name||c.title}</Text><Text style={[s.sub,got&&{color:colors.green}]}>{got?'✅ ZDOBYTA':'🔒 DO ZDOBYCIA'}</Text></View></View><Text style={s.line}>{c.desc||c.description||'—'}</Text>{got?<Muted>Zdobyta: {fmtDate(got.earned_at)}{got.detail?` • ${got.detail}`:''}</Muted>:todo?.progress?<Muted>Postęp: {todo.progress}</Muted>:null}</Card>})}</View>})}</ScrollView></View></Modal>;
 }
 
 function ProfileModal({id,onClose}:{id:string|null;onClose:()=>void}){
