@@ -5768,20 +5768,42 @@ class Database:
             "title_streak":0,"max_title_streak":0,"max_elim_wins_tournament":0,"max_close_wins_tournament":0,
             "penalty_goals":0,"discipline_points":0,"max_comeback_deficit":0,
             "max_three_goal_streak":0,"max_h2h_win_streak":0,"h2h_qualified_count":0,"h2h_beaten_qualified":0,
-            "max_lost_final_streak":0,"title_modes":set(),"title_teams":set(),"max_title_team_count":0,"max_title_drought":0,
+            "max_lost_final_streak":0,"title_modes":set(),"title_teams":set(),"title_team_labels":{},"max_title_team_count":0,"max_title_drought":0,
             "max_event_net_cents":0,"max_summary_xg":0.0,"max_summary_shots":0,"max_footballer_goals_match":0,
+            "max_one_man_army_goals":0,
         })
         win_streak=defaultdict(int);clean_streak=defaultdict(int);three_goal_streak=defaultdict(int)
         h2h_history=defaultdict(list);h2h_counts=defaultdict(int);h2h_wins=defaultdict(int);h2h_win_streak=defaultdict(int)
         lost_final_streak=defaultdict(int);had_title=defaultdict(bool);title_drought=defaultdict(int)
         title_team_counts=defaultdict(lambda:defaultdict(int))
 
+        match_by={(str(m.get("tournament_id") or ""),int(m.get("match_no") or 0)):m for m in matches}
+
+        def match_context(pid,tid,match_no):
+            if tid is None or match_no is None:return ""
+            pid=str(pid or "");tid=str(tid or "")
+            m=match_by.get((tid,int(match_no)))
+            if not m:return ""
+            home_pid=str(m.get("home_player_id") or "");away_pid=str(m.get("away_player_id") or "")
+            if pid not in {home_pid,away_pid}:return ""
+            home=(pid==home_pid)
+            fmt=str((event_by.get(tid) or {}).get("format_key") or "")
+            hs,ass=self._stats_score_pair(m,fmt)
+            gf,ga=(hs,ass) if home else (ass,hs)
+            opp=(m.get("away_name") if home else m.get("home_name")) or names.get(away_pid if home else home_pid,"?")
+            score=f"{gf}:{ga}"
+            hp=m.get("home_penalties");ap=m.get("away_penalties")
+            if hp is not None and ap is not None:
+                pf,pa=(int(hp),int(ap)) if home else (int(ap),int(hp))
+                score+=f" (k. {pf}:{pa})"
+            return f"vs {opp} • {score}"
+
         def award(pid,key,when="",tid=None,match_no=None,detail=""):
             pid=str(pid or "")
             if not pid or key in unlocked[pid]: return
             unlocked[pid][key]={"key":key,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
                                 "tournament_no":tournament_no.get(str(tid)) if tid else None,"match_no":int(match_no) if match_no is not None else None,
-                                "detail":str(detail or "")}
+                                "match_context":match_context(pid,tid,match_no),"detail":str(detail or "")}
 
         def _num(v):
             try:
@@ -5969,12 +5991,14 @@ class Database:
                     # scored by one real footballer. Shoot-out kicks are never in this timeline.
                     if winner:
                         winner_goals=[x for x in known_goals if str(x.get("credited_player_id") or "")==winner]
-                        if len(winner_goals)>=3 and all(str(x.get("event_type") or "") in {"normal_goal","penalty_goal"} for x in winner_goals):
+                        if winner_goals and all(str(x.get("event_type") or "") in {"normal_goal","penalty_goal"} for x in winner_goals):
                             scorers=[(" ".join(str(x.get("footballer_name") or "").strip().split()),self._norm_scorer_name(str(x.get("footballer_name") or ""))) for x in winner_goals]
                             norms={norm for _name,norm in scorers if norm}
                             if len(norms)==1 and len(scorers)==len(winner_goals) and all(norm for _name,norm in scorers):
-                                hero=scorers[0][0]
-                                award(winner,"one_man_army",when,tid,no,f"{hero}: wszystkie {len(winner_goals)} goli zwycięzcy")
+                                progress[winner]["max_one_man_army_goals"]=max(progress[winner]["max_one_man_army_goals"],len(winner_goals))
+                                if len(winner_goals)>=3:
+                                    hero=scorers[0][0]
+                                    award(winner,"one_man_army",when,tid,no,f"{hero}: wszystkie {len(winner_goals)} goli zwycięzcy")
 
                     # Hat-trick Express can be earned by either participant, even if
                     # they do not win the match. Own goals are never scorer goals.
@@ -6102,9 +6126,10 @@ class Database:
             if {"clubs","national"}.issubset(pr["title_modes"]):
                 award(champ,"double_crown",when,tid,None,"Tytuł klubem i reprezentacją")
             if team:
-                nt=self._norm_team_name(team);pr["title_teams"].add(nt)
+                nt=self._norm_team_name(team);pr["title_teams"].add(nt);pr["title_team_labels"].setdefault(nt,team)
                 if len(pr["title_teams"])>=3:
-                    award(champ,"many_colors_champion",when,tid,None,f"Tytuły trzema różnymi drużynami ({len(pr['title_teams'])})")
+                    title_team_list=", ".join(pr["title_team_labels"].values())
+                    award(champ,"many_colors_champion",when,tid,None,f"Mistrzowskie drużyny: {title_team_list}")
                 if mode=="clubs":
                     title_team_counts[champ][nt]+=1
                     pr["max_title_team_count"]=max(pr["max_title_team_count"],title_team_counts[champ][nt])
@@ -6234,11 +6259,15 @@ class Database:
                     elif k=="curse_breaker":pg="czeka na serię 3 porażek i 3 zwycięstw z tym samym rywalem"
                     elif k=="conquer_everyone":pg=f"pokonani kwalifikujący się rywale: {pr['h2h_beaten_qualified']}/{max(pr['h2h_qualified_count'],4)}"
                     elif k=="double_crown":pg=f"kluby: {'✓' if 'clubs' in pr['title_modes'] else '—'} • reprezentacje: {'✓' if 'national' in pr['title_modes'] else '—'}"
-                    elif k=="many_colors_champion":pg=f"{min(len(pr['title_teams']),3)}/3 mistrzowskich drużyn"
+                    elif k=="many_colors_champion":
+                        _teams=", ".join(pr["title_team_labels"].values())
+                        pg=f"{min(len(pr['title_teams']),3)}/3 mistrzowskich drużyn"+(f" • {_teams}" if _teams else "")
                     elif k=="big_jump":pg=f"najlepszy turniej: {pr['max_event_net_cents']/100:.2f} zł netto / +200 zł"
                     elif k=="return_to_throne":pg=f"najdłuższa przerwa po tytule: {pr['max_title_drought']}/5 turniejów"
                     elif k=="club_legend":pg=f"najwięcej tytułów jednym klubem: {pr['max_title_team_count']}/3"
-                    elif k=="one_man_army":pg=f"najwięcej goli jednego piłkarza w meczu: {pr['max_footballer_goals_match']}"
+                    elif k=="one_man_army":
+                        _solo=int(pr["max_one_man_army_goals"] or 0)
+                        pg=(f"najlepiej: {_solo}/3 gole — wszystkie jednego strzelca" if _solo else "brak jeszcze wygranego meczu z golami tylko jednego strzelca")
                     elif k=="gas_to_floor":pg=f"najlepsza seria: {pr['max_three_goal_streak']}/5 meczów z 3+ golami"
                     elif k=="five_pack":pg=f"rekord jednego piłkarza: {pr['max_footballer_goals_match']}/5 goli"
                     elif k=="miss_to_hero":pg="czeka na bohatera po niewykorzystanym karnym"

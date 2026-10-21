@@ -2802,8 +2802,9 @@ def render_stats(t=None,readonly:bool=False):
                             date=str(a.get("earned_at") or "")[:10] or "—"
                             where=f"FIFA Night #{a.get('tournament_no')}" if a.get("tournament_no") else "oficjalny mecz"
                             if a.get("match_no") is not None:where+=f" • mecz {a.get('match_no')}"
-                            detail=(" • "+str(a.get("detail"))) if a.get("detail") else ""
-                            st.caption(f"Zdobyta: {date} • {where}{detail}")
+                            st.caption(f"Zdobyta: {date} • {where}")
+                            if a.get("match_context"):st.caption(f"Mecz: {a.get('match_context')}")
+                            if a.get("detail"):st.caption(str(a.get("detail")))
             else:
                 bh1,bh2=st.columns([8,2])
                 with bh1:
