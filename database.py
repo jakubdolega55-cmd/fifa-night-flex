@@ -5571,42 +5571,66 @@ class Database:
 
     @staticmethod
     def _achievement_catalog() -> list[dict]:
+        # ``category`` is presentation metadata only. It lets the public badge guide
+        # stay readable as the collection grows; achievement logic still keys only on
+        # ``key`` and historical unlock moments never depend on the UI grouping.
         return [
-            {"key":"first_blood","icon":"🥇","name":"Pierwsza krew","desc":"Pierwsze oficjalne zwycięstwo."},
-            {"key":"first_title","icon":"🏆","name":"Pierwszy skalp","desc":"Pierwszy wygrany turniej FIFA Night."},
-            {"key":"wins_10","icon":"🔟","name":"10 zwycięstw","desc":"10 oficjalnych zwycięstw."},
-            {"key":"wins_50","icon":"5️⃣0️⃣","name":"50 zwycięstw","desc":"50 oficjalnych zwycięstw."},
-            {"key":"matches_100","icon":"💯","name":"100 meczów","desc":"100 oficjalnych meczów."},
-            {"key":"goals_100","icon":"⚽","name":"100 goli","desc":"100 strzelonych goli w oficjalnych meczach."},
-            {"key":"titles_5","icon":"👑","name":"Pięciokrotny mistrz","desc":"5 wygranych turniejów FIFA Night."},
-            {"key":"on_fire","icon":"🔥","name":"On Fire","desc":"5 oficjalnych zwycięstw z rzędu."},
-            {"key":"unstoppable","icon":"🚀","name":"Nie do zatrzymania","desc":"10 oficjalnych zwycięstw z rzędu."},
-            {"key":"wall","icon":"🧱","name":"Mur","desc":"3 czyste konta z rzędu."},
-            {"key":"massacre","icon":"💥","name":"Masakra","desc":"Zwycięstwo różnicą co najmniej 5 goli."},
-            {"key":"thriller","icon":"🎬","name":"Thriller","desc":"Wygrany mecz jedną bramką, w którym padło co najmniej 7 goli."},
-            {"key":"ice_cold","icon":"🥶","name":"Ice Cold","desc":"Wygrana seria rzutów karnych."},
-            {"key":"many_clubs","icon":"🔄","name":"Człowiek wielu klubów","desc":"Zwycięstwo oficjalnego meczu pięcioma różnymi drużynami."},
-            {"key":"wild_one","icon":"🎲","name":"Wild One","desc":"Wygrany turniej drużyną z Wild Carda."},
-            {"key":"perfect_night","icon":"💯","name":"Perfect Night","desc":"Wygraj FIFA Night, wygrywając każdy swój mecz w regulaminowych 90 minutach — bez remisu, dogrywki i serii karnych."},
-            {"key":"unkillable","icon":"🔥","name":"Nie do zabicia","desc":"Wygraj mecz po tym, jak przegrywałeś co najmniej 3 golami."},
-            {"key":"ten_men","icon":"🟥","name":"W dziesiątkę raźniej","desc":"Wygraj mecz mimo czerwonej kartki dla swojej drużyny."},
-            {"key":"penalty_executioner","icon":"🎯","name":"Egzekutor z wapna","desc":"Zdobądź 10 goli z rzutów karnych w trakcie meczu."},
-            {"key":"after_hours","icon":"➕","name":"Po godzinach","desc":"Zdobądź gola na wagę zwycięstwa w dogrywce."},
-            {"key":"hat_trick_express","icon":"🎩","name":"Hat-trick Express","desc":"Niech jeden piłkarz Twojej drużyny zdobędzie hat-tricka w ciągu maksymalnie 15 minut."},
-            {"key":"butcher","icon":"🪓","name":"Rzeźnik","desc":"Uzbieraj 25 punktów dyscyplinarnych w szczegółowo śledzonych meczach (żółta = 1, czerwona = 3)."},
-            {"key":"joker","icon":"🃏","name":"Joker","desc":"Zmiennik zdobywa gola na wagę zwycięstwa po wejściu z ławki."},
-            {"key":"from_the_dead","icon":"🐦‍🔥","name":"Powrót zza grobu","desc":"Wygrany Double Elimination po wcześniejszym spadku do Losers Bracket."},
-            {"key":"shark","icon":"🦈","name":"Rekin","desc":"Historyczny bilans finansowy osiąga co najmniej +250 zł."},
-            {"key":"sponsor","icon":"🤡","name":"Sponsor imprezy","desc":"Historyczny bilans finansowy spada do -250 zł lub niżej."},
-            {"key":"back_to_back","icon":"🏆","name":"Back to Back","desc":"Dwa tytuły FIFA Night z rzędu."},
-            {"key":"steel_nerves","icon":"🧊","name":"Nerwy ze stali","desc":"Wygrany finał FIFA Night po rzutach karnych."},
-            {"key":"executioner","icon":"⚔️","name":"Egzekutor","desc":"Trzy wygrane mecze eliminacyjne w jednym turnieju."},
-            {"key":"revenge","icon":"😈","name":"Zemsta najlepiej smakuje","desc":"Po wcześniejszej porażce z rywalem w tym samym turnieju pokonaj go później w meczu, po którym odpada lub w finale."},
-            {"key":"fortress","icon":"🏰","name":"Twierdza","desc":"Wygraj turniej bez straty ani jednego gola."},
-            {"key":"on_the_edge","icon":"🫀","name":"Na styku","desc":"Wygraj trzy mecze różnicą jednej bramki w jednym turnieju."},
-            {"key":"champion_hunter","icon":"🏹","name":"Łowca mistrza","desc":"Pokonaj obrońcę tytułu w następnym FIFA Night."},
-            {"key":"last_ticket","icon":"🎟️","name":"Rzutem na taśmę","desc":"Wyjdź z grupy z ostatniego premiowanego miejsca i wygraj cały turniej."},
-            {"key":"rebirth","icon":"♻️","name":"Odrodzenie","desc":"Przegraj mecz w grupie lub lidze, a mimo to wygraj cały turniej."},
+            {"key":"first_blood","icon":"🥇","name":"Pierwsza krew","desc":"Pierwsze oficjalne zwycięstwo.","category":"progress"},
+            {"key":"first_title","icon":"🏆","name":"Pierwszy skalp","desc":"Pierwszy wygrany turniej FIFA Night.","category":"tournament"},
+            {"key":"wins_10","icon":"🔟","name":"10 zwycięstw","desc":"10 oficjalnych zwycięstw.","category":"progress"},
+            {"key":"wins_50","icon":"5️⃣0️⃣","name":"50 zwycięstw","desc":"50 oficjalnych zwycięstw.","category":"progress"},
+            {"key":"matches_100","icon":"💯","name":"100 meczów","desc":"100 oficjalnych meczów.","category":"progress"},
+            {"key":"goals_100","icon":"⚽","name":"100 goli","desc":"100 strzelonych goli w oficjalnych meczach.","category":"progress"},
+            {"key":"titles_5","icon":"👑","name":"Pięciokrotny mistrz","desc":"5 wygranych turniejów FIFA Night.","category":"tournament"},
+            {"key":"on_fire","icon":"🔥","name":"On Fire","desc":"5 oficjalnych zwycięstw z rzędu.","category":"progress"},
+            {"key":"unstoppable","icon":"🚀","name":"Nie do zatrzymania","desc":"10 oficjalnych zwycięstw z rzędu.","category":"progress"},
+            {"key":"wall","icon":"🧱","name":"Mur","desc":"3 czyste konta z rzędu.","category":"progress"},
+            {"key":"massacre","icon":"💥","name":"Masakra","desc":"Zwycięstwo różnicą co najmniej 5 goli.","category":"match"},
+            {"key":"thriller","icon":"🎬","name":"Thriller","desc":"Wygrany mecz jedną bramką, w którym padło co najmniej 7 goli.","category":"match"},
+            {"key":"ice_cold","icon":"🥶","name":"Ice Cold","desc":"Wygrana seria rzutów karnych.","category":"match"},
+            {"key":"many_clubs","icon":"🔄","name":"Człowiek wielu klubów","desc":"Zwycięstwo oficjalnego meczu pięcioma różnymi drużynami.","category":"teams"},
+            {"key":"wild_one","icon":"🎲","name":"Wild One","desc":"Wygrany turniej drużyną z Wild Carda.","category":"tournament"},
+            {"key":"perfect_night","icon":"💯","name":"Perfect Night","desc":"Wygraj FIFA Night, wygrywając każdy swój mecz w regulaminowych 90 minutach — bez remisu, dogrywki i serii karnych.","category":"tournament"},
+            {"key":"unkillable","icon":"🔥","name":"Nie do zabicia","desc":"Wygraj mecz po tym, jak przegrywałeś co najmniej 3 golami.","category":"events"},
+            {"key":"ten_men","icon":"🟥","name":"W dziesiątkę raźniej","desc":"Wygraj mecz mimo czerwonej kartki dla swojej drużyny.","category":"events"},
+            {"key":"penalty_executioner","icon":"🎯","name":"Egzekutor z wapna","desc":"Zdobądź 10 goli z rzutów karnych w trakcie meczu.","category":"events"},
+            {"key":"after_hours","icon":"➕","name":"Po godzinach","desc":"Zdobądź gola na wagę zwycięstwa w dogrywce.","category":"events"},
+            {"key":"hat_trick_express","icon":"🎩","name":"Hat-trick Express","desc":"Niech jeden piłkarz Twojej drużyny zdobędzie hat-tricka w ciągu maksymalnie 15 minut.","category":"events"},
+            {"key":"butcher","icon":"🪓","name":"Rzeźnik","desc":"Uzbieraj 25 punktów dyscyplinarnych w szczegółowo śledzonych meczach (żółta = 1, czerwona = 3).","category":"events"},
+            {"key":"joker","icon":"🃏","name":"Joker","desc":"Zmiennik zdobywa gola na wagę zwycięstwa po wejściu z ławki.","category":"events"},
+            {"key":"from_the_dead","icon":"🐦‍🔥","name":"Powrót zza grobu","desc":"Wygrany Double Elimination po wcześniejszym spadku do Losers Bracket.","category":"tournament"},
+            {"key":"shark","icon":"🦈","name":"Rekin","desc":"Historyczny bilans finansowy osiąga co najmniej +250 zł.","category":"finance"},
+            {"key":"sponsor","icon":"🤡","name":"Sponsor imprezy","desc":"Historyczny bilans finansowy spada do -250 zł lub niżej.","category":"finance"},
+            {"key":"back_to_back","icon":"🏆","name":"Back to Back","desc":"Dwa tytuły FIFA Night z rzędu.","category":"tournament"},
+            {"key":"steel_nerves","icon":"🧊","name":"Nerwy ze stali","desc":"Wygrany finał FIFA Night po rzutach karnych.","category":"tournament"},
+            {"key":"executioner","icon":"⚔️","name":"Egzekutor","desc":"Trzy wygrane mecze eliminacyjne w jednym turnieju.","category":"tournament"},
+            {"key":"revenge","icon":"😈","name":"Zemsta najlepiej smakuje","desc":"Po wcześniejszej porażce z rywalem w tym samym turnieju pokonaj go później w meczu, po którym odpada lub w finale.","category":"tournament"},
+            {"key":"fortress","icon":"🏰","name":"Twierdza","desc":"Wygraj turniej bez straty ani jednego gola.","category":"tournament"},
+            {"key":"on_the_edge","icon":"🫀","name":"Na styku","desc":"Wygraj trzy mecze różnicą jednej bramki w jednym turnieju.","category":"tournament"},
+            {"key":"champion_hunter","icon":"🏹","name":"Łowca mistrza","desc":"Pokonaj obrońcę tytułu w następnym FIFA Night.","category":"tournament"},
+            {"key":"last_ticket","icon":"🎟️","name":"Rzutem na taśmę","desc":"Wyjdź z grupy z ostatniego premiowanego miejsca i wygraj cały turniej.","category":"tournament"},
+            {"key":"rebirth","icon":"♻️","name":"Odrodzenie","desc":"Przegraj mecz w grupie lub lidze, a mimo to wygraj cały turniej.","category":"tournament"},
+
+            # R27 — approved additions. Summary-based badges are intentionally
+            # conservative and never infer missing historical statistics.
+            {"key":"full_control","icon":"👑","name":"Pełna kontrola","desc":"Wygraj mecz z co najmniej 60% posiadania, przewagą xG minimum 1,00 i co najmniej 5 strzałami więcej od rywala.","category":"summary"},
+            {"key":"century_heist","icon":"🦹","name":"Napad stulecia","desc":"Wygraj mecz mimo xG niższego od rywala o co najmniej 1,50.","category":"summary"},
+            {"key":"siege","icon":"💣","name":"Oblężenie","desc":"Osiągnij w jednym meczu co najmniej 15 strzałów i 3,00 xG.","category":"summary"},
+            {"key":"missed_penalty_win","icon":"😬","name":"Zmarnowana jedenastka","desc":"Wygraj mecz mimo niewykorzystanego rzutu karnego w trakcie gry.","category":"events"},
+            {"key":"own_goal_recovery","icon":"🤦","name":"Sam sobie utrudnił","desc":"Wygraj mecz mimo samobója własnej drużyny.","category":"events"},
+            {"key":"eternal_finalist","icon":"🥈","name":"Wieczny finalista","desc":"Przegraj trzy finały FIFA Night bez zdobycia tytułu pomiędzy nimi.","category":"tournament"},
+            {"key":"nemesis_h2h","icon":"👻","name":"Nemezis","desc":"Pokonaj tego samego rywala pięć razy z rzędu.","category":"h2h"},
+            {"key":"curse_breaker","icon":"🔄","name":"Przełamanie klątwy","desc":"Po trzech kolejnych porażkach z jednym rywalem wygraj z nim trzy kolejne mecze.","category":"h2h"},
+            {"key":"conquer_everyone","icon":"🌐","name":"Pogromca wszystkich","desc":"Pokonaj każdego rywala, z którym masz co najmniej 3 oficjalne H2H, przy minimum 4 takich rywalach.","category":"h2h"},
+            {"key":"double_crown","icon":"🌎","name":"Podwójna korona","desc":"Zdobądź tytuł FIFA Night klubem oraz reprezentacją.","category":"tournament"},
+            {"key":"many_colors_champion","icon":"👕","name":"Mistrz wielu barw","desc":"Zdobądź tytuł FIFA Night co najmniej trzema różnymi drużynami.","category":"teams"},
+            {"key":"big_jump","icon":"💸","name":"Wielki skok","desc":"Zakończ jeden turniej FIFA Night z wynikiem finansowym co najmniej +200 zł netto.","category":"finance"},
+            {"key":"return_to_throne","icon":"👑","name":"Powrót na tron","desc":"Po wcześniejszym mistrzostwie wróć po tytuł po co najmniej pięciu swoich kolejnych FIFA Night bez mistrzostwa.","category":"tournament"},
+            {"key":"club_legend","icon":"🏛️","name":"Klubowa legenda","desc":"Zdobądź trzy tytuły FIFA Night tym samym klubem.","category":"teams"},
+            {"key":"one_man_army","icon":"🦸","name":"One Man Army","desc":"Wygraj mecz, zdobywając minimum 3 gole, wszystkie autorstwa jednego piłkarza Twojej drużyny.","category":"events"},
+            {"key":"gas_to_floor","icon":"🔥","name":"Gaz do dechy","desc":"Zdobądź co najmniej 3 gole w pięciu kolejnych oficjalnych meczach.","category":"progress"},
+            {"key":"five_pack","icon":"✋","name":"Pięciopak","desc":"Niech jeden piłkarz Twojej drużyny zdobędzie 5 goli w jednym oficjalnym meczu.","category":"events"},
+            {"key":"miss_to_hero","icon":"🚫","name":"Z pudła do bohatera","desc":"Ten sam piłkarz nie wykorzystuje karnego, a później zdobywa gola na wagę zwycięstwa.","category":"events"},
         ]
 
     def achievement_center(self) -> dict:
@@ -5620,7 +5644,7 @@ class Database:
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
             names={str(r["id"]):str(r["name"]) for r in self._fetchall(conn,"SELECT id,name FROM players")}
-            events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,t.game_version,fm.format_key
+            events=self._fetchall(conn,"""SELECT t.id,t.status,t.champion_player_id,t.completed_at,t.created_at,t.game_version,fm.format_key,fm.extra_json
                 FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
                 WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
                 ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id""")
@@ -5635,6 +5659,18 @@ class Database:
                 JOIN tournaments t ON t.id=me.tournament_id
                 WHERE t.is_test=0
                 ORDER BY me.tournament_id,me.match_no,me.event_order,me.id""")
+            summary_rows=self._fetchall(conn,"""SELECT ms.tournament_id,ms.match_no,ms.stats_json
+                FROM match_summary_stats ms
+                JOIN matches m ON m.tournament_id=ms.tournament_id AND m.match_no=ms.match_no
+                JOIN tournaments t ON t.id=m.tournament_id
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0
+                  AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'""")
+            final_rows=self._fetchall(conn,"""SELECT m.tournament_id,m.match_no,m.stage,m.home_player_id,m.away_player_id
+                FROM matches m JOIN tournaments t ON t.id=m.tournament_id
+                JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status='completed' AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                  AND m.home_score IS NOT NULL AND m.stage IN ('FINAL','RESET_FINAL')
+                ORDER BY COALESCE(t.completed_at,t.created_at),m.tournament_id,m.match_no""")
         detailed_by_match=defaultdict(list)
         for e in detailed_events:
             detailed_by_match[(str(e.get("tournament_id") or ""),int(e.get("match_no") or 0))].append(e)
@@ -5647,10 +5683,41 @@ class Database:
             if grp0:group_players[(tid0,grp0)].append(pid0)
         tournament_no={str(e["id"]):i+1 for i,e in enumerate(events)}
         event_by={str(e["id"]):e for e in events}
+        participants_by_tid=defaultdict(set)
+        for r in tps:participants_by_tid[str(r["tournament_id"])].add(str(r["player_id"]))
+        team_mode_by_tid={}
+        for e in events:
+            try:_extra=json.loads(e.get("extra_json") or "{}")
+            except Exception:_extra={}
+            team_mode_by_tid[str(e["id"])]=effective_team_mode(e.get("game_version"),_extra.get("team_mode") or "clubs")
+        summary_by_match={}
+        for row in summary_rows:
+            try:_stats=json.loads(row.get("stats_json") or "{}")
+            except Exception:_stats={}
+            if isinstance(_stats,dict) and bool(_stats.get("usable_for_awards")):
+                summary_by_match[(str(row.get("tournament_id") or ""),int(row.get("match_no") or 0))]=_stats
+        final_runner_by_tid={}
+        for row in final_rows:
+            tid0=str(row.get("tournament_id") or "");champ0=str((event_by.get(tid0) or {}).get("champion_player_id") or "")
+            if not champ0:continue
+            home0=str(row.get("home_player_id") or "");away0=str(row.get("away_player_id") or "")
+            if champ0 in {home0,away0}:
+                final_runner_by_tid[tid0]=away0 if home0==champ0 else home0
 
         unlocked=defaultdict(dict)
-        progress=defaultdict(lambda:{"wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,"pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,"title_streak":0,"max_title_streak":0,"max_elim_wins_tournament":0,"max_close_wins_tournament":0,"penalty_goals":0,"discipline_points":0,"max_comeback_deficit":0})
-        win_streak=defaultdict(int);clean_streak=defaultdict(int)
+        progress=defaultdict(lambda:{
+            "wins":0,"matches":0,"goals":0,"titles":0,"max_win_streak":0,"max_clean_streak":0,
+            "pen_wins":0,"win_teams":set(),"max_margin":0,"balance_cents":0,"max_balance_cents":0,"min_balance_cents":0,
+            "title_streak":0,"max_title_streak":0,"max_elim_wins_tournament":0,"max_close_wins_tournament":0,
+            "penalty_goals":0,"discipline_points":0,"max_comeback_deficit":0,
+            "max_three_goal_streak":0,"max_h2h_win_streak":0,"h2h_qualified_count":0,"h2h_beaten_qualified":0,
+            "max_lost_final_streak":0,"title_modes":set(),"title_teams":set(),"max_title_team_count":0,"max_title_drought":0,
+            "max_event_net_cents":0,"max_summary_xg":0.0,"max_summary_shots":0,"max_footballer_goals_match":0,
+        })
+        win_streak=defaultdict(int);clean_streak=defaultdict(int);three_goal_streak=defaultdict(int)
+        h2h_history=defaultdict(list);h2h_counts=defaultdict(int);h2h_wins=defaultdict(int);h2h_win_streak=defaultdict(int)
+        lost_final_streak=defaultdict(int);had_title=defaultdict(bool);title_drought=defaultdict(int)
+        title_team_counts=defaultdict(lambda:defaultdict(int))
 
         def award(pid,key,when="",tid=None,match_no=None,detail=""):
             pid=str(pid or "")
@@ -5658,6 +5725,12 @@ class Database:
             unlocked[pid][key]={"key":key,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
                                 "tournament_no":tournament_no.get(str(tid)) if tid else None,"match_no":int(match_no) if match_no is not None else None,
                                 "detail":str(detail or "")}
+
+        def _num(v):
+            try:
+                if v is None or isinstance(v,bool):return None
+                return float(v)
+            except Exception:return None
 
         # Match achievements in true chronological order.
         for m in matches:
@@ -5670,6 +5743,10 @@ class Database:
                 if not pid: continue
                 pr=progress[pid];pr["matches"]+=1
                 gf=(actual_hs if home else ass);ga=(ass if home else actual_hs);pr["goals"]+=gf
+                three_goal_streak[pid]=three_goal_streak[pid]+1 if gf>=3 else 0
+                pr["max_three_goal_streak"]=max(pr["max_three_goal_streak"],three_goal_streak[pid])
+                if three_goal_streak[pid]>=5:
+                    award(pid,"gas_to_floor",when,tid,no,"Co najmniej 3 gole w 5 kolejnych oficjalnych meczach")
                 if pr["matches"]==100: award(pid,"matches_100",when,tid,no,f"100. mecz: {m.get('home_name')} {hs}:{ass} {m.get('away_name')}")
                 if pr["goals"]>=100 and "goals_100" not in unlocked[pid]: award(pid,"goals_100",when,tid,no,f"Próg 100 goli przekroczony w meczu {m.get('home_name')} {hs}:{ass} {m.get('away_name')}")
                 result=self._result_for_player(m,pid)
@@ -5694,6 +5771,51 @@ class Database:
                 if clean_streak[pid]>=3: award(pid,"wall",when,tid,no,"3 czyste konta z rzędu")
                 if result=="W" and m.get("home_penalties") is not None and m.get("away_penalties") is not None:
                     pr["pen_wins"]+=1;award(pid,"ice_cold",when,tid,no,f"Karne {m.get('home_penalties')}:{m.get('away_penalties')}")
+
+            # H2H streak/history achievements are updated only by the two players'
+            # direct meetings. Matches against anybody else do not interrupt them.
+            home_pid=str(m.get("home_player_id") or "");away_pid=str(m.get("away_player_id") or "")
+            if home_pid and away_pid:
+                rh=self._result_for_player(m,home_pid)
+                for pid0,opp0,res0 in ((home_pid,away_pid,rh),(away_pid,home_pid,"L" if rh=="W" else ("W" if rh=="L" else "D"))):
+                    hk=(pid0,opp0);h2h_counts[hk]+=1
+                    if res0=="W":
+                        h2h_wins[hk]+=1;h2h_win_streak[hk]+=1
+                    else:
+                        h2h_win_streak[hk]=0
+                    progress[pid0]["max_h2h_win_streak"]=max(progress[pid0]["max_h2h_win_streak"],h2h_win_streak[hk])
+                    if h2h_win_streak[hk]>=5:
+                        award(pid0,"nemesis_h2h",when,tid,no,f"5 zwycięstw z rzędu z {names.get(opp0,'rywalem')}")
+                    h2h_history[hk].append(res0)
+                    if len(h2h_history[hk])>6:h2h_history[hk]=h2h_history[hk][-6:]
+                    if h2h_history[hk]==["L","L","L","W","W","W"]:
+                        award(pid0,"curse_breaker",when,tid,no,f"Od 0:3 do trzech kolejnych zwycięstw z {names.get(opp0,'rywalem')}")
+                for pid0 in (home_pid,away_pid):
+                    qualified=[opp0 for (owner,opp0),count in h2h_counts.items() if owner==pid0 and count>=3]
+                    beaten=[opp0 for opp0 in qualified if h2h_wins[(pid0,opp0)]>0]
+                    progress[pid0]["h2h_qualified_count"]=len(qualified);progress[pid0]["h2h_beaten_qualified"]=len(beaten)
+                    if len(qualified)>=4 and len(beaten)==len(qualified):
+                        award(pid0,"conquer_everyone",when,tid,no,f"Pokonani wszyscy kwalifikujący się rywale ({len(qualified)})")
+
+            # Summary badges use only trusted HOME/AWAY-mapped snapshots. Missing old
+            # Summary rows stay neutral and never count as zeros.
+            stats=summary_by_match.get((tid,no))
+            if isinstance(stats,dict):
+                shome=stats.get("home") or {};saway=stats.get("away") or {}
+                for pid0,is_home in ((home_pid,True),(away_pid,False)):
+                    if not pid0:continue
+                    mine,opp=(shome,saway) if is_home else (saway,shome)
+                    xgf=_num(mine.get("expected_goals"));xga=_num(opp.get("expected_goals"))
+                    shots=_num(mine.get("shots"));opp_shots=_num(opp.get("shots"));pos=_num(mine.get("possession"))
+                    if xgf is not None:progress[pid0]["max_summary_xg"]=max(progress[pid0]["max_summary_xg"],xgf)
+                    if shots is not None:progress[pid0]["max_summary_shots"]=max(progress[pid0]["max_summary_shots"],int(shots))
+                    if xgf is not None and shots is not None and xgf>=3.0 and shots>=15:
+                        award(pid0,"siege",when,tid,no,f"{int(shots)} strzałów • xG {xgf:.2f}")
+                    if self._result_for_player(m,pid0)=="W" and xgf is not None and xga is not None:
+                        if xga-xgf>=1.5:
+                            award(pid0,"century_heist",when,tid,no,f"Wygrana mimo xG {xgf:.2f}:{xga:.2f}")
+                        if pos is not None and shots is not None and opp_shots is not None and pos>=60.0 and xgf-xga>=1.0 and shots-opp_shots>=5:
+                            award(pid0,"full_control",when,tid,no,f"{pos:.0f}% posiadania • xG +{xgf-xga:.2f} • strzały {int(shots)}:{int(opp_shots)}")
 
             # New-era badges based on the confirmed EA FC event timeline. These are
             # never inferred for older/manual matches that have no detailed events.
@@ -5722,6 +5844,11 @@ class Database:
                 # W dziesiątkę raźniej: a red card for the eventual match winner.
                 if winner and any(str(e.get("event_type") or "")=="red_card" and str(e.get("actor_player_id") or "")==winner for e in evs):
                     award(winner,"ten_men",when,tid,no,"Zwycięstwo mimo czerwonej kartki")
+                if winner and any(str(e.get("event_type") or "")=="penalty_miss" and str(e.get("actor_player_id") or "")==winner for e in evs):
+                    award(winner,"missed_penalty_win",when,tid,no,"Zwycięstwo mimo niewykorzystanego karnego")
+                if winner and any(str(e.get("event_type") or "")=="own_goal" and not int(e.get("synthetic_de") or 0)
+                                  and str(e.get("actor_player_id") or "")==winner for e in evs):
+                    award(winner,"own_goal_recovery",when,tid,no,"Zwycięstwo mimo samobója własnej drużyny")
 
                 # Goal-sequence badges require a complete REAL goal timeline. The
                 # synthetic +1 in a DE Grand Final is excluded from achievements.
@@ -5773,6 +5900,24 @@ class Database:
                                           and int(x.get("event_order") or 10**9)<win_order),None)
                                 if sub:
                                     award(actual_winner,"joker",when,tid,no,f"{scorer} wszedł z ławki i zdobył gola na wagę zwycięstwa")
+                                miss=next((x for x in evs if str(x.get("event_type") or "")=="penalty_miss"
+                                           and str(x.get("actor_player_id") or "")==actual_winner
+                                           and self._norm_scorer_name(str(x.get("footballer_name") or ""))==scorer_norm
+                                           and int(x.get("event_order") or 10**9)<win_order),None)
+                                if miss:
+                                    award(actual_winner,"miss_to_hero",when,tid,no,f"{scorer}: pudło z karnego, potem zwycięski gol")
+
+                    # One Man Army uses the official match winner, so a win after a
+                    # shoot-out can qualify as long as all regulation/ET goals were
+                    # scored by one real footballer. Shoot-out kicks are never in this timeline.
+                    if winner:
+                        winner_goals=[x for x in known_goals if str(x.get("credited_player_id") or "")==winner]
+                        if len(winner_goals)>=3 and all(str(x.get("event_type") or "") in {"normal_goal","penalty_goal"} for x in winner_goals):
+                            scorers=[(" ".join(str(x.get("footballer_name") or "").strip().split()),self._norm_scorer_name(str(x.get("footballer_name") or ""))) for x in winner_goals]
+                            norms={norm for _name,norm in scorers if norm}
+                            if len(norms)==1 and len(scorers)==len(winner_goals) and all(norm for _name,norm in scorers):
+                                hero=scorers[0][0]
+                                award(winner,"one_man_army",when,tid,no,f"{hero}: wszystkie {len(winner_goals)} goli zwycięzcy")
 
                     # Hat-trick Express can be earned by either participant, even if
                     # they do not win the match. Own goals are never scorer goals.
@@ -5790,6 +5935,9 @@ class Database:
                             scorer_goals[(pid0,norm,scorer)].append((minute+max(stoppage,0),e))
                     for (pid0,_norm,scorer),seq in scorer_goals.items():
                         seq.sort(key=lambda x:(x[0],int(x[1].get("event_order") or 10**9)))
+                        progress[pid0]["max_footballer_goals_match"]=max(progress[pid0]["max_footballer_goals_match"],len(seq))
+                        if len(seq)>=5:
+                            award(pid0,"five_pack",when,tid,no,f"{scorer}: {len(seq)} goli w jednym meczu")
                         for i in range(2,len(seq)):
                             span=seq[i][0]-seq[i-2][0]
                             if span<=15:
@@ -5855,6 +6003,30 @@ class Database:
         previous_champ=None
         for e in completed_events:
             tid=str(e["id"]);champ=str(e.get("champion_player_id") or "");when=str(e.get("completed_at") or e.get("created_at") or "")
+            participants=set(participants_by_tid.get(tid) or set())
+            runner=str(final_runner_by_tid.get(tid) or "")
+
+            # Career arcs are based only on FIFA Nights the player actually entered.
+            # A non-final appearance does not reset a streak of lost finals, while a
+            # championship does. The return-to-throne drought counts every completed
+            # entered tournament after a player's previous title.
+            for pid0 in participants:
+                if champ and pid0==champ:
+                    if had_title[pid0] and title_drought[pid0]>=5:
+                        award(pid0,"return_to_throne",when,tid,None,f"Powrót po {title_drought[pid0]} swoich turniejach bez tytułu")
+                    progress[pid0]["max_title_drought"]=max(progress[pid0]["max_title_drought"],title_drought[pid0])
+                    had_title[pid0]=True;title_drought[pid0]=0
+                elif had_title[pid0]:
+                    title_drought[pid0]+=1
+                    progress[pid0]["max_title_drought"]=max(progress[pid0]["max_title_drought"],title_drought[pid0])
+            if champ:
+                lost_final_streak[champ]=0
+            if runner and runner!=champ:
+                lost_final_streak[runner]+=1
+                progress[runner]["max_lost_final_streak"]=max(progress[runner]["max_lost_final_streak"],lost_final_streak[runner])
+                if lost_final_streak[runner]>=3:
+                    award(runner,"eternal_finalist",when,tid,None,"Trzeci przegrany finał bez tytułu pomiędzy")
+
             if not champ:
                 previous_champ=None;continue
             pr=progress[champ];pr["titles"]+=1
@@ -5868,8 +6040,20 @@ class Database:
             if pr["title_streak"]>=2: award(champ,"back_to_back",when,tid,None,"Dwa tytuły z rzędu")
             previous_champ=champ
             team=" ".join(str(team_by.get((tid,champ),"") or "").strip().split())
-            version=normalize_game_version(e.get("game_version"))
-            if self._is_wildcard_team(team,version):
+            version=normalize_game_version(e.get("game_version"));mode=team_mode_by_tid.get(tid,"clubs")
+            pr["title_modes"].add(mode)
+            if {"clubs","national"}.issubset(pr["title_modes"]):
+                award(champ,"double_crown",when,tid,None,"Tytuł klubem i reprezentacją")
+            if team:
+                nt=self._norm_team_name(team);pr["title_teams"].add(nt)
+                if len(pr["title_teams"])>=3:
+                    award(champ,"many_colors_champion",when,tid,None,f"Tytuły trzema różnymi drużynami ({len(pr['title_teams'])})")
+                if mode=="clubs":
+                    title_team_counts[champ][nt]+=1
+                    pr["max_title_team_count"]=max(pr["max_title_team_count"],title_team_counts[champ][nt])
+                    if title_team_counts[champ][nt]>=3:
+                        award(champ,"club_legend",when,tid,None,f"3. tytuł klubem {team}")
+            if self._is_wildcard_team(team,version,mode):
                 award(champ,"wild_one",when,tid,None,f"Tytuł Wild Cardem: {team}")
             own=[m for m in matches if str(m.get("tournament_id"))==tid and champ in (str(m.get("home_player_id") or ""),str(m.get("away_player_id") or ""))]
             if own:
@@ -5924,8 +6108,13 @@ class Database:
             winner=str(e.get("prize_winner_player_id") or "");prize=int(e.get("prize_cents") or 0)
             if winner and prize>0:balances[winner]+=prize
             touched=set(str(x) for x in (e.get("cash_player_ids") or []))|({winner} if winner else set())
+            cash_ids={str(x) for x in (e.get("cash_player_ids") or [])}
             for pid in touched:
                 pr=progress[pid];pr["balance_cents"]=balances[pid];pr["max_balance_cents"]=max(pr["max_balance_cents"],balances[pid]);pr["min_balance_cents"]=min(pr["min_balance_cents"],balances[pid])
+                event_net=(-stake if pid in cash_ids else 0)+(prize if pid==winner else 0)
+                pr["max_event_net_cents"]=max(pr["max_event_net_cents"],event_net)
+                if str(e.get("format_key") or "")!="duel1v1" and event_net>=20000:
+                    award(pid,"big_jump",when,tid,None,f"{event_net/100:.2f} zł netto w jednym turnieju")
                 if balances[pid]>=25000:award(pid,"shark",when,tid,None,f"Bilans osiągnął {balances[pid]/100:.2f} zł")
                 if balances[pid]<=-25000:award(pid,"sponsor",when,tid,None,f"Bilans spadł do {balances[pid]/100:.2f} zł")
 
@@ -5933,6 +6122,7 @@ class Database:
         participant_ids=set()
         for m in matches:
             participant_ids|={str(m.get("home_player_id") or ""),str(m.get("away_player_id") or "")}
+        participant_ids|={str(r.get("player_id") or "") for r in tps}
         participant_ids.discard("")
         out=[]
         cat_by={x["key"]:x for x in catalog}
@@ -5977,6 +6167,24 @@ class Database:
                     elif k=="champion_hunter":pg="czeka na pokonanie obrońcy tytułu"
                     elif k=="last_ticket":pg="czeka na mistrzostwo po awansie z ostatniego premiowanego miejsca"
                     elif k=="rebirth":pg="czeka na tytuł mimo porażki w grupie lub lidze"
+                    elif k=="full_control":pg="czeka na mecz pod pełną kontrolą"
+                    elif k=="century_heist":pg="czeka na wielką kradzież wyniku"
+                    elif k=="siege":pg=f"rekord: {pr['max_summary_shots']} strzałów • xG {pr['max_summary_xg']:.2f}"
+                    elif k=="missed_penalty_win":pg="czeka na zwycięstwo mimo pudła z karnego"
+                    elif k=="own_goal_recovery":pg="czeka na zwycięstwo mimo własnego samobója"
+                    elif k=="eternal_finalist":pg=f"najlepsza seria przegranych finałów: {pr['max_lost_final_streak']}/3"
+                    elif k=="nemesis_h2h":pg=f"najlepsza seria H2H: {pr['max_h2h_win_streak']}/5"
+                    elif k=="curse_breaker":pg="czeka na serię 3 porażek i 3 zwycięstw z tym samym rywalem"
+                    elif k=="conquer_everyone":pg=f"pokonani kwalifikujący się rywale: {pr['h2h_beaten_qualified']}/{max(pr['h2h_qualified_count'],4)}"
+                    elif k=="double_crown":pg=f"kluby: {'✓' if 'clubs' in pr['title_modes'] else '—'} • reprezentacje: {'✓' if 'national' in pr['title_modes'] else '—'}"
+                    elif k=="many_colors_champion":pg=f"{min(len(pr['title_teams']),3)}/3 mistrzowskich drużyn"
+                    elif k=="big_jump":pg=f"najlepszy turniej: {pr['max_event_net_cents']/100:.2f} zł netto / +200 zł"
+                    elif k=="return_to_throne":pg=f"najdłuższa przerwa po tytule: {pr['max_title_drought']}/5 turniejów"
+                    elif k=="club_legend":pg=f"najwięcej tytułów jednym klubem: {pr['max_title_team_count']}/3"
+                    elif k=="one_man_army":pg=f"najwięcej goli jednego piłkarza w meczu: {pr['max_footballer_goals_match']}"
+                    elif k=="gas_to_floor":pg=f"najlepsza seria: {pr['max_three_goal_streak']}/5 meczów z 3+ golami"
+                    elif k=="five_pack":pg=f"rekord jednego piłkarza: {pr['max_footballer_goals_match']}/5 goli"
+                    elif k=="miss_to_hero":pg="czeka na bohatera po niewykorzystanym karnym"
                     else:pg="—"
                     locked.append({**c,"progress":pg})
             earned.sort(key=lambda x:(x.get("earned_at") or "",list(cat_by).index(x["key"])))

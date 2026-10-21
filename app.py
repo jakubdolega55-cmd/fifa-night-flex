@@ -2760,23 +2760,37 @@ def render_stats(t=None,readonly:bool=False):
             if awards_won:
                 st.markdown("**FIFA Night Awards:** " + " • ".join(f"{x['title']} {x['year']}" for x in awards_won))
             badges=pa_profile.get("unlocked") or []
+            badge_group_order=[
+                ("progress","📈 Progres i serie"),("match","🎮 Mecz"),("events","🧩 Events"),("summary","📊 Summary"),
+                ("h2h","⚔️ H2H"),("tournament","🏆 Turnieje i kariera"),("teams","👕 Drużyny"),("finance","💰 Finanse"),
+            ]
+            def _render_badge_catalog(catalog,unlocked_keys,locked_by):
+                known={key for key,_ in badge_group_order}
+                groups=badge_group_order+[("other","🏅 Pozostałe")]
+                for group_key,label in groups:
+                    rows=[]
+                    for c in catalog:
+                        cgroup=str(c.get("category") or "other")
+                        if cgroup not in known:cgroup="other"
+                        if cgroup!=group_key:continue
+                        key=str(c.get("key") or "")
+                        if key in unlocked_keys:
+                            status="✅ Zdobyta";progress_value="—"
+                        else:
+                            status="🔒 Do zdobycia";progress_value=(locked_by.get(key) or {}).get("progress") or "—"
+                        rows.append({"Odznaka":f"{c.get('icon','🏅')} {c.get('name','')}","Jak zdobyć":c.get("desc") or "—","Status":status,"Postęp":progress_value})
+                    if rows:
+                        st.markdown(f"**{label}**")
+                        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
             if badges:
                 bh1,bh2=st.columns([8,2])
                 with bh1: st.markdown("#### 🏅 Odznaki")
                 with bh2:
                     with st.popover("❔ Jak zdobywać",use_container_width=True):
                         st.markdown("**Wszystkie odznaki i warunki zdobycia**")
-                        all_badges=[]
                         unlocked_keys={str(x.get("key")) for x in badges}
                         locked_by={str(x.get("key")):x for x in (pa_profile.get("locked") or [])}
-                        for c in (ach.get("catalog") or []):
-                            key=str(c.get("key") or "")
-                            if key in unlocked_keys:
-                                status="✅ Zdobyta";progress="—"
-                            else:
-                                status="🔒 Do zdobycia";progress=(locked_by.get(key) or {}).get("progress") or "—"
-                            all_badges.append({"Odznaka":f"{c.get('icon','🏅')} {c.get('name','')}","Jak zdobyć":c.get("desc") or "—","Status":status,"Postęp":progress})
-                        st.dataframe(pd.DataFrame(all_badges),hide_index=True,use_container_width=True)
+                        _render_badge_catalog(ach.get("catalog") or [],unlocked_keys,locked_by)
                 bcols=st.columns(2)
                 for i,a in enumerate(badges):
                     with bcols[i%2]:
@@ -2795,7 +2809,8 @@ def render_stats(t=None,readonly:bool=False):
                 with bh2:
                     with st.popover("❔ Jak zdobywać",use_container_width=True):
                         st.markdown("**Wszystkie odznaki i warunki zdobycia**")
-                        st.dataframe(pd.DataFrame([{"Odznaka":f"{c.get('icon','🏅')} {c.get('name','')}","Jak zdobyć":c.get("desc") or "—","Status":"🔒 Do zdobycia"} for c in (ach.get("catalog") or [])]),hide_index=True,use_container_width=True)
+                        locked_by={str(x.get("key")):x for x in (pa_profile.get("locked") or [])}
+                        _render_badge_catalog(ach.get("catalog") or [],set(),locked_by)
             locked_badges=pa_profile.get("locked") or []
             if locked_badges:
                 with st.expander("🔒 Odznaki do zdobycia",expanded=False):
