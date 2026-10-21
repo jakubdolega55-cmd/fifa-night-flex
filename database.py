@@ -4148,7 +4148,13 @@ class Database:
         # which require minutes or the exact order of goals.
         detailed_records={
             "fastest_goal":None,"latest_goal":None,"fastest_hat_trick":None,
-            "biggest_comeback":None,"biggest_blown_lead":None,
+            # ``biggest_turnaround`` is the public record.  The two legacy keys
+            # remain populated below for older clients, but the UI shows this as
+            # one event: one player came back from -N while the opponent blew +N.
+            "biggest_turnaround":None,"biggest_comeback":None,"biggest_blown_lead":None,
+            # Summary-era records. Older matches without a usable Summary stay
+            # neutral and are never treated as zero.
+            "max_xg":None,"max_possession":None,
         }
         match_lookup={(str(m.get("tournament_id")),int(m.get("match_no") or 0)):m for m in matches}
         if tids:
@@ -4184,6 +4190,41 @@ class Database:
 
         def match_desc(m):
             return f"{m.get('home_name') or '?'} {int(m.get('home_score') or 0)}:{int(m.get('away_score') or 0)} {m.get('away_name') or '?'}"
+
+        # Summary records: maximum single-player possession and xG in one match.
+        # They are reconstructed from all usable stored summaries, so adding the
+        # record later can still recognise an older match if its Summary exists.
+        if tids:
+            summary_rows=self._fetchall(conn,f"""SELECT ms.tournament_id,ms.match_no,ms.stats_json
+                FROM match_summary_stats ms
+                WHERE ms.tournament_id IN ({qmarks})
+                ORDER BY ms.tournament_id,ms.match_no""",tuple(tids))
+        else:
+            summary_rows=[]
+        best_xg=None;best_possession=None
+        for row in summary_rows:
+            mk=(str(row.get("tournament_id") or ""),int(row.get("match_no") or 0))
+            m=match_lookup.get(mk)
+            if not m:continue
+            try: stats=json.loads(row.get("stats_json") or "{}")
+            except Exception: stats={}
+            if not isinstance(stats,dict) or not bool(stats.get("usable_for_awards")):continue
+            for side,pid_key in (("home","home_player_id"),("away","away_player_id")):
+                side_stats=stats.get(side) or {}
+                if not isinstance(side_stats,dict):continue
+                pid=str(m.get(pid_key) or "")
+                if not pid:continue
+                try:xg=float(side_stats.get("expected_goals")) if side_stats.get("expected_goals") is not None else None
+                except Exception:xg=None
+                try:pos=float(side_stats.get("possession")) if side_stats.get("possession") is not None else None
+                except Exception:pos=None
+                base={"player_id":pid,"player_name":players.get(pid,"?"),"match":match_desc(m)}
+                if xg is not None and (best_xg is None or xg>float(best_xg.get("value") or 0.0)):
+                    best_xg={**base,"value":round(xg,2)}
+                if pos is not None and (best_possession is None or pos>float(best_possession.get("value") or 0.0)):
+                    best_possession={**base,"value":round(pos,1)}
+        detailed_records["max_xg"]=best_xg
+        detailed_records["max_possession"]=best_possession
 
         # Fastest/latest goal and fastest hat-trick: only real goals credited to a
         # footballer. Own goals and the technical DE advantage are not individual
@@ -4274,6 +4315,22 @@ class Database:
                 if best_blown is None or max_loser_lead>int(best_blown.get("lead") or 0):best_blown=rec
         detailed_records["biggest_comeback"]=best_comeback
         detailed_records["biggest_blown_lead"]=best_blown
+        if best_comeback:
+            detailed_records["biggest_turnaround"]={
+                "deficit":int(best_comeback.get("deficit") or 0),
+                "winner_player_id":best_comeback.get("player_id"),
+                "winner_name":best_comeback.get("player_name"),
+                "loser_name":best_comeback.get("opponent_name"),
+                "match":best_comeback.get("match"),
+            }
+        elif best_blown:
+            detailed_records["biggest_turnaround"]={
+                "deficit":int(best_blown.get("lead") or 0),
+                "winner_name":best_blown.get("opponent_name"),
+                "loser_player_id":best_blown.get("player_id"),
+                "loser_name":best_blown.get("player_name"),
+                "match":best_blown.get("match"),
+            }
 
         return {
             "most_titles":most_titles,"most_finals":most_finals,"most_wins":most_wins,"most_goals":most_goals,

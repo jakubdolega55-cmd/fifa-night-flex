@@ -2666,12 +2666,15 @@ def render_stats(t=None,readonly:bool=False):
             ht=dr.get("fastest_hat_trick")
             if ht:
                 detailed_rows.append({"Rekord":"🎩 Najszybszy hat-trick","Wynik":f"{ht.get('footballer')} ({ht.get('player_name')}) — {ht.get('duration')} min ({ht.get('from_label')}′ → {ht.get('to_label')}′) • {ht.get('match')}"})
-            cb=dr.get("biggest_comeback")
-            if cb:
-                detailed_rows.append({"Rekord":"🔄 Największy comeback","Wynik":f"{cb.get('player_name')} — odrobione {cb.get('deficit')} gole straty • {cb.get('match')}"})
-            bl=dr.get("biggest_blown_lead")
-            if bl:
-                detailed_rows.append({"Rekord":"💔 Największe wypuszczone prowadzenie","Wynik":f"{bl.get('player_name')} — prowadzenie {bl.get('lead')} golami • {bl.get('match')}"})
+            mp=dr.get("max_possession")
+            if mp:
+                detailed_rows.append({"Rekord":"🧲 Najwyższe posiadanie w meczu","Wynik":f"{mp.get('player_name')} — {float(mp.get('value') or 0):.1f}% • {mp.get('match')}"})
+            mx=dr.get("max_xg")
+            if mx:
+                detailed_rows.append({"Rekord":"📊 Najwyższe xG w meczu","Wynik":f"{mx.get('player_name')} — {float(mx.get('value') or 0):.2f} xG • {mx.get('match')}"})
+            ta=dr.get("biggest_turnaround")
+            if ta:
+                detailed_rows.append({"Rekord":"🔄 Największy zwrot akcji","Wynik":f"{ta.get('winner_name')} odrobił -{ta.get('deficit')} • {ta.get('loser_name')} wypuścił +{ta.get('deficit')} • {ta.get('match')}"})
             if detailed_rows:
                 st.markdown("### ⚽ Rekordy z przebiegu meczów")
                 st.caption("Liczone tylko z nowych meczów, dla których zapisaliśmy szczegółową oś wydarzeń z minutami. Stare mecze nadal liczą się do rekordów ogólnych powyżej.")
