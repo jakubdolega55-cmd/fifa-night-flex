@@ -5787,7 +5787,7 @@ class Database:
             home_pid=str(m.get("home_player_id") or "");away_pid=str(m.get("away_player_id") or "")
             if pid not in {home_pid,away_pid}:return ""
             home=(pid==home_pid)
-            fmt=str((event_by.get(tid) or {}).get("format_key") or "")
+            fmt=str(m.get("format_key") or (event_by.get(tid) or {}).get("format_key") or "")
             hs,ass=self._stats_score_pair(m,fmt)
             gf,ga=(hs,ass) if home else (ass,hs)
             opp=(m.get("away_name") if home else m.get("home_name")) or names.get(away_pid if home else home_pid,"?")
@@ -5798,12 +5798,34 @@ class Database:
                 score+=f" (k. {pf}:{pa})"
             return f"vs {opp} • {score}"
 
+        def event_context(tid,match_no=None):
+            if not tid:return ""
+            tid=str(tid)
+            no=tournament_no.get(tid)
+            if no:return f"FIFA Night #{no}"
+            if match_no is not None:
+                m=match_by.get((tid,int(match_no))) or {}
+                fmt=str(m.get("format_key") or "")
+                if fmt=="duel1v1":return "1 vs 1"
+                if fmt:return "FIFA Night (w toku)"
+            return ""
+
+        def team_context(pid,tid,match_no=None):
+            if not pid or not tid:return ""
+            pid=str(pid);tid=str(tid)
+            if match_no is not None:
+                m=match_by.get((tid,int(match_no))) or {}
+                if str(m.get("home_player_id") or "")==pid:return str(m.get("home_team") or "").strip()
+                if str(m.get("away_player_id") or "")==pid:return str(m.get("away_team") or "").strip()
+            return str(team_by.get((tid,pid),"") or "").strip()
+
         def award(pid,key,when="",tid=None,match_no=None,detail=""):
             pid=str(pid or "")
             if not pid or key in unlocked[pid]: return
             unlocked[pid][key]={"key":key,"earned_at":str(when or ""),"tournament_id":str(tid) if tid else None,
                                 "tournament_no":tournament_no.get(str(tid)) if tid else None,"match_no":int(match_no) if match_no is not None else None,
-                                "match_context":match_context(pid,tid,match_no),"detail":str(detail or "")}
+                                "event_context":event_context(tid,match_no),"match_context":match_context(pid,tid,match_no),
+                                "team_context":team_context(pid,tid,match_no),"detail":str(detail or "")}
 
         def _num(v):
             try:
@@ -5831,14 +5853,14 @@ class Database:
                 result=self._result_for_player(m,pid)
                 if result=="W":
                     pr["wins"]+=1;win_streak[pid]+=1;clean_streak[pid]=clean_streak[pid]+1 if ga==0 else 0
-                    if pr["wins"]==1: award(pid,"first_blood",when,tid,no,f"{m.get('home_name')} {hs}:{ass} {m.get('away_name')}")
+                    if pr["wins"]==1: award(pid,"first_blood",when,tid,no,"")
                     if pr["wins"]==10: award(pid,"wins_10",when,tid,no,"10. oficjalne zwycięstwo")
                     if pr["wins"]==50: award(pid,"wins_50",when,tid,no,"50. oficjalne zwycięstwo")
                     if win_streak[pid]>=5: award(pid,"on_fire",when,tid,no,"5 zwycięstw z rzędu")
                     if win_streak[pid]>=10: award(pid,"unstoppable",when,tid,no,"10 zwycięstw z rzędu")
                     margin=gf-ga;pr["max_margin"]=max(pr["max_margin"],margin)
-                    if margin>=5: award(pid,"massacre",when,tid,no,f"Wygrana {gf}:{ga}")
-                    if margin==1 and gf+ga>=7: award(pid,"thriller",when,tid,no,f"Wygrana {gf}:{ga}")
+                    if margin>=5: award(pid,"massacre",when,tid,no,"")
+                    if margin==1 and gf+ga>=7: award(pid,"thriller",when,tid,no,"")
                     team=(m.get("home_team") if home else m.get("away_team")) or ""
                     if str(team).strip():
                         pr["win_teams"].add(self._norm_team_name(str(team)))
@@ -5849,7 +5871,7 @@ class Database:
                 pr["max_win_streak"]=max(pr["max_win_streak"],win_streak[pid]);pr["max_clean_streak"]=max(pr["max_clean_streak"],clean_streak[pid])
                 if clean_streak[pid]>=3: award(pid,"wall",when,tid,no,"3 czyste konta z rzędu")
                 if result=="W" and m.get("home_penalties") is not None and m.get("away_penalties") is not None:
-                    pr["pen_wins"]+=1;award(pid,"ice_cold",when,tid,no,f"Karne {m.get('home_penalties')}:{m.get('away_penalties')}")
+                    pr["pen_wins"]+=1;award(pid,"ice_cold",when,tid,no,"")
 
             # H2H streak/history achievements are updated only by the two players'
             # direct meetings. Matches against anybody else do not interrupt them.

@@ -2800,10 +2800,10 @@ def render_stats(t=None,readonly:bool=False):
                         with st.expander(f"{a.get('icon','🏅')} {a.get('name','Odznaka')}",expanded=False):
                             st.write(a.get("desc") or "—")
                             date=str(a.get("earned_at") or "")[:10] or "—"
-                            where=f"FIFA Night #{a.get('tournament_no')}" if a.get("tournament_no") else "oficjalny mecz"
-                            if a.get("match_no") is not None:where+=f" • mecz {a.get('match_no')}"
-                            st.caption(f"Zdobyta: {date} • {where}")
+                            where=str(a.get("event_context") or "").strip()
+                            st.caption(f"Zdobyta: {date}"+(f" • {where}" if where else ""))
                             if a.get("match_context"):st.caption(f"Mecz: {a.get('match_context')}")
+                            if a.get("team_context"):st.caption(f"Drużyna: {a.get('team_context')}")
                             if a.get("detail"):st.caption(str(a.get("detail")))
             else:
                 bh1,bh2=st.columns([8,2])
