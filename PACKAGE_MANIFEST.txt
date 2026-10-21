@@ -1,0 +1,28 @@
+FIFA NIGHT FLEX 1.1.3 — R26 handoff package
+Created: 2026-10-21
+Android versionCode: 15
+Base: R25 Advanced Stats + Summary classifications
+Current: R26 classification cleanup after real UI review
+Next task: design Summary-based badges/records/curiosities separately from classifications and Gala
+
+R26 key changes:
+- remove Marnotrawca from main classifications
+- keep Advanced Stats unchanged
+- keep 10 main classifications
+- public classification descriptions are general/non-technical; formulas and thresholds stay internal
+
+Key files:
+app.py
+database.py
+logic.py
+mobile_api.py
+ui.py
+export_utils.py
+mobile/app.json
+mobile/src/export.ts
+mobile/src/FifaScreen.tsx
+mobile/src/StatsScreen.tsx
+mobile/src/AwardsScreen.tsx
+tests/summary_classifications_r26_smoke.py
+CHECKPOINT_2026-10-21_REMOVE_WASTEFUL_R26.md
+HANDOFF_FIFA_NIGHT_2026-10-21_R26.md

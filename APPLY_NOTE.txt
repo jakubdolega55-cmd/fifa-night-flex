@@ -1,0 +1,11 @@
+R26 — CLASSIFICATIONS CLEANUP
+Base: R25 full handoff package.
+
+Apply/replace the included files keeping paths unchanged.
+Main changes:
+- remove Marnotrawca from main classifications,
+- keep Advanced Stats unchanged,
+- simplify all public classification descriptions so they explain only the idea, not formulas/thresholds/minimum samples,
+- refresh classification intro copy in PWA/APK and Streamlit.
+
+Android versionCode remains 15.

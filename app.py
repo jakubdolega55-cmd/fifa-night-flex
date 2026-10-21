@@ -3082,7 +3082,6 @@ AWARD_QUIPS={
     "match_year":"Ten mecz jeszcze długo będzie wracał przy stole.",
     "nerve_king":"U niego spokojnie jest dopiero po ostatnim gwizdku.",
     "clinical":"Jedna sytuacja czasem wystarcza bardziej niż pięć.",
-    "wasteful":"xG było. Goli już trochę mniej.",
     "possession_king":"Piłka lubi być przy jego nodze.",
     "dominator":"Wynik wynikiem, ale przebieg meczu też ma pamięć.",
     "match_thief":"Statystyki mówią jedno. Tablica wyników drugie.",
@@ -3097,7 +3096,7 @@ def render_awards(readonly:bool=False):
     if section=="🏆 Awards":
         st.info("🏅 TOP 5 układają wyniki. 🏆 Laureata wybiera organizator. VAR-u, komisji odwoławczej i protestów po ceremonii nie przewidziano 😎 Kandydaci zmieniają się razem z sezonem.")
     else:
-        st.info("🎯 Tu zbieramy dodatkowe klasyfikacje sezonu — bez statuetek i bez napinki. Te oparte na kartkach, karnych i przebiegu meczu korzystają tylko ze spotkań zapisanych ze szczegółami.")
+        st.info("🎯 Tu zbieramy dodatkowe klasyfikacje sezonu — bez statuetek i bez napinki. Pokazują różne style gry, specjalności i nietypowe cechy zawodników.")
     year=datetime.now().year
     season_info=db.current_awards_season();season_no=int(season_info.get("season_no") or 1);scope_key=f"{year}_s{season_no}"
     started_label=fmt_history_datetime(season_info.get("started_at")) if season_info.get("started_at") else "—"

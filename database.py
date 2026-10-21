@@ -76,7 +76,7 @@ AWARD_PRIORITY_GROUPS = [
 AWARD_DISPLAY_ORDER = [key for _, _, keys in AWARD_PRIORITY_GROUPS for key in keys]
 CLASSIFICATION_DISPLAY_ORDER = [
     "duel", "wildcards", "regular", "sharpest", "first_goals", "nerve_king",
-    "clinical", "wasteful", "possession_king", "dominator", "match_thief",
+    "clinical", "possession_king", "dominator", "match_thief",
 ]
 DIRECT_PLAYER_AWARD_KEYS = {
     "player_year", "offensive", "defense", "clutch", "comeback_king", "late_king",
@@ -7643,7 +7643,7 @@ class Database:
             (v["wc_w"]/v["wc_m"]*100)+((v["wc_gf"]-v["wc_ga"])/v["wc_m"])*5+v["wc_titles"]*18+v["wc_finals"]*7,
             f"WC: {v['wc_w']}/{v['wc_m']} W • bilans {v['wc_gf']}:{v['wc_ga']} • {v['wc_finals']} finał(y) WC • {v['wc_titles']} tytuł(y) WC"
         ) for pid,v in ps.items() if v["wc_m"]>=3]
-        add("wildcards","🎲 Król Wild Cardów","Wild Card miał być niewiadomą. Niektórzy robią z niego broń.",items,award=False)
+        add("wildcards","🎲 Król Wild Cardów","Nie każdy Wild Card jest ryzykiem. U niektórych zamienia się w specjalność.",items,award=False)
         items=[]
         for pid,v in ps.items():
             seq=v["result_points"]
@@ -7686,7 +7686,7 @@ class Database:
             if len(vals)<3:continue
             avg=sum(vals)/len(vals);sd=statistics.pstdev(vals) if len(vals)>1 else 0
             items.append(cand(pid,avg*25-sd*14+len(vals),f"{len(vals)} turniejów • średnio {avg:.2f} pkt/mecz • odchylenie {sd:.2f}"))
-        add("regular","🎯 Najbardziej Regularny","Bez wielkich zjazdów i przypadkowych wyskoków. Forma ma się zgadzać turniej po turnieju.",items,award=False)
+        add("regular","🎯 Najbardziej Regularny","Forma bez większych wahań. Zwykle wiadomo, czego można się po nim spodziewać.",items,award=False)
 
         # Detailed-event Awards. These are official Award categories, unlike the
         # informational rankings below.
@@ -7694,7 +7694,7 @@ class Database:
         for pid,v in discipline.items():
             if v["points"]<=0: continue
             items.append(cand(pid,v["points"],f"{v['points']} pkt dyscypliny • 🟨 {v['yellow']} • 🟥 {v['red']} (żółta = 1, czerwona = 3)"))
-        add("sharpest","🪓 Najostrzejszy Gracz","Kartki mówią same za siebie. Im więcej koloru pokazuje sędzia, tym wyżej tutaj.",items,award=False)
+        add("sharpest","🪓 Najostrzejszy Gracz","Najwięcej ognia, walki i sytuacji, po których sędzia sięga do kieszeni.",items,award=False)
 
         items=[]
         for pid,v in late_stats.items():
@@ -7766,7 +7766,7 @@ class Database:
         # neutral and never treated as zero.
         items=[cand(pid,v["first_goals"],f"{v['first_goals']} razy strzelił pierwszy gol meczu")
                for pid,v in event_rank.items() if v["first_goals"]>0]
-        add("first_goals","🥇 Najwięcej pierwszych goli","Kto najczęściej otwiera wynik. Techniczne 1:0 w finale DE oczywiście się nie wciska do statystyk.",items,award=False)
+        add("first_goals","🥇 Najwięcej pierwszych goli","Najczęściej zaczyna strzelanie i ustawia mecz od pierwszego trafienia.",items,award=False)
 
         items=[]
         for pid,sp in summary_ps.items():
@@ -7780,21 +7780,7 @@ class Database:
                 "reason":f"{delta:+.2f} gola ponad xG / mecz",
                 "goals_minus_xg_per_match":round(delta,2),
             })
-        add("clinical","🎯 Kliniczny","Kto najczęściej zamienia sytuacje na więcej goli, niż wynika z xG. Liczymy gole − xG na mecz z wiarygodnym Summary; minimum 5 takich spotkań.",items,award=False)
-
-        items=[]
-        for pid,sp in summary_ps.items():
-            n=int(sp.get("xg_n") or 0)
-            if n<5:continue
-            waste=(float(sp.get("xg_for") or 0.0)-float(sp.get("goals_for_xg") or 0.0))/n
-            if waste<=0:continue
-            items.append({
-                "id":str(pid),"name":name_by.get(str(pid),"?"),"score":round(waste,4),
-                "_sort":(round(waste,6),n),
-                "reason":f"{waste:.2f} niewykorzystanego xG / mecz",
-                "xg_wasted_per_match":round(waste,2),
-            })
-        add("wasteful","🗑️ Marnotrawca","Kto regularnie tworzy więcej, niż kończy golem. Liczymy xG − gole na mecz z wiarygodnym Summary; minimum 5 takich spotkań.",items,award=False)
+        add("clinical","🎯 Kliniczny","Potrafi wycisnąć maksimum z sytuacji i zdobywać gole tam, gdzie inni potrzebują kilku prób.",items,award=False)
 
         items=[]
         for pid,sp in summary_ps.items():
@@ -7807,7 +7793,7 @@ class Database:
                 "reason":f"{avg:.1f}% średniego posiadania",
                 "possession_pct":round(avg,1),
             })
-        add("possession_king","👑 Król Posiadania","Kto najczęściej ma piłkę pod kontrolą. Ranking po średnim posiadaniu; minimum 5 spotkań z wiarygodnym Summary.",items,award=False)
+        add("possession_king","👑 Król Posiadania","Najlepiej czuje się z piłką przy nodze i potrafi narzucać własne tempo spotkania.",items,award=False)
 
         items=[]
         for pid,sp in summary_ps.items():
@@ -7820,7 +7806,7 @@ class Database:
                 "reason":f"{xgd:+.2f} xGD / mecz",
                 "xgd_per_match":round(xgd,2),
             })
-        add("dominator","📈 Dominator","Kto przeciętnie najbardziej przeważa jakością sytuacji. xGD = własne xG − xG rywala na mecz; minimum 5 spotkań z wiarygodnym Summary.",items,award=False)
+        add("dominator","📈 Dominator","Najczęściej przejmuje kontrolę nad meczem i potrafi wyraźnie zepchnąć rywala do defensywy.",items,award=False)
 
         items=[]
         for pid,sp in summary_ps.items():
@@ -7834,7 +7820,7 @@ class Database:
                 "reason":f"{ppm:.2f} pkt kradzieży / mecz • {points_txt} pkt • {wins} kradzież(e)",
                 "steal_points_per_match":round(ppm,2),"steal_points":points,"stolen_wins":wins,
             })
-        add("match_thief","🦹 Złodziej Meczów","Wygrane mimo niższego xG: strata 0,25–0,49 = 1 pkt, 0,50–0,99 = 2 pkt, a co najmniej 1,00 xG = 3 pkt. Ranking po punktach kradzieży na mecz; minimum 5 spotkań z wiarygodnym Summary.",items,award=False)
+        add("match_thief","🦹 Złodziej Meczów","Specjalista od wygrywania spotkań, które z przebiegu gry wcale nie musiały należeć do niego.",items,award=False)
 
         first_by={str(x["player_id"]):str(x.get("first_date") or "") for x in first_dates}
         # Debiut Sezonu ma własną tożsamość: oceniamy wyłącznie początek kariery FIFA Night,
@@ -7973,7 +7959,7 @@ class Database:
             for pid,gf,ga in ((str(m["home_player_id"]),int(m["home_score"]),int(m["away_score"])),(str(m["away_player_id"]),int(m["away_score"]),int(m["home_score"]))):
                 dv[pid]["m"]+=1;dv[pid]["gf"]+=gf;dv[pid]["ga"]+=ga;dv[pid]["w"]+=int(m.get("winner_player_id")==pid)
         items=[cand(pid,v["w"]/v["m"]*100+v["w"]*3+(v["gf"]-v["ga"])/v["m"]*2,f"{v['w']}/{v['m']} W • bilans {v['gf']}:{v['ga']}") for pid,v in dv.items() if v["m"]>=5]
-        add("duel","⚔️ Król 1 vs 1","Bez grup, bez drabinki, bez wymówek. Tylko oficjalne 1 VS 1; minimum 5 spotkań.",items,award=False)
+        add("duel","⚔️ Król 1 vs 1","Bez grup i drabinki — czysta rywalizacja jeden na jednego.",items,award=False)
         # non-individual categories
         rivalry=[]
         for (a,b),v in pair.items():
@@ -8061,7 +8047,7 @@ class Database:
                 "reason":f"{pct:.1f}% meczów na styku • {close_n}/{matches_n}",
                 "close_matches":close_n,"matches":matches_n,"close_match_pct":round(pct,1),
             })
-        add("nerve_king","🎢 Król Nerwówek","Mecze rozstrzygnięte jedną bramką albo dopiero w serii karnych. Ranking po odsetku takich spotkań; przy remisie decyduje ich liczba. Minimum 5 oficjalnych meczów turniejowych.",items,award=False)
+        add("nerve_king","🎢 Król Nerwówek","Jego mecze lubią trzymać w napięciu aż do ostatniego gwizdka.",items,award=False)
 
         # Summary of nominations for every Award that nominates a FIFA Night
         # participant, regardless of whether a physical statuette exists. Each

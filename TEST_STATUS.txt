@@ -44,3 +44,24 @@ NOT PHYSICALLY TESTED HERE:
 - FC27 national mode smoke PASS.
 - mobile_api_smoke.py 52/52 PASS.
 - Python compile PASS (existing ui.py invalid-escape SyntaxWarning unchanged).
+
+
+2026-10-20 R24 AI Events / scorer / shoot-out:
+- Python compile PASS.
+- event_parser_r24_smoke PASS.
+- penalty_miss_icon_prompt_smoke PASS.
+- second_yellow_red_counters_smoke PASS.
+- manual_event_scorer_draw_smoke PASS.
+- mobile_api_smoke 52/52 PASS.
+- changed FifaScreen.tsx parser check: no TypeScript syntax errors.
+- full npm run check NOT marked PASS: npm install timed out and node_modules are not bundled.
+
+2026-10-21 R26 classification cleanup:
+- Marnotrawca removed from main classifications.
+- Advanced Stats unchanged after physical UI review.
+- Public classification descriptions simplified; formulas/thresholds hidden from descriptions.
+- summary_classifications_r26_smoke PASS.
+- Awards/Gala regression smokes PASS.
+- mobile_api_smoke.py 52/52 PASS.
+- Python compile PASS.
+- full npm run check remains for final build.

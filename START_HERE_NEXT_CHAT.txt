@@ -1,0 +1,11 @@
+FIFA NIGHT FLEX — START HERE
+
+1. Użyj HANDOFF_FIFA_NIGHT_2026-10-21_R26.md jako pełnego kontekstu.
+2. Baza: FIFA NIGHT FLEX 1.1.3 / R26 / Android versionCode 15.
+3. Nie wracaj do starszych checkpointów jako bazy.
+4. R23: fix zapisu PNG w APK wdrożony; nadal wymaga fizycznego retestu.
+5. R24: AI Events/scorer/shoot-out fix wdrożony; backend regression 52/52 PASS; nadal wymaga fizycznego retestu na prawdziwych screenshotach.
+6. R25: Advanced Stats + nowe Klasyfikacje Summary wdrożone i obejrzane na realnych danych.
+7. R26: Marnotrawca usunięty z Klasyfikacji; Advanced Stats zaakceptowane bez zmian; opisy Klasyfikacji są celowo ogólne i bez mechaniki liczenia. Główna sekcja ma 10 klasyfikacji.
+8. Następny osobny temat: odznaki/rekordy/ciekawostki Summary, nie kolejne kategorie Gali.
+9. Na końcu pełna regresja + fizyczny test + finalny one-click APK.
