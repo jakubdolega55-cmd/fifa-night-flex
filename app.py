@@ -3112,6 +3112,22 @@ AWARD_QUIPS={
     "match_thief":"Statystyki mówią jedno. Tablica wyników drugie.",
 }
 
+def award_owner_name(category_key, candidate_id=None, candidate_name=None):
+    """Return the FIFA Night player who owns a single-player physical Award.
+
+    Pair/team/non-player Awards deliberately return None so the organizer UI never
+    attributes a shared or non-player trophy to one person by accident.
+    """
+    key=str(category_key or "")
+    name=str(candidate_name or "").strip()
+    if key in DIRECT_PLAYER_AWARD_KEYS:
+        return name or None
+    if key=="player_scorers":
+        # Scorer candidates are displayed as "footballer — FIFA Night player".
+        return (name.rsplit(" — ",1)[1].strip() if " — " in name else name) or None
+    return None
+
+
 def render_awards(readonly:bool=False):
     st.subheader("🏆 FIFA Night Awards")
     section=st.segmented_control("Sekcja",["🏆 Awards","🎯 Klasyfikacje","🏛️ Kamienie milowe"],default="🏆 Awards",key=f"awards_section_{int(readonly)}",label_visibility="collapsed") or "🏆 Awards"
@@ -3389,25 +3405,36 @@ def render_awards(readonly:bool=False):
                     db.set_award_selection(year,cat["key"],str(cand.get("id")),str(cand.get("name")))
                     st.success(f"Zapisano: {cat['title']} — {cand.get('name')}");rr()
             st.divider()
-        if GALA_TEST_MODE:
-            with st.expander("🧪 Testy gali — reset laureatów",expanded=False):
-                st.caption("Tylko na czas prób. Czyści wszystkie zapisane wybory laureatów tego sezonu i resetuje stan gali. Rankingi, mecze i statystyki zostają bez zmian.")
-                with st.form(f"awards_reset_all_test_{scope_key}"):
-                    confirm=st.text_input("Wpisz RESET, aby potwierdzić",key=f"awards_reset_all_confirm_{scope_key}")
-                    wipe=st.form_submit_button("🗑️ RESETUJ WSZYSTKICH LAUREATÓW",use_container_width=True)
-                if wipe:
-                    if str(confirm or "").strip().upper()!="RESET":
-                        st.error("Wpisz RESET, aby potwierdzić.")
-                    else:
+        with st.expander("🧹 Reset gali / laureatów",expanded=False):
+            st.caption("Opcja administracyjna do prób i korekt. Czyści wszystkich laureatów bieżącego sezonu oraz resetuje stan Gali. Mecze, rankingi, statystyki, odznaki i historia zostają bez zmian.")
+            if not GALA_TEST_MODE:
+                st.warning("Tryb testowy Gali nie jest włączony, dlatego reset wymaga ręcznego potwierdzenia. Używaj tylko wtedy, gdy naprawdę chcesz powtórzyć wybór laureatów.")
+            with st.form(f"awards_reset_all_{scope_key}"):
+                confirm=st.text_input("Wpisz RESET, aby potwierdzić",key=f"awards_reset_all_confirm_{scope_key}")
+                wipe=st.form_submit_button("🗑️ RESETUJ WSZYSTKICH LAUREATÓW I GALĘ",use_container_width=True)
+            if wipe:
+                if str(confirm or "").strip().upper()!="RESET":
+                    st.error("Wpisz RESET, aby potwierdzić.")
+                else:
+                    if GALA_TEST_MODE:
                         removed=db.clear_all_award_selections_for_test(year)
-                        st.success(f"Wyczyszczono {removed} wyborów laureatów. Gala wróciła do stanu przed startem.")
-                        rr()
+                    else:
+                        existing=db.award_selections(year) or {}
+                        removed=0
+                        for award_key in list(existing.keys()):
+                            removed += int(bool(db.clear_award_selection(year,award_key)))
+                        db.reset_awards_gala(year)
+                    st.success(f"Wyczyszczono {removed} wyborów laureatów. Gala wróciła do stanu przed startem.")
+                    rr()
         st.markdown("#### 🏁 Zakończenie sezonu")
         gala_state=db.awards_gala_status(year)
-        if str(gala_state.get("status") or "")!="finished":
-            st.caption("Przycisk zakończenia sezonu odblokuje się dopiero po pełnym zakończeniu Gali. Dzięki temu laureaci i przebieg ceremonii zostaną zamrożeni w historii.")
-        else:
-            with st.expander(f"🏁 Zakończ Sezon {season_no}",expanded=False):
+        gala_finished=str(gala_state.get("status") or "") == "finished"
+        with st.expander(f"🏁 Zakończ Sezon {season_no}",expanded=False):
+            if not gala_finished:
+                status_label=str(gala_state.get("status") or "idle")
+                st.info(f"Najpierw zakończ Galę. Aktualny stan Gali: **{status_label}**. Po kliknięciu „ZAKOŃCZ GALĘ” ten przycisk się odblokuje.")
+                st.button("🏁 ZAKOŃCZ SEZON I OTWÓRZ NOWY",use_container_width=True,disabled=True,key=f"close_awards_season_disabled_{scope_key}")
+            else:
                 st.warning("To zamrozi wyniki Awards i Galę tego sezonu. Następny oficjalny mecz/turniej będzie już liczony do nowego sezonu. Historia meczów, statystyki ogólne, H2H, odznaki i kamienie milowe zostają bez zmian.")
                 with st.form(f"close_awards_season_{scope_key}"):
                     close_confirm=st.text_input("Wpisz ZAKOŃCZ SEZON",key=f"close_awards_season_confirm_{scope_key}")
