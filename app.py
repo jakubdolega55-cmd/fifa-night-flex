@@ -2839,13 +2839,36 @@ def render_stats(t=None,readonly:bool=False):
                 st.markdown("#### 🎮 Drużyny gracza")
                 st.dataframe(pd.DataFrame([{"Drużyna":x["team"],"M":x["matches"],"W":x["w"],"R":x["d"],"P":x["l"],"W%":x["win_pct"],"Bramki":f"{x['gf']}:{x['ga']}"} for x in profile["teams"]]),hide_index=True,use_container_width=True)
             if profile.get("history"):
-                st.markdown("#### 🕘 Ostatnie 10 oficjalnych meczów")
+                st.markdown("#### 🕘 Ostatnie mecze")
+                hist_limit=st.segmented_control("Pokaż ostatnie",[5,10,15],default=5,key=f"player_history_limit_{selected_pid}") or 5
+                recent=(profile.get("history") or [])[:int(hist_limit)]
                 stage_labels={"GROUP":"GRUPA","LEAGUE":"LIGA","WB":"WINNERS","WB_FINAL":"FINAŁ WINNERS","LB":"LOSERS","LB_FINAL":"FINAŁ LOSERS","QF":"ĆWIERĆFINAŁ","BARRAGE":"BARAŻ","SF":"PÓŁFINAŁ","FINAL":"FINAŁ","RESET_FINAL":"RESET FINAL"}
                 hist=[]
-                for x in profile["history"]:
+                for x in recent:
                     raw=x.get("played_at") or "";date=raw[:10] if raw else "—"
-                    hist.append({"Data":date,"Wynik":x["result"],"Faza":stage_labels.get(x.get("stage"),x.get("stage") or "—"),"Rywal":x["opponent"],"Drużyna":x["team"],"Rezultat":x["score"]})
+                    hist.append({"Data":date,"Wynik":x["result"],"Rozgrywki":x.get("event_context") or "FIFA Night","Faza":stage_labels.get(x.get("stage"),x.get("stage") or "—"),"Rywal":x["opponent"],"Drużyna":x["team"],"Rezultat":x.get("player_score") or x["score"]})
                 st.dataframe(pd.DataFrame(hist),hide_index=True,use_container_width=True)
+                event_icons={"normal_goal":"⚽","penalty_goal":"🎯","own_goal":"↩️","penalty_miss":"❌","yellow_card":"🟨","red_card":"🟥","injury":"🩹","substitution":"🔁"}
+                for x in recent:
+                    raw=x.get("played_at") or "";date=raw[:10] if raw else "—"
+                    label=f"{x.get('result','—')} • {date} • vs {x.get('opponent','?')} • {x.get('player_score') or x.get('score','—')}"
+                    with st.expander(label,expanded=False):
+                        st.caption(f"{x.get('event_context') or 'FIFA Night'} • {stage_labels.get(x.get('stage'),x.get('stage') or '—')} • {x.get('team') or '—'} vs {x.get('opponent_team') or '—'}")
+                        sm=x.get("summary") or {}
+                        if sm:
+                            def _fmt(v,d=1):
+                                try:return f"{float(v):.{d}f}" if v is not None else "—"
+                                except Exception:return "—"
+                            st.write(f"**Summary:** xG {_fmt(sm.get('xg_for'),2)}–{_fmt(sm.get('xg_against'),2)} • strzały {_fmt(sm.get('shots_for'),0)}–{_fmt(sm.get('shots_against'),0)} • posiadanie {_fmt(sm.get('possession_for'),0)}–{_fmt(sm.get('possession_against'),0)}%")
+                        events=x.get("events") or []
+                        if events:
+                            st.write("**Events:**")
+                            for evx in events:
+                                minute=(str(evx.get("minute_label") or "").strip()+"′") if str(evx.get("minute_label") or "").strip() else ""
+                                who=evx.get("footballer_name") or "—";team=evx.get("team") or ""
+                                extra=(f" → {evx.get('related_footballer_name')}" if evx.get("event_type")=="substitution" and evx.get("related_footballer_name") else "")
+                                st.caption(f"{event_icons.get(evx.get('event_type'),'•')} {minute} {who}{extra}"+(f" • {team}" if team else ""))
+                        if not sm and not events:st.caption("Brak zapisanych szczegółów Summary / Events dla tego meczu.")
 
     with tab_scorers:
         st.divider()

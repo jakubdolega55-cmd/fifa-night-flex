@@ -5454,7 +5454,7 @@ class Database:
         with self.connect() as conn:
             matches=self._official_matches_conn(conn)
             summary_rows=self._fetchall(conn,"""
-                SELECT ms.stats_json,m.home_player_id,m.away_player_id
+                SELECT ms.tournament_id,ms.match_no,ms.stats_json,m.home_player_id,m.away_player_id
                 FROM match_summary_stats ms
                 JOIN matches m ON m.tournament_id=ms.tournament_id AND m.match_no=ms.match_no
                 JOIN tournaments t ON t.id=m.tournament_id
@@ -5463,6 +5463,33 @@ class Database:
                   AND (m.home_player_id=? OR m.away_player_id=?)
                 ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no
             """,(pid,pid))
+            event_rows=self._fetchall(conn,"""
+                SELECT me.tournament_id,me.match_no,me.event_order,me.event_type,me.minute_label,
+                       me.actor_player_id,me.credited_player_id,me.actor_team_name,me.credited_team_name,
+                       me.footballer_name,me.related_footballer_name,me.synthetic_de
+                FROM match_events me
+                JOIN matches m ON m.tournament_id=me.tournament_id AND m.match_no=me.match_no
+                JOIN tournaments t ON t.id=m.tournament_id
+                WHERE t.status IN ('active','completed','abandoned') AND t.is_test=0
+                  AND m.home_score IS NOT NULL AND COALESCE(m.match_status,'played')<>'forfeit'
+                  AND (m.home_player_id=? OR m.away_player_id=?)
+                ORDER BY COALESCE(m.played_at,t.completed_at,t.created_at),m.tournament_id,m.match_no,me.event_order,me.id
+            """,(pid,pid))
+            official_rows=self._fetchall(conn,"""
+                SELECT t.id FROM tournaments t JOIN flex_tournament_meta fm ON fm.tournament_id=t.id
+                WHERE t.status IN ('completed','abandoned') AND t.is_test=0 AND fm.format_key<>'duel1v1'
+                ORDER BY COALESCE(t.completed_at,t.created_at),t.created_at,t.id
+            """)
+        official_numbers={str(row.get("id") or ""):i+1 for i,row in enumerate(official_rows)}
+        summary_by_match={}
+        for row in summary_rows:
+            try: stats=json.loads(row.get("stats_json") or "{}")
+            except Exception: stats={}
+            if isinstance(stats,dict):
+                summary_by_match[(str(row.get("tournament_id") or ""),int(row.get("match_no") or 0))]=stats
+        events_by_match=defaultdict(list)
+        for row in event_rows:
+            events_by_match[(str(row.get("tournament_id") or ""),int(row.get("match_no") or 0))].append(row)
         own=[m for m in matches if pid in (m.get("home_player_id"),m.get("away_player_id"))]
         teams=defaultdict(lambda:{"matches":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"display":None})
         opponents=defaultdict(lambda:{"name":None,"meetings":0,"w":0,"d":0,"l":0,"gf":0,"ga":0})
@@ -5480,10 +5507,40 @@ class Database:
             if opp:
                 orc=opponents[opp];orc["name"]=opp_name or "?";orc["meetings"]+=1;orc["gf"]+=gf;orc["ga"]+=ga;orc[{"W":"w","D":"d","L":"l"}[result]]+=1
             score=f"{m['home_score']}:{m['away_score']}"
+            player_score=f"{m['home_score']}:{m['away_score']}" if home else f"{m['away_score']}:{m['home_score']}"
             if m.get("home_penalties") is not None and m.get("away_penalties") is not None:
                 score+=f" (k. {m['home_penalties']}:{m['away_penalties']})"
+                player_score+=(f" (k. {m['home_penalties']}:{m['away_penalties']})" if home else f" (k. {m['away_penalties']}:{m['home_penalties']})")
+            tid=str(m.get("tournament_id") or "");match_no=int(m.get("match_no") or 0);fmt=str(m.get("format_key") or "")
+            event_context="1 VS 1" if fmt=="duel1v1" else (f"FIFA Night #{official_numbers[tid]}" if tid in official_numbers else "FIFA Night (w toku)")
+            summary_detail=None
+            stats=summary_by_match.get((tid,match_no)) or {}
+            if isinstance(stats,dict) and bool(stats.get("usable_for_awards")):
+                shome=stats.get("home") or {};saway=stats.get("away") or {};mine,sopp=(shome,saway) if home else (saway,shome)
+                def _metric(obj,key):
+                    try:
+                        value=obj.get(key)
+                        return None if value is None or isinstance(value,bool) else float(value)
+                    except Exception:return None
+                summary_detail={
+                    "xg_for":_metric(mine,"expected_goals"),"xg_against":_metric(sopp,"expected_goals"),
+                    "shots_for":_metric(mine,"shots"),"shots_against":_metric(sopp,"shots"),
+                    "possession_for":_metric(mine,"possession"),"possession_against":_metric(sopp,"possession"),
+                    "fouls_for":_metric(mine,"fouls"),"fouls_against":_metric(sopp,"fouls"),
+                }
+                if not any(v is not None for v in summary_detail.values()):summary_detail=None
+            event_detail=[]
+            for er in events_by_match.get((tid,match_no),[]):
+                if int(er.get("synthetic_de") or 0):continue
+                event_detail.append({
+                    "event_type":str(er.get("event_type") or ""),"minute_label":str(er.get("minute_label") or ""),
+                    "footballer_name":str(er.get("footballer_name") or ""),"related_footballer_name":str(er.get("related_footballer_name") or ""),
+                    "team":str(er.get("actor_team_name") or er.get("credited_team_name") or ""),
+                })
             history.append({"result":result,"played_at":m.get("played_at") or m.get("completed_at") or m.get("created_at"),"stage":m.get("stage"),
-                            "opponent":opp_name or "?","team":team or "—","opponent_team":m.get("away_team") if home else m.get("home_team"),"score":score})
+                            "tournament_id":tid,"match_no":match_no,"format_key":fmt,"event_context":event_context,
+                            "opponent":opp_name or "?","team":team or "—","opponent_team":m.get("away_team") if home else m.get("home_team"),
+                            "score":score,"player_score":player_score,"summary":summary_detail,"events":event_detail})
         team_rows=[]
         for v in teams.values():
             team_rows.append({"team":v["display"],"matches":v["matches"],"w":v["w"],"d":v["d"],"l":v["l"],"gf":v["gf"],"ga":v["ga"],"gd":v["gf"]-v["ga"],"win_pct":round(v["w"]/v["matches"]*100,1)})
@@ -5543,7 +5600,7 @@ class Database:
             advanced_stats["possession_pct"]=round(adv["possession"]/adv["possession_n"],1)
         if adv["fouls_n"]:
             advanced_stats["fouls_per_match"]=round(adv["fouls"]/adv["fouls_n"],1)
-        return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-10:][::-1],"advanced_stats":advanced_stats}
+        return {**base,"form":last_results,"teams":team_rows,"most_frequent":frequent,"nemesis":nemesis,"favorite":favorite,"history":history[-15:][::-1],"advanced_stats":advanced_stats}
 
 
     def player_award_wins(self, player_id: str) -> list[dict]:
